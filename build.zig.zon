@@ -32,21 +32,11 @@
     // Once all dependencies are fetched, `zig build` no longer requires
     // internet connectivity.
     .dependencies = .{
-        // SDL3 source, compiled straight into the exe -- Windows only. On
-        // Linux we link the distro's libSDL3 through pkg-config instead
-        // (see build.zig): SDL upstream ships no non-CMake build config for
-        // Linux, and hand-writing one would still need libx11-dev et al.
-        // installed while giving up Wayland entirely. Lazy so a Linux build
-        // never downloads it.
         .sdl3 = .{
             .url = "https://github.com/libsdl-org/SDL/archive/refs/tags/release-3.4.14.tar.gz",
             .hash = "N-V-__8AAAHL9wLH-k89zUdJesNpvVC3lHMzF3jnhXfuclqx",
             .lazy = true,
         },
-        // wgpu-native ships prebuilt per target triple, so there's one
-        // entry per platform we support and build.zig picks the matching
-        // one. All lazy -- only the one this build actually needs is
-        // fetched.
         .wgpu_native_windows_x86_64 = .{
             .url = "https://github.com/gfx-rs/wgpu-native/releases/download/v29.0.1.1/wgpu-windows-x86_64-gnu-release.zip",
             .hash = "N-V-__8AAIV6GgPzrhI9UgYVJuTvVgZIm4n3bPc6dMAOpPYl",
@@ -67,8 +57,5 @@
         "build.zig",
         "build.zig.zon",
         "src",
-        // For example...
-        //"LICENSE",
-        //"README.md",
     },
 }
