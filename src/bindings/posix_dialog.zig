@@ -117,7 +117,7 @@ fn tryHelper(
         },
     }
 
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = @import("process_io.zig").io();
     const result = try std.process.run(arena, io, .{ .argv = argv.items });
 
     if (!result.term.success()) return null;

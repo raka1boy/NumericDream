@@ -2,6 +2,7 @@
 const std = @import("std");
 const sdl = @import("../bindings/sdl3.zig").c;
 const file_dialog = @import("../bindings/file_dialog.zig");
+const process_io = @import("../bindings/process_io.zig");
 const stbiw = @import("../bindings/stb_image_write.zig").c;
 const wgpu = @import("../bindings/webgpu.zig").c;
 
@@ -374,7 +375,7 @@ const FfmpegPipe = struct {
 };
 
 fn startFfmpegPipe(folder: []const u8, fps: f32, width: u32, height: u32, pix_fmt: []const u8) ?FfmpegPipe {
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = process_io.io();
 
     var fps_buf: [32]u8 = undefined;
     const fps_str = std.fmt.bufPrint(&fps_buf, "{d}", .{fps}) catch return null;
@@ -405,7 +406,7 @@ fn startFfmpegPipe(folder: []const u8, fps: f32, width: u32, height: u32, pix_fm
 }
 
 fn muxToMp4(allocator: std.mem.Allocator, folder: []const u8, fps: f32) MuxResult {
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = process_io.io();
 
     var fps_buf: [32]u8 = undefined;
     const fps_str = std.fmt.bufPrint(&fps_buf, "{d}", .{fps}) catch return .failed;
@@ -424,4 +425,37 @@ fn muxToMp4(allocator: std.mem.Allocator, folder: []const u8, fps: f32) MuxResul
         .exited => |code| if (code == 0) .muxed else .failed,
         else => .failed,
     };
+}
+
+pub const FfmpegProbe = struct {
+    found: bool,
+    version_buf: [48]u8 = undefined,
+    version_len: usize = 0,
+
+    pub fn version(self: *const FfmpegProbe) []const u8 {
+        return self.version_buf[0..self.version_len];
+    }
+};
+
+/// Runs `ffmpeg -version` and keeps the version token from its first line.
+pub fn probeFfmpeg(allocator: std.mem.Allocator) FfmpegProbe {
+    const result = std.process.run(allocator, process_io.io(), .{
+        .argv = &.{ "ffmpeg", "-version" },
+        .stdout_limit = .limited(4096),
+        .stderr_limit = .limited(4096),
+    }) catch return .{ .found = false };
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    var probe = FfmpegProbe{ .found = result.term == .exited and result.term.exited == 0 };
+    if (!probe.found) return probe;
+
+    const first_line = std.mem.sliceTo(result.stdout, '\n');
+    const prefix = "ffmpeg version ";
+    if (std.mem.startsWith(u8, first_line, prefix)) {
+        const token = std.mem.sliceTo(first_line[prefix.len..], ' ');
+        probe.version_len = @min(token.len, probe.version_buf.len);
+        @memcpy(probe.version_buf[0..probe.version_len], token[0..probe.version_len]);
+    }
+    return probe;
 }

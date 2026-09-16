@@ -64,7 +64,9 @@ fn anyMovementKeyDown(keys: [*c]const bool) bool {
         keys[sdl.SDL_SCANCODE_F] or keys[sdl.SDL_SCANCODE_R];
 }
 
-pub fn main() !void {
+pub fn main(init: std.process.Init.Minimal) !void {
+    if (!perf_probe.parseArgs(allocator, init.args)) return error.BadCommandLine;
+
     webgpu_context.installWgpuLogging();
 
     if (!sdl.SDL_Init(sdl.SDL_INIT_VIDEO)) {
@@ -420,7 +422,14 @@ pub fn main() !void {
         }
         fractal.stampPhotonUniforms(&uniforms);
 
+        const stereo_preview = stereo.enabled and stereo.preview;
+        const stereo_half_sep = stereo.eye_separation * 0.5;
+        const eye_left = camera_mod.stereoEyeBasis(cam, camera.mode_2d, stereo.convergence_distance, -stereo_half_sep);
+        const eye_right = camera_mod.stereoEyeBasis(cam, camera.mode_2d, stereo.convergence_distance, stereo_half_sep);
+
         var diff_uniforms = uniforms;
+        //left-eye basis moves with separation/convergence, so stamping it makes stereo edits restart MC accumulation
+        if (stereo_preview) export_image.stampEyeBasis(&diff_uniforms, eye_left);
         diff_uniforms.time = 0;
         diff_uniforms.mc_sample = 0;
         diff_uniforms.accel_enabled = 0;
@@ -495,6 +504,24 @@ pub fn main() !void {
         }
 
         uniforms.debug_parts = render_parts.maskUniform();
+        const render_mode: fractal_gpu.RenderMode = if (camera.mode_2d)
+            .slice
+        else if (render_parts.geometryOnly())
+            .simple
+        else
+            .march;
+
+        if (stereo_preview) {
+            //two eyes per sample: weights chosen so accumulation after n samples is the plain mean of all 2n eye renders
+            const n: f32 = @floatFromInt(@max(mc_sample_count, 1));
+            var left_uniforms = uniforms;
+            export_image.stampEyeBasis(&left_uniforms, eye_left);
+            fractal.updateUniforms(&gpu_ctx, left_uniforms);
+            fractal.drawOffscreenNow(&gpu_ctx, load_existing, 1.0 / (2.0 * n - 1.0), render_mode);
+            export_image.stampEyeBasis(&uniforms, eye_right);
+            load_existing = true;
+            blend_constant = 1.0 / (2.0 * n);
+        }
         fractal.updateUniforms(&gpu_ctx, uniforms);
 
         perf.renderBegin();
@@ -504,12 +531,6 @@ pub fn main() !void {
         };
 
         const offscreen_pass = fractal.beginOffscreenPass(frame.encoder, load_existing);
-        const render_mode: fractal_gpu.RenderMode = if (camera.mode_2d)
-            .slice
-        else if (render_parts.geometryOnly())
-            .simple
-        else
-            .march;
         fractal.draw(offscreen_pass, blend_constant, render_mode);
         wgpu.wgpuRenderPassEncoderEnd(offscreen_pass);
         wgpu.wgpuRenderPassEncoderRelease(offscreen_pass);
@@ -551,7 +572,10 @@ pub fn main() !void {
         );
 
         var gizmo_verts: [gizmo.max_vertices]GizmoVertex = undefined;
-        const gizmo_vert_count = gizmo.buildGizmoLines(&gizmo_verts, instances[0..instance_count], lights[0..light_count], fog_emitters[0..fog_count], warps[0..warp_count]);
+        var gizmo_vert_count = gizmo.buildGizmoLines(&gizmo_verts, instances[0..instance_count], lights[0..light_count], fog_emitters[0..fog_count], warps[0..warp_count]);
+        if (stereo.settings_open and !camera.mode_2d) {
+            gizmo_vert_count = gizmo.buildStereoRays(&gizmo_verts, gizmo_vert_count, cam, stereo.eye_separation, stereo.convergence_distance);
+        }
         if (gizmo_vert_count > 0) {
             const aspect = width_f / height_f;
             gizmo_renderer.render(

@@ -84,6 +84,13 @@ pub fn onProgress(frac: f32, userdata: ?*anyopaque) void {
     pc.overlay.draw(pc.gpu_ctx, frac, hover);
 }
 
+pub fn stampEyeBasis(uniforms: *Uniforms, eye: CameraBasis) void {
+    uniforms.camera_pos = .{ eye.pos.x, eye.pos.y, eye.pos.z };
+    uniforms.camera_right = .{ eye.right.x, eye.right.y, eye.right.z };
+    uniforms.camera_up = .{ eye.up.x, eye.up.y, eye.up.z };
+    uniforms.camera_forward = .{ eye.forward.x, eye.forward.y, eye.forward.z };
+}
+
 pub fn buildUniforms(
     instances: []const FractalInstanceState,
     lights: []const LightState,
@@ -102,13 +109,13 @@ pub fn buildUniforms(
     height: u32,
 ) Uniforms {
     var uniforms = Uniforms{
-        .camera_pos = .{ eye.pos.x, eye.pos.y, eye.pos.z },
+        .camera_pos = undefined,
         .time = 0.0,
-        .camera_right = .{ eye.right.x, eye.right.y, eye.right.z },
+        .camera_right = undefined,
         .max_steps = max_steps,
-        .camera_up = .{ eye.up.x, eye.up.y, eye.up.z },
+        .camera_up = undefined,
         .max_dist = max_dist,
-        .camera_forward = .{ eye.forward.x, eye.forward.y, eye.forward.z },
+        .camera_forward = undefined,
         .instance_count = @floatFromInt(instances.len),
         .resolution = .{ @floatFromInt(width), @floatFromInt(height) },
         .light_count = @floatFromInt(lights.len),
@@ -135,6 +142,7 @@ pub fn buildUniforms(
         .fog_emitters = undefined,
         .warps = undefined,
     };
+    stampEyeBasis(&uniforms, eye);
     for (0..max_instances) |i| {
         uniforms.instances[i] = if (i < instances.len) instances[i].toGpu() else std.mem.zeroes(GpuFractalInstance);
     }

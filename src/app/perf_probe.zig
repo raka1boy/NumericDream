@@ -1,10 +1,32 @@
-//use this by setting NUMERICDREAM_PERF=1 in the env
+//use this by passing -perf on the command line
 
 const std = @import("std");
 const sdl = @import("../bindings/sdl3.zig").c;
 const wgpu = @import("../bindings/webgpu.zig").c;
 
 const max_tracked_events = 24;
+
+var g_enabled: bool = false;
+
+pub fn enabled() bool {
+    return g_enabled;
+}
+
+pub fn parseArgs(allocator: std.mem.Allocator, args: std.process.Args) bool {
+    var it = args.iterateAllocator(allocator) catch return true;
+    defer it.deinit();
+    _ = it.next(); //exe path
+    var ok = true;
+    while (it.next()) |arg| {
+        if (std.mem.eql(u8, arg, "-perf") or std.mem.eql(u8, arg, "--perf")) {
+            g_enabled = true;
+        } else {
+            std.debug.print("unknown option '{s}' (supported: -perf)\n", .{arg});
+            ok = false;
+        }
+    }
+    return ok;
+}
 
 const EventCount = struct { kind: u32, count: u32 };
 
@@ -24,7 +46,7 @@ pub const Probe = struct {
     last_reconfigure_total: u32 = 0,
 
     pub fn init() Probe {
-        const on = sdl.SDL_getenv("NUMERICDREAM_PERF") != null;
+        const on = enabled();
         if (on) {
             std.debug.print(
                 "[perf] enabled. iter=loop passes, render=frames drawn, wait=idle blocks, " ++

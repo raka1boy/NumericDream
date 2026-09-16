@@ -1556,7 +1556,13 @@
             <div class="param-head"><span class="param-name">Convergence distance</span><span class="chip">default 3.0</span><span class="chip">range 0.1–20</span></div>
             <p>Where the two eyes' view directions cross — the zero-parallax plane. Objects at this distance line up between the halves; nearer objects pop forward, farther ones recede. Set it to roughly the distance of your subject. Ignored in 2D mode, which has no depth to converge on (<a href="#ch16">Chapter 16</a>).</p>
           </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">Preview (overlap both eyes)</span><span class="chip">default off</span></div>
+            <p>Renders the viewport from both eyes and blends them half and half. Anything at the convergence distance lines up as a single crisp image; everything nearer or farther shows as a doubled ghost whose offset is the parallax it will have in the export. Costs two renders per frame, and MC render accumulates both eyes together. Only active while <strong>Render as stereoscopic</strong> is ticked.</p>
+          </div>
         </div>
+
+        <p>While the settings window is open the viewport also draws the <strong>eye rays</strong>: a red line for the left eye and a cyan line for the right eye rising from the bottom of the screen and crossing at a yellow marker, with darker tails continuing past the crossing. The pair is drawn 0.3 units below the camera's view axis — on the axis itself the rays would lie flat on the horizon line — so the crossing is a real point at the convergence distance and moves in perspective as you drag the slider: low and close for a near convergence, rising toward the centre and receding for a far one. A dim stem joins it to the on-axis point the render actually converges on. Widening the eye separation opens the angle of the X.</p>
       </section>
 
       <!-- ================= 18 ================= -->
@@ -1631,6 +1637,10 @@
           <div class="param">
             <div class="param-head"><span class="param-name">Motion blur samples</span><span class="chip">default 8</span><span class="chip">range 2–32</span><span class="chip on">shown when blur &gt; 0</span></div>
             <p>How many sub-frame instants the open shutter is sampled at. Too few and the blur breaks into separate ghosts instead of a smear; the faster the motion and the wider the shutter, the more it takes. Costs render time in direct proportion — <em>unless</em> MC Render already asks for more accumulated samples than this, in which case the shutter rides along on draws you were paying for anyway and the blur is free.</p>
+          </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">ffmpeg check</span></div>
+            <p>A status line above the checkbox reports whether <code>ffmpeg</code> was found on <code>PATH</code> (with its version) the moment the window opens, so you know before a long render whether you will get <code>anim.mp4</code> or only PNG frames. <em>Re-check ffmpeg</em> probes again on demand. Note that a running app keeps the <code>PATH</code> it was launched with, so after installing ffmpeg you still need to restart NumericDream for it to be found.</p>
           </div>
           <div class="param">
             <div class="param-head"><span class="param-name">Also save PNG frames</span><span class="chip">default off</span></div>

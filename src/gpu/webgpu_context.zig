@@ -47,16 +47,26 @@ pub fn linearSamplerDesc(label: wgpu.WGPUStringView) wgpu.WGPUSamplerDescriptor 
     };
 }
 
-pub fn pollUntil(instance: wgpu.WGPUInstance, done: *const bool, max_spins: u32) u32 {
-    var spins: u32 = 0;
-    while (!done.* and spins < max_spins) : (spins += 1) {
+//SDL_Delay(1) never returns in under a millisecond, and the export path waits once per
+//sub-tile per sample — spin on ProcessEvents first so short waits cost microseconds.
+const poll_spin_budget_ns: u64 = 250_000;
+
+///Returns the wall-clock milliseconds waited.
+pub fn pollUntil(instance: wgpu.WGPUInstance, done: *const bool, timeout_ms: u32) u32 {
+    const start_ns = sdl.SDL_GetTicksNS();
+    const timeout_ns = @as(u64, timeout_ms) *| std.time.ns_per_ms;
+    var elapsed_ns: u64 = 0;
+    while (true) {
         wgpu.wgpuInstanceProcessEvents(instance);
-        if (!done.*) sdl.SDL_Delay(1);
+        if (done.*) break;
+        elapsed_ns = sdl.SDL_GetTicksNS() -| start_ns;
+        if (elapsed_ns >= timeout_ns) break;
+        if (elapsed_ns >= poll_spin_budget_ns) sdl.SDL_Delay(1);
     }
-    return spins;
+    return @intCast(@min(elapsed_ns / std.time.ns_per_ms, std.math.maxInt(u32)));
 }
 
-pub const adapter_request_timeout_spins: u32 = 10_000;
+pub const adapter_request_timeout_ms: u32 = 10_000;
 
 fn createSurface(instance: wgpu.WGPUInstance, window: *sdl.SDL_Window) !wgpu.WGPUSurface {
     const props = sdl.SDL_GetWindowProperties(window);
@@ -402,8 +412,8 @@ fn requestAdapter(instance: wgpu.WGPUInstance, surface: wgpu.WGPUSurface) !wgpu.
     };
     _ = wgpu.wgpuInstanceRequestAdapter(instance, &options, callback_info);
     std.debug.print("[stage] requestAdapter: wgpuInstanceRequestAdapter returned, polling\n", .{});
-    const spins = pollUntil(instance, &req.done, adapter_request_timeout_spins);
-    std.debug.print("[stage] requestAdapter: poll loop exited after {d} spins, done={} status={d}\n", .{ spins, req.done, req.status });
+    const waited_ms = pollUntil(instance, &req.done, adapter_request_timeout_ms);
+    std.debug.print("[stage] requestAdapter: poll loop exited after {d}ms, done={} status={d}\n", .{ waited_ms, req.done, req.status });
 
     if (!req.done or req.status != wgpu.WGPURequestAdapterStatus_Success or req.adapter == null) {
         return error.WebGPUAdapterRequestFailed;
@@ -473,8 +483,8 @@ fn requestDevice(instance: wgpu.WGPUInstance, adapter: wgpu.WGPUAdapter) !wgpu.W
     };
     _ = wgpu.wgpuAdapterRequestDevice(adapter, &descriptor, callback_info);
     std.debug.print("[stage] requestDevice: wgpuAdapterRequestDevice returned, polling\n", .{});
-    const spins = pollUntil(instance, &req.done, adapter_request_timeout_spins);
-    std.debug.print("[stage] requestDevice: poll loop exited after {d} spins, done={} status={d}\n", .{ spins, req.done, req.status });
+    const waited_ms = pollUntil(instance, &req.done, adapter_request_timeout_ms);
+    std.debug.print("[stage] requestDevice: poll loop exited after {d}ms, done={} status={d}\n", .{ waited_ms, req.done, req.status });
 
     if (!req.done or req.status != wgpu.WGPURequestDeviceStatus_Success or req.device == null) {
         return error.WebGPUDeviceRequestFailed;

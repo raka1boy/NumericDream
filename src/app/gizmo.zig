@@ -41,6 +41,39 @@ fn pushWorldAxesGizmo(out: []GizmoVertex, count: *usize, center: Vec3) void {
     pushSegment(out, count, center, axis_z_color, center.add(.{ .x = 0, .y = 0, .z = axis_length }), axis_z_color);
 }
 
+const eye_left_color = [3]f32{ 0.95, 0.3, 0.3 };
+const eye_right_color = [3]f32{ 0.3, 0.85, 0.95 };
+const converge_color = [3]f32{ 1.0, 0.9, 0.3 };
+
+//the whole eye-ray pair is translated a fixed distance below the camera's view axis: on-axis it would
+//project onto the horizon line, and dropping only the eyes would pin the crossing to screen centre.
+//translated, the crossing is a real point at depth `convergence` so perspective moves it with the slider
+const stereo_ray_drop: f32 = 0.3;
+
+pub fn buildStereoRays(out: []GizmoVertex, start: usize, cam: camera_mod.CameraBasis, eye_separation: f32, convergence_distance: f32) usize {
+    var count = start;
+    const half_sep = eye_separation * 0.5;
+    const drop = cam.up.scale(-stereo_ray_drop);
+    const origin = cam.pos.add(drop);
+    const target = origin.add(cam.forward.scale(convergence_distance));
+    const offsets = [2]f32{ -half_sep, half_sep };
+    const colors = [2][3]f32{ eye_left_color, eye_right_color };
+    for (offsets, colors) |offset, color| {
+        const eye = origin.add(cam.right.scale(offset));
+        const dir = target.sub(eye).normalize();
+        pushSegment(out, &count, eye, color, target, color);
+        pushSegment(out, &count, target, color, target.add(dir.scale(convergence_distance)), .{ 0, 0, 0 });
+    }
+
+    const m = @max(convergence_distance * 0.02, 0.01);
+    pushSegment(out, &count, target.sub(cam.right.scale(m)), converge_color, target.add(cam.right.scale(m)), converge_color);
+    pushSegment(out, &count, target.sub(cam.up.scale(m)), converge_color, target.add(cam.up.scale(m)), converge_color);
+    //stem up to the on-axis convergence point the render actually uses
+    const on_axis = cam.pos.add(cam.forward.scale(convergence_distance));
+    pushSegment(out, &count, target, converge_color, on_axis, .{ 0.35, 0.3, 0.1 });
+    return count;
+}
+
 pub fn buildGizmoLines(
     out: []GizmoVertex,
     instances: []const FractalInstanceState,

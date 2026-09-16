@@ -13,6 +13,7 @@ pub const sky_texture = @import("sky_texture.zig");
 const SkyTexture = sky_texture.SkyTexture;
 const photon_state = @import("../app/photon_state.zig");
 const sky_state = @import("../app/sky.zig");
+const perf_probe = @import("../app/perf_probe.zig");
 
 const shader_template = @embedFile("shaders/template.wgsl");
 const blit_shader_src = @embedFile("shaders/blit.wgsl");
@@ -468,38 +469,20 @@ pub const RenderProgress = struct {
     cancel_flag: ?*const bool = null,
 };
 
+//counted in pixel-samples, not sub-tiles, because the sub-tile size is now chosen at runtime
 const ProgressTracker = struct {
     progress: ?RenderProgress,
-    total: u32,
-    done: u32 = 0,
+    total: u64,
+    done: u64 = 0,
 
-    fn tick(self: *ProgressTracker) void {
-        self.done += 1;
+    fn tick(self: *ProgressTracker, units: u64) void {
+        self.done += units;
         const p = self.progress orelse return;
-        const stride = @max(self.total / 200, 1);
-        if (self.done % stride != 0 and self.done != self.total) return;
-        const frac_local = @as(f32, @floatFromInt(self.done)) / @as(f32, @floatFromInt(self.total));
-        const frac = p.range_start + (p.range_end - p.range_start) * frac_local;
+        const frac_local = @as(f32, @floatFromInt(self.done)) / @as(f32, @floatFromInt(@max(self.total, 1)));
+        const frac = p.range_start + (p.range_end - p.range_start) * @min(frac_local, 1.0);
         p.callback(frac, p.userdata);
     }
 };
-
-fn countSubTiles(width: u32, height: u32, tile_dim: u32) u32 {
-    const sub_tile_size: u32 = 128;
-    var total: u32 = 0;
-    var tile_y: u32 = 0;
-    while (tile_y < height) : (tile_y += tile_dim) {
-        const tile_h = @min(tile_dim, height - tile_y);
-        var tile_x: u32 = 0;
-        while (tile_x < width) : (tile_x += tile_dim) {
-            const tile_w = @min(tile_dim, width - tile_x);
-            const sub_tiles_x = (tile_w + sub_tile_size - 1) / sub_tile_size;
-            const sub_tiles_y = (tile_h + sub_tile_size - 1) / sub_tile_size;
-            total += sub_tiles_x * sub_tiles_y;
-        }
-    }
-    return @max(total, 1);
-}
 
 fn tileTransform(full_width: u32, full_height: u32, tile_x: u32, tile_y: u32, tile_w: u32, tile_h: u32) struct { scale: [2]f32, bias: [2]f32 } {
     const fw: f32 = @floatFromInt(@max(full_width, 1));
@@ -550,7 +533,126 @@ fn onQueueWorkDone(
     state.done = true;
 }
 
-const gpu_work_timeout_spins: u32 = 600_000;
+const gpu_work_timeout_ms: u32 = 600_000;
+
+//A fixed 128px sub-tile with a queue drain after every one left big GPUs both starved
+//(16k fragments can't fill a modern card) and idle (one CPU round trip per draw). Sub-tile
+//size is calibrated from measured cost instead, and several are batched into one submit.
+const export_min_sub_side: u32 = 128; //never worse than the old fixed size
+const export_max_sub_side_3d: u32 = 512; //past this occupancy stops improving but TDR risk keeps climbing
+const export_max_sub_side_2d: u32 = 2048; //the slice shader is cheap enough not to threaten the watchdog
+const export_batch_target_ms: f32 = 250;
+
+const Rect = struct {
+    x: u32,
+    y: u32,
+    w: u32,
+    h: u32,
+
+    fn area(self: Rect) u64 {
+        return @as(u64, self.w) * self.h;
+    }
+
+    //halving the longer axis keeps the partition exact, so the target size may change mid-sweep
+    fn split(self: Rect) [2]Rect {
+        if (self.w >= self.h) {
+            const half = self.w / 2;
+            return .{
+                .{ .x = self.x, .y = self.y, .w = half, .h = self.h },
+                .{ .x = self.x + half, .y = self.y, .w = self.w - half, .h = self.h },
+            };
+        }
+        const half = self.h / 2;
+        return .{
+            .{ .x = self.x, .y = self.y, .w = self.w, .h = half },
+            .{ .x = self.x, .y = self.y + half, .w = self.w, .h = self.h - half },
+        };
+    }
+};
+
+///Tracks measured shading cost per pixel to size sub-tiles and batches.
+const ExportPacer = struct {
+    ms_per_px: f32 = export_batch_target_ms / @as(f32, export_min_sub_side * export_min_sub_side),
+    side: u32 = export_min_sub_side, //first draw matches the old fixed size, then calibrates
+    max_side: u32,
+    submits: u32 = 0,
+
+    fn subTileSide(self: ExportPacer) u32 {
+        return self.side;
+    }
+
+    fn estimateMs(self: ExportPacer, pixels: u64) f32 {
+        return self.ms_per_px * @as(f32, @floatFromInt(pixels));
+    }
+
+    fn observe(self: *ExportPacer, elapsed_ms: f32, pixels: u64) void {
+        if (pixels == 0) return;
+        self.submits += 1;
+        const measured = elapsed_ms / @as(f32, @floatFromInt(pixels));
+        //jump straight to a costlier estimate so one dense region shrinks the next draws,
+        //but ease back down, so a patch of empty space can't unclamp the whole sweep
+        self.ms_per_px = if (measured > self.ms_per_px)
+            measured
+        else
+            self.ms_per_px * 0.7 + measured * 0.3;
+
+        const budget_px = export_batch_target_ms / @max(self.ms_per_px, 1e-12);
+        //shrink at once, but grow at most 2x a step: sub-tiles are walked from the tile corner,
+        //which on a centred fractal is empty sky, and jumping straight from that probe to the
+        //cap would put a dense region's first draw within reach of the 2s driver watchdog
+        const want = @min(@sqrt(@max(budget_px, 1.0)), @as(f32, @floatFromInt(self.side)) * 2.0);
+        self.side = @intFromFloat(std.math.clamp(
+            want,
+            @as(f32, @floatFromInt(export_min_sub_side)),
+            @as(f32, @floatFromInt(self.max_side)),
+        ));
+    }
+};
+
+fn nowMs() f64 {
+    return @as(f64, @floatFromInt(sdl.SDL_GetTicksNS())) / @as(f64, std.time.ns_per_ms);
+}
+
+///Accumulates sub-tile passes into one command buffer so the GPU isn't drained per draw.
+const ExportBatch = struct {
+    cmd_encoder: wgpu.WGPUCommandEncoder = null,
+    est_ms: f32 = 0,
+    pixels: u64 = 0,
+
+    fn encoder(self: *ExportBatch, ctx: *const Context) !wgpu.WGPUCommandEncoder {
+        if (self.cmd_encoder == null) {
+            self.cmd_encoder = wgpu.wgpuDeviceCreateCommandEncoder(ctx.device, null) orelse
+                return error.EncoderCreationFailed;
+        }
+        return self.cmd_encoder.?;
+    }
+
+    fn discard(self: *ExportBatch) void {
+        if (self.cmd_encoder) |enc| wgpu.wgpuCommandEncoderRelease(enc);
+        self.* = .{};
+    }
+
+    fn flush(self: *ExportBatch, ctx: *const Context, pacer: *ExportPacer, tracker: *ProgressTracker) !void {
+        const enc = self.cmd_encoder orelse return;
+        const cmd_buffer = wgpu.wgpuCommandEncoderFinish(enc, null);
+        wgpu.wgpuCommandEncoderRelease(enc);
+        const pixels = self.pixels;
+        self.* = .{};
+
+        const start_ms = nowMs();
+        wgpu.wgpuQueueSubmit(ctx.queue, 1, &[_]wgpu.WGPUCommandBuffer{cmd_buffer});
+        wgpu.wgpuCommandBufferRelease(cmd_buffer);
+        try waitForQueueIdle(ctx);
+        pacer.observe(@floatCast(nowMs() - start_ms), pixels);
+
+        tracker.tick(pixels);
+        if (tracker.progress) |p| {
+            if (p.cancel_flag) |cf| {
+                if (cf.*) return error.RenderCancelled;
+            }
+        }
+    }
+};
 
 fn waitForQueueIdle(ctx: *const Context) !void {
     var state = WorkDoneState{};
@@ -562,7 +664,7 @@ fn waitForQueueIdle(ctx: *const Context) !void {
         .userdata2 = null,
     };
     _ = wgpu.wgpuQueueOnSubmittedWorkDone(ctx.queue, callback_info);
-    _ = webgpu_context.pollUntil(ctx.instance, &state.done, gpu_work_timeout_spins);
+    _ = webgpu_context.pollUntil(ctx.instance, &state.done, gpu_work_timeout_ms);
     if (!state.done or state.status != wgpu.WGPUQueueWorkDoneStatus_Success) {
         return error.QueueWorkDoneFailed;
     }
@@ -1530,7 +1632,7 @@ pub const FractalRenderer = struct {
             .userdata1 = &map_state,
             .userdata2 = null,
         });
-        _ = webgpu_context.pollUntil(ctx.instance, &map_state.done, gpu_work_timeout_spins);
+        _ = webgpu_context.pollUntil(ctx.instance, &map_state.done, gpu_work_timeout_ms);
         if (!map_state.done or map_state.status != wgpu.WGPUMapAsyncStatus_Success) {
             return error.BufferMapFailed;
         }
@@ -1586,7 +1688,10 @@ pub const FractalRenderer = struct {
         defer self.accel.invalidate();
         defer self.photon_map.invalidate();
 
-        var tracker = ProgressTracker{ .progress = progress, .total = countSubTiles(width, height, tile_dim) * samples.count() };
+        var tracker = ProgressTracker{
+            .progress = progress,
+            .total = @as(u64, width) * height * samples.count(),
+        };
 
         var tile_y: u32 = 0;
         while (tile_y < height) : (tile_y += tile_dim) {
@@ -1663,67 +1768,82 @@ pub const FractalRenderer = struct {
         }) orelse return error.BindGroupCreationFailed;
         defer wgpu.wgpuBindGroupRelease(resolve_bind_group);
 
+        const tile_start_ms = nowMs();
         const tile = tileTransform(full_width, full_height, tile_x, tile_y, tile_w, tile_h);
-        const tile_scale = tile.scale;
-        const tile_bias = tile.bias;
-        const sub_tile_size: u32 = if (samples.is2d()) 1024 else 128;
-        var sub_y: u32 = 0;
-        while (sub_y < tile_h) : (sub_y += sub_tile_size) {
-            const sub_h = @min(sub_tile_size, tile_h - sub_y);
-            var sub_x: u32 = 0;
-            while (sub_x < tile_w) : (sub_x += sub_tile_size) {
-                const sub_w = @min(sub_tile_size, tile_w - sub_x);
+        const is_2d = samples.is2d();
+        var pacer = ExportPacer{
+            .max_side = if (is_2d) export_max_sub_side_2d else export_max_sub_side_3d,
+        };
+        var batch = ExportBatch{};
+        errdefer batch.discard();
+        var cleared = false;
 
-                const sample_count = samples.count();
-                var s: u32 = 0;
-                while (s < sample_count) : (s += 1) {
-                    var uniforms = samples.at(s).*;
-                    uniforms.tile_scale = tile_scale;
-                    uniforms.tile_bias = tile_bias;
-                    uniforms.mc_sample = @floatFromInt(s);
-                    self.stampAccelUniforms(&uniforms);
-                    self.stampPhotonUniforms(&uniforms);
-                    self.stampSkyUniforms(&uniforms);
-                    self.updateUniforms(ctx, uniforms);
+        //samples share one uniform buffer, so a sweep can batch freely but must flush before the next
+        const sample_count = samples.count();
+        var s: u32 = 0;
+        while (s < sample_count) : (s += 1) {
+            var uniforms = samples.at(s).*;
+            uniforms.tile_scale = tile.scale;
+            uniforms.tile_bias = tile.bias;
+            uniforms.mc_sample = @floatFromInt(s);
+            self.stampAccelUniforms(&uniforms);
+            self.stampPhotonUniforms(&uniforms);
+            self.stampSkyUniforms(&uniforms);
+            self.updateUniforms(ctx, uniforms);
 
-                    const encoder = wgpu.wgpuDeviceCreateCommandEncoder(ctx.device, null) orelse return error.EncoderCreationFailed;
-                    const pass = wgpu.wgpuCommandEncoderBeginRenderPass(encoder, &wgpu.WGPURenderPassDescriptor{
-                        .nextInChain = null,
-                        .label = sv("fractal export sub-tile pass"),
-                        .colorAttachmentCount = 1,
-                        .colorAttachments = &[_]wgpu.WGPURenderPassColorAttachment{.{
-                            .nextInChain = null,
-                            .view = export_view,
-                            .depthSlice = wgpu.WGPU_DEPTH_SLICE_UNDEFINED,
-                            .resolveTarget = null,
-                            .loadOp = if (sub_x == 0 and sub_y == 0 and s == 0) wgpu.WGPULoadOp_Clear else wgpu.WGPULoadOp_Load,
-                            .storeOp = wgpu.WGPUStoreOp_Store,
-                            .clearValue = .{ .r = 0, .g = 0, .b = 0, .a = 1 },
-                        }},
-                        .depthStencilAttachment = null,
-                        .occlusionQuerySet = null,
-                        .timestampWrites = null,
-                    }).?;
-                    wgpu.wgpuRenderPassEncoderSetScissorRect(pass, sub_x, sub_y, sub_w, sub_h);
-                    const blend_constant: f32 = 1.0 / @as(f32, @floatFromInt(s + 1));
-                    self.draw(pass, blend_constant, if (samples.is2d()) .slice else .march);
-                    wgpu.wgpuRenderPassEncoderEnd(pass);
-                    wgpu.wgpuRenderPassEncoderRelease(pass);
+            const blend_constant: f32 = 1.0 / @as(f32, @floatFromInt(s + 1));
+            var stack: [64]Rect = undefined;
+            stack[0] = .{ .x = 0, .y = 0, .w = tile_w, .h = tile_h };
+            var stack_len: usize = 1;
 
-                    const cmd_buffer = wgpu.wgpuCommandEncoderFinish(encoder, null);
-                    wgpu.wgpuCommandEncoderRelease(encoder);
-                    wgpu.wgpuQueueSubmit(ctx.queue, 1, &[_]wgpu.WGPUCommandBuffer{cmd_buffer});
-                    wgpu.wgpuCommandBufferRelease(cmd_buffer);
-
-                    try waitForQueueIdle(ctx);
-                    tracker.tick();
-                    if (tracker.progress) |p| {
-                        if (p.cancel_flag) |cf| {
-                            if (cf.*) return error.RenderCancelled;
-                        }
-                    }
+            while (stack_len > 0) {
+                stack_len -= 1;
+                var rect = stack[stack_len];
+                const side = pacer.subTileSide();
+                while ((rect.w > side or rect.h > side) and stack_len < stack.len) {
+                    const halves = rect.split();
+                    stack[stack_len] = halves[1];
+                    stack_len += 1;
+                    rect = halves[0];
                 }
+
+                const encoder = try batch.encoder(ctx);
+                const pass = wgpu.wgpuCommandEncoderBeginRenderPass(encoder, &wgpu.WGPURenderPassDescriptor{
+                    .nextInChain = null,
+                    .label = sv("fractal export sub-tile pass"),
+                    .colorAttachmentCount = 1,
+                    .colorAttachments = &[_]wgpu.WGPURenderPassColorAttachment{.{
+                        .nextInChain = null,
+                        .view = export_view,
+                        .depthSlice = wgpu.WGPU_DEPTH_SLICE_UNDEFINED,
+                        .resolveTarget = null,
+                        //passes run in encode order, so the first one encoded clears the whole tile
+                        .loadOp = if (cleared) wgpu.WGPULoadOp_Load else wgpu.WGPULoadOp_Clear,
+                        .storeOp = wgpu.WGPUStoreOp_Store,
+                        .clearValue = .{ .r = 0, .g = 0, .b = 0, .a = 1 },
+                    }},
+                    .depthStencilAttachment = null,
+                    .occlusionQuerySet = null,
+                    .timestampWrites = null,
+                }).?;
+                cleared = true;
+                wgpu.wgpuRenderPassEncoderSetScissorRect(pass, rect.x, rect.y, rect.w, rect.h);
+                self.draw(pass, blend_constant, if (is_2d) .slice else .march);
+                wgpu.wgpuRenderPassEncoderEnd(pass);
+                wgpu.wgpuRenderPassEncoderRelease(pass);
+
+                batch.pixels += rect.area();
+                batch.est_ms += pacer.estimateMs(rect.area());
+                if (batch.est_ms >= export_batch_target_ms) try batch.flush(ctx, &pacer, tracker);
             }
+
+            try batch.flush(ctx, &pacer, tracker);
+        }
+
+        if (perf_probe.enabled()) {
+            std.debug.print("[perf] export tile {d}x{d} x{d} samples: {d} submits, sub-tile settled at {d}px, {d:.0}ms\n", .{
+                tile_w, tile_h, sample_count, pacer.submits, pacer.side, nowMs() - tile_start_ms,
+            });
         }
 
         const encoder = wgpu.wgpuDeviceCreateCommandEncoder(ctx.device, null) orelse return error.EncoderCreationFailed;
@@ -1788,7 +1908,7 @@ pub const FractalRenderer = struct {
             .userdata2 = null,
         };
         _ = wgpu.wgpuBufferMapAsync(readback_buffer, wgpu.WGPUMapMode_Read, 0, readback_size, callback_info);
-        _ = webgpu_context.pollUntil(ctx.instance, &map_state.done, gpu_work_timeout_spins);
+        _ = webgpu_context.pollUntil(ctx.instance, &map_state.done, gpu_work_timeout_ms);
         if (!map_state.done or map_state.status != wgpu.WGPUMapAsyncStatus_Success) {
             return error.BufferMapFailed;
         }
@@ -1835,6 +1955,19 @@ pub const FractalRenderer = struct {
         self.bindSceneGroups(pass);
         wgpu.wgpuRenderPassEncoderSetBlendConstant(pass, &wgpu.WGPUColor{ .r = blend_constant, .g = blend_constant, .b = blend_constant, .a = 1.0 });
         wgpu.wgpuRenderPassEncoderDraw(pass, 3, 1, 0, 0);
+    }
+
+    //one uniform buffer per renderer, so a second camera in the same frame needs its own submit before the buffer is rewritten
+    pub fn drawOffscreenNow(self: *FractalRenderer, ctx: *const Context, load_existing: bool, blend_constant: f32, mode: RenderMode) void {
+        const encoder = wgpu.wgpuDeviceCreateCommandEncoder(ctx.device, null) orelse return;
+        const pass = self.beginOffscreenPass(encoder, load_existing);
+        self.draw(pass, blend_constant, mode);
+        wgpu.wgpuRenderPassEncoderEnd(pass);
+        wgpu.wgpuRenderPassEncoderRelease(pass);
+        const cmd = wgpu.wgpuCommandEncoderFinish(encoder, null);
+        wgpu.wgpuCommandEncoderRelease(encoder);
+        wgpu.wgpuQueueSubmit(ctx.queue, 1, &[_]wgpu.WGPUCommandBuffer{cmd});
+        wgpu.wgpuCommandBufferRelease(cmd);
     }
 
     fn bindSceneGroups(self: *FractalRenderer, pass: wgpu.WGPURenderPassEncoder) void {
@@ -1932,7 +2065,7 @@ pub const FractalRenderer = struct {
             .userdata2 = null,
         };
         _ = wgpu.wgpuBufferMapAsync(self.pick_buffer, wgpu.WGPUMapMode_Read, 0, 256, callback_info);
-        _ = webgpu_context.pollUntil(ctx.instance, &map_state.done, gpu_work_timeout_spins);
+        _ = webgpu_context.pollUntil(ctx.instance, &map_state.done, gpu_work_timeout_ms);
         if (!map_state.done or map_state.status != wgpu.WGPUMapAsyncStatus_Success) {
             return error.BufferMapFailed;
         }

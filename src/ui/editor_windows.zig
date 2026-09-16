@@ -675,7 +675,7 @@ pub fn buildStereoSettingsWindow(ctx: *nk.nk_context, stereo: *StereoState) void
     const shown = nk.nk_begin(
         ctx,
         "Stereoscopic Settings",
-        nk.nk_rect(420, 220, 320, 260),
+        nk.nk_rect(420, 220, 320, 280),
         @intCast(nk.NK_WINDOW_BORDER | nk.NK_WINDOW_MOVABLE | nk.NK_WINDOW_TITLE | nk.NK_WINDOW_SCALABLE | nk.NK_WINDOW_CLOSABLE),
     );
     if (shown != 0) {
@@ -683,6 +683,12 @@ pub fn buildStereoSettingsWindow(ctx: *nk.nk_context, stereo: *StereoState) void
 
         widgets.sliderFloat(ctx, "Eye separation", &stereo.eye_separation, &stereo.eye_separation_range);
         widgets.sliderFloat(ctx, "Convergence distance", &stereo.convergence_distance, &stereo.convergence_distance_range);
+
+        widgets.separator(ctx);
+
+        nk.nk_layout_row_dynamic(ctx, 22, 1);
+        const preview_now: nk.nk_bool = if (stereo.preview) 1 else 0;
+        stereo.preview = nk.nk_check_label(ctx, "Preview (overlap both eyes)", preview_now) != 0;
 
         widgets.separator(ctx);
     }
@@ -824,6 +830,23 @@ pub fn buildAnimRenderWindow(
             widgets.sliderInt(ctx, "Motion blur samples", &anim_render.motion_blur_samples, &anim_render.motion_blur_samples_range);
         }
         widgets.separator(ctx);
+
+        // Probe lazily so a missing ffmpeg is reported before a long render, not after.
+        const ffmpeg = anim_render.ffmpeg orelse blk: {
+            anim_render.ffmpeg = export_anim.probeFfmpeg(allocator);
+            break :blk anim_render.ffmpeg.?;
+        };
+        var ffmpeg_buf: [96]u8 = undefined;
+        const ffmpeg_text: [:0]const u8 = if (ffmpeg.found)
+            std.fmt.bufPrintSentinel(&ffmpeg_buf, "ffmpeg found ({s}) -- output: anim.mp4", .{ffmpeg.version()}, 0) catch "ffmpeg found"
+        else
+            "ffmpeg not found on PATH -- only PNG frames will be saved";
+        nk.nk_layout_row_dynamic(ctx, 32, 1);
+        nk.nk_label_wrap(ctx, ffmpeg_text.ptr);
+        nk.nk_layout_row_dynamic(ctx, 22, 1);
+        if (nk.nk_button_label(ctx, "Re-check ffmpeg") != 0) {
+            anim_render.ffmpeg = null;
+        }
 
         nk.nk_layout_row_dynamic(ctx, 22, 1);
         var save_frames_val: c_int = if (anim_render.save_frames) 1 else 0;
@@ -1217,6 +1240,7 @@ pub fn buildFractalsListUi(
         nk.nk_layout_row_dynamic(ctx, 22, 1);
         if (nk.nk_button_label(ctx, "Render Anim") != 0) {
             anim_render.window_open = true;
+            anim_render.ffmpeg = null;
         }
 
         widgets.separator(ctx);

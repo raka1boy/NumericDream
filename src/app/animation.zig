@@ -136,6 +136,8 @@ pub const AnimRenderState = struct {
     motion_blur_samples: f32 = 8,
     motion_blur_samples_range: SliderRange = .{ .min = 2, .max = 32 },
     save_frames: bool = false,
+    /// null = probe again on next draw; reset whenever the window opens.
+    ffmpeg: ?@import("export_anim.zig").FfmpegProbe = null,
     status_buf: [200]u8 = undefined,
     status: [:0]const u8 = "",
 };
