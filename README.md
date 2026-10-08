@@ -21,6 +21,8 @@ non-euqlidian space warps
 freefly camera with DoF and stereoscopic render
 MC render for realistic and juicy light
 Video rendering with keyframe animations
+and more but i havent documented that
+
 
 overall i'd say i'm proud of this, as this project taught me a lot about zig, specifically about zig build system, which always was a very difficult thing for me to reason about. 
 
