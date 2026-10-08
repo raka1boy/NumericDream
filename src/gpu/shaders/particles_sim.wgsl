@@ -486,8 +486,9 @@ fn cs_particle_grid_alloc(@builtin(global_invocation_id) gid: vec3u) {
     let a = PD_CELLS + (s * PD_MAX_CELLS + gid.x) * 2u;
     let n = atomicLoad(&particle_rw[a + 1u]);
     if (n > 0u) {
-        atomicStore(&particle_rw[a], atomicAdd(&pcounters[s * PC_WORDS + 8u], n));
+        atomicStore(&particle_rw[a], atomicAdd(&pcounters[s * PC_WORDS + 8u], min(n, PD_CELL_CAP)));
     }
+    atomicStore(&particle_rw[a + 1u], 0u);
 }
 
 @compute @workgroup_size(64)
@@ -501,8 +502,12 @@ fn cs_particle_grid_scatter(@builtin(global_invocation_id) gid: vec3u) {
     for (var z = sp.lo.z; z <= sp.hi.z; z++) {
         for (var y = sp.lo.y; y <= sp.hi.y; y++) {
             for (var x = sp.lo.x; x <= sp.hi.x; x++) {
-                let slot = atomicAdd(&particle_rw[build_cell_addr(s, g, vec3i(x, y, z))], 1u);
-                atomicStore(&particle_rw[PD_INDEX + s * PD_MAX_PARTICLES * PD_INSERTS_PER_PARTICLE + slot], gid.x);
+                let a = build_cell_addr(s, g, vec3i(x, y, z));
+                let k = atomicAdd(&particle_rw[a + 1u], 1u);
+                if (k < PD_CELL_CAP) {
+                    let slot = atomicLoad(&particle_rw[a]) + k;
+                    atomicStore(&particle_rw[PD_INDEX + s * PD_MAX_PARTICLES * PD_INSERTS_PER_PARTICLE + slot], gid.x);
+                }
             }
         }
     }
@@ -516,8 +521,7 @@ fn cs_particle_grid_dist_init(@builtin(global_invocation_id) gid: vec3u) {
         return;
     }
     let a = PD_CELLS + (s * PD_MAX_CELLS + gid.x) * 2u;
-    let n = atomicLoad(&particle_rw[a + 1u]);
-    atomicStore(&particle_rw[a], atomicLoad(&particle_rw[a]) - n);
+    let n = min(atomicLoad(&particle_rw[a + 1u]), PD_CELL_CAP);
     atomicStore(&particle_rw[a + 1u], n | (select(PD_DIST_CAP, 0u, n > 0u) << 16u));
 }
 

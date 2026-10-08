@@ -40,6 +40,7 @@ const PD_RECORDS: u32 = 32u;
 const PD_CELLS: u32 = PD_RECORDS + 2u * PD_MAX_PARTICLES * PD_RECORD_WORDS;
 const PD_INDEX: u32 = PD_CELLS + 2u * PD_MAX_CELLS * 2u;
 const PD_DIST_CAP: u32 = 10u;
+const PD_CELL_CAP: u32 = 32u;
 
 struct IterCarry {
     z: vec3f,
