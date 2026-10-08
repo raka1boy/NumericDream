@@ -235,8 +235,15 @@ const PART_DISPERSION: u32 = 1u << 11u;
 const PART_SKY: u32 = 1u << 12u;
 const PART_DEPTH_OF_FIELD: u32 = 1u << 13u;
 const PART_MC_INDIRECT: u32 = 1u << 14u;
+const PART_GEOMETRY_ONLY: u32 = 1u << 16u;
+
+override PARTS_FIXED: bool = false;
+override PARTS_FIXED_OFF: u32 = 0u;
 
 fn part_on(part: u32) -> bool {
+    if (PARTS_FIXED) {
+        return (PARTS_FIXED_OFF & part) == 0u;
+    }
     return (u32(u.debug_parts) & part) == 0u;
 }
 
@@ -2556,11 +2563,51 @@ const SIMPLE_AMBIENT = 0.18;
 const SIMPLE_BACKGROUND = vec3f(0.10, 0.11, 0.13);
 const SIMPLE_DEPTH_CUE = 0.55;
 
+fn shade_lite(hit_pos: vec3f, dir: vec3f, normal: vec3f, t: f32) -> vec3f {
+    let mat = apply_part_mask(hit_material(hit_pos).mat);
+    let spec_power = mix(4.0, 128.0, clamp(mat.glossiness, 0.0, 1.0));
+    let fresnel = fresnel_schlick(dot(dir, normal), max(mat.ior, 1.0));
+    var diffuse = vec3f(AMBIENT_INTENSITY * calc_ao(hit_pos, normal, t));
+    var specular = vec3f(0.0);
+    let light_count = total_light_count();
+    for (var i = 0; i < light_count; i++) {
+        let ls = light_sample(u.lights[i], hit_pos);
+        let ndotl = max(dot(normal, ls.dir), 0.0);
+        if (ndotl <= 0.0) {
+            continue;
+        }
+        diffuse += ls.color * ndotl;
+        if (part_on(PART_SPECULAR)) {
+            let half_dir = normalize(ls.dir - dir);
+            specular += ls.color * pow(max(dot(normal, half_dir), 0.0), spec_power) * mat.glossiness;
+        }
+    }
+    return (1.0 - fresnel) * (mat.color * diffuse + specular);
+}
+
+fn render_lite(dir: vec3f) -> FragOut {
+    let m = march(u.camera_pos, dir);
+    let dots = particle_dots(u.camera_pos, dir, select(min(u.max_dist, max(m.dist, 0.0)), m.dist, m.hit), false);
+    if (dots.hit_t >= 0.0) {
+        return frag_out(vec4f(dots.emit + dots.hit_color, 0.0), dots.hit_t, -dir);
+    }
+    if (!m.hit) {
+        return frag_out(vec4f(dots.emit + sky_color(dir), 0.0), 0.0, vec3f(0.0));
+    }
+    let hit_pos = u.camera_pos + dir * m.dist;
+    let normal = estimate_normal(hit_pos, m.dist);
+    return frag_out(vec4f(dots.emit + shade_lite(hit_pos, dir, normal, m.dist), 0.0), m.dist, normal);
+}
+
 @fragment
 fn fs_simple(in: VertexOut) -> FragOut {
     let aspect = u.resolution.x / u.resolution.y;
     let uv = vec2f(in.uv.x * aspect, in.uv.y);
     let dir = normalize(u.camera_forward + uv.x * u.camera_right + uv.y * u.camera_up);
+
+    if (part_on(PART_GEOMETRY_ONLY)) {
+        return render_lite(dir);
+    }
 
     let m = march(u.camera_pos, dir);
     if (!m.hit) {
@@ -2827,6 +2874,51 @@ fn fs_main(in: VertexOut) -> FragOut {
     }
 
     return frag_out(vec4f(color, coc_px), g_primary_dist, g_primary_normal);
+}
+
+struct AovOut {
+    @location(0) albedo: vec4f,
+    @location(1) normal: vec4f,
+}
+
+fn aov_albedo(mat: ColorStop) -> vec3f {
+    let specular = clamp(max(mat.reflectiveness, mat.transparency), 0.0, 1.0);
+    return clamp(mix(mat.color, vec3f(1.0), specular), vec3f(0.0), vec3f(1.0));
+}
+
+@fragment
+fn fs_aov(in: VertexOut) -> AovOut {
+    let aspect = u.resolution.x / u.resolution.y;
+    let uv = vec2f(in.uv.x * aspect, in.uv.y);
+    let dir = normalize(u.camera_forward + uv.x * u.camera_right + uv.y * u.camera_up);
+
+    var origin = u.camera_pos;
+    var ray = dir;
+    let lens_sampled = u.mc_enabled > 0.5 || u.high_quality > 0.5;
+    if (lens_sampled && u.dof_enabled > 0.5 && u.aperture > 0.0001 && part_on(PART_DEPTH_OF_FIELD)) {
+        let focus_t = u.focus_distance / max(dot(dir, u.camera_forward), 0.0001);
+        let probe = march(u.camera_pos, dir);
+        let eff_aperture = dof_aperture(select(u.max_dist, probe.dist, probe.hit), focus_t);
+        if (eff_aperture > 0.0001) {
+            let seed = in.clip_pos.xy + vec2f(u.mc_sample * 91.73, u.mc_sample * 57.31);
+            let disk = sample_unit_disk(seed) * eff_aperture;
+            origin = u.camera_pos + u.camera_right * disk.x + u.camera_up * disk.y;
+            ray = normalize(u.camera_pos + dir * focus_t - origin);
+        }
+    }
+
+    var out: AovOut;
+    let m = march(origin, ray);
+    if (!m.hit) {
+        out.albedo = vec4f(clamp(sky_color(ray), vec3f(0.0), vec3f(1.0)), 1.0);
+        out.normal = vec4f(0.0);
+        return out;
+    }
+    let hit_pos = origin + ray * m.dist;
+    let mat = apply_part_mask(hit_material(hit_pos).mat);
+    out.albedo = vec4f(aov_albedo(mat), 1.0);
+    out.normal = vec4f(estimate_normal(hit_pos, m.dist), 1.0);
+    return out;
 }
 
 @group(1) @binding(1) var accel_out: texture_storage_3d<r32float, write>;

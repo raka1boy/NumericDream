@@ -260,6 +260,8 @@ pub fn renderEye(
     );
     prepareParticles(gpu_ctx, fractal, particle_systems, &uniforms);
     fractal.photon_settings = photon;
+    fractal.denoise = mc.denoise;
+    fractal.denoise_strength = mc.denoise_strength;
     const samples = fractal_gpu.SampleSet{ .repeat = .{ .uniforms = uniforms, .count = mcSampleCount(mc, camera.mode_2d) } };
     return fractal.renderToImage(gpu_ctx, &samples, width, height, allocator, progress);
 }

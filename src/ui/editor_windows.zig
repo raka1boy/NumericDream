@@ -41,6 +41,7 @@ const StereoState = @import("../app/stereo.zig").StereoState;
 const render_parts_mod = @import("../app/render_parts.zig");
 const RenderParts = render_parts_mod.RenderParts;
 const McRenderState = @import("../app/mc_render.zig").McRenderState;
+const oidn = @import("../bindings/oidn.zig");
 const ProgressOverlay = @import("../gpu/progress_overlay.zig").ProgressOverlay;
 const accel_gpu = @import("../gpu/accel.zig");
 const AccelState = @import("../app/accel_state.zig").AccelState;
@@ -482,7 +483,6 @@ pub fn buildFogEmitterEditorWindow(ctx: *nk.nk_context, fog: *FogEmitterState, i
         widgets.colorPickerCombo(ctx, &fog.color);
 
         widgets.separator(ctx);
-
     }
     nk.nk_end(ctx);
     if (nk.nk_window_is_closed(ctx, title.ptr) != 0) {
@@ -967,7 +967,7 @@ pub fn buildStereoSettingsWindow(ctx: *nk.nk_context, stereo: *StereoState) void
     }
 }
 
-pub fn buildRenderPartsWindow(ctx: *nk.nk_context, parts: *RenderParts) void {
+pub fn buildRenderPartsWindow(ctx: *nk.nk_context, parts: *RenderParts, specialising: bool) void {
     if (!parts.window_open) return;
 
     const shown = nk.nk_begin(
@@ -980,6 +980,18 @@ pub fn buildRenderPartsWindow(ctx: *nk.nk_context, parts: *RenderParts) void {
         nk.nk_layout_row_dynamic(ctx, 22, 1);
         const geo_now: nk.nk_bool = if (parts.geometry_only) 1 else 0;
         parts.geometry_only = nk.nk_check_label(ctx, "Geometry only (fast)", geo_now) != 0;
+        if (!parts.geometry_only) {
+            const fast = parts.liteOnly();
+            const note: [:0]const u8 = if (fast)
+                "Fast path: only local shading parts are on, so this renders with the quick shader."
+            else if (specialising)
+                "Full path. Compiling a shader with the unticked parts left out; the view speeds up when it is ready."
+            else
+                "Full path, with the unticked parts compiled out. Leave only Colour strips, Direct lights, Specular, AO, Sky and Screen shaders on for the fast path.";
+            const lines: f32 = @floatFromInt((note.len + 39) / 40);
+            nk.nk_layout_row_dynamic(ctx, 4 + 14 * lines, 1);
+            nk.nk_label_colored_wrap(ctx, note.ptr, if (fast) nk.nk_rgb(120, 200, 120) else nk.nk_rgb(160, 160, 160));
+        }
         widgets.separator(ctx);
 
         nk.nk_layout_row_dynamic(ctx, 22, 2);
@@ -1463,15 +1475,14 @@ fn buildPlaySection(ctx: *nk.nk_context, play: *PlayState, camera: *FreeCamera) 
     play.enabled = nk.nk_check_label(ctx, "Play mode", play_now) != 0;
     if (play.enabled) {
         camera.mode_2d = false;
-        var buf: [96]u8 = undefined;
-        const line: [:0]const u8 = std.fmt.bufPrintSentinel(&buf, "{s}{s}", .{
-            play.stateLabel(),
-            if (play.captured) "  (Esc frees the mouse)" else "  (click the view to play)",
-        }, 0) catch "";
-        nk.nk_layout_row_dynamic(ctx, 16, 1);
-        nk.nk_label(ctx, line.ptr, @intCast(nk.NK_TEXT_LEFT));
-        nk.nk_layout_row_dynamic(ctx, 72, 1);
-        nk.nk_label_wrap(ctx, "WASD walk, mouse looks, Space jumps. Double-tap Space to fly (Space/Shift up/down). Z/C shrink/grow you. Left click carves a hole for 10 s. Gravity pulls towards the nearest surface.");
+        // var buf: [96]u8 = undefined;
+        // const line: [:0]const u8 = std.fmt.bufPrintSentinel(&buf, "{s}{s}", .{
+        //     play.stateLabel(),
+        //     if (play.captured) "  (Esc frees the mouse)" else "  (click the view to play)",
+        // }, 0) catch "";
+        // nk.nk_layout_row_dynamic(ctx, 16, 1);
+        // nk.nk_label(ctx, line.ptr, @intCast(nk.NK_TEXT_LEFT));
+        // nk.nk_layout_row_dynamic(ctx, 72, 1);
     } else if (play.status.len > 0) {
         nk.nk_layout_row_dynamic(ctx, 30, 1);
         nk.nk_label_colored_wrap(ctx, play.status.ptr, nk.nk_rgb(220, 120, 100));
@@ -1627,6 +1638,22 @@ pub fn buildFractalsListUi(
             const sample_label: [:0]const u8 = std.fmt.bufPrintSentinel(&sample_buf, "Samples: {d} / {d}", .{ mc_sample_count, @as(u32, @intFromFloat(@max(mc.max_samples, 1))) }, 0) catch "Samples";
             nk.nk_layout_row_dynamic(ctx, 16, 1);
             nk.nk_label(ctx, sample_label.ptr, @intCast(nk.NK_TEXT_LEFT));
+        }
+
+        nk.nk_layout_row_dynamic(ctx, 22, 1);
+        const denoise_now: nk.nk_bool = if (mc.denoise) 1 else 0;
+        mc.denoise = nk.nk_check_label(ctx, "Denoise exports (CPU)", denoise_now) != 0;
+        nk.nk_layout_row_dynamic(ctx, 22, 1);
+        const denoise_preview_now: nk.nk_bool = if (mc.denoise_preview) 1 else 0;
+        mc.denoise_preview = nk.nk_check_label(ctx, "Denoise preview (CPU)", denoise_preview_now) != 0;
+        if (mc.denoise or mc.denoise_preview) {
+            widgets.sliderFloat(ctx, "Denoise strength", &mc.denoise_strength, &mc.denoise_strength_range);
+        }
+        if ((mc.denoise or mc.denoise_preview) and !oidn.available()) {
+            var reason_buf: [128]u8 = undefined;
+            const reason: [:0]const u8 = std.fmt.bufPrintSentinel(&reason_buf, "Denoiser unavailable: {s}", .{oidn.unavailableReason()}, 0) catch "Denoiser unavailable";
+            nk.nk_layout_row_dynamic(ctx, 16, 1);
+            nk.nk_label(ctx, reason.ptr, @intCast(nk.NK_TEXT_LEFT));
         }
 
         widgets.separator(ctx);

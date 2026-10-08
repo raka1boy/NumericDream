@@ -432,6 +432,24 @@ pub fn build(b: *std.Build) void {
     );
     b.getInstallStep().dependOn(&install_lib.step);
 
+    if (t.os.tag == .windows) {
+        if (b.lazyDependency("oidn_windows_x86_64", .{})) |oidn| {
+            for ([_][]const u8{
+                "OpenImageDenoise.dll",
+                "OpenImageDenoise_core.dll",
+                "OpenImageDenoise_device_cpu.dll",
+                "tbb12.dll",
+            }) |dll| {
+                const install_dll = b.addInstallFileWithDir(oidn.path(b.fmt("bin/{s}", .{dll})), .bin, dll);
+                b.getInstallStep().dependOn(&install_dll.step);
+            }
+            const install_license = b.addInstallFileWithDir(oidn.path("doc/LICENSE.txt"), .bin, "OpenImageDenoise-LICENSE.txt");
+            b.getInstallStep().dependOn(&install_license.step);
+            const install_notices = b.addInstallFileWithDir(oidn.path("doc/third-party-programs-oneTBB.txt"), .bin, "OpenImageDenoise-third-party-oneTBB.txt");
+            b.getInstallStep().dependOn(&install_notices.step);
+        }
+    }
+
     const install_formulas = b.addInstallDirectory(.{
         .source_dir = b.path("formulas"),
         .install_dir = .bin,

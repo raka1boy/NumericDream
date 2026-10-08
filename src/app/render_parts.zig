@@ -56,7 +56,7 @@ pub fn info(part: Part) PartInfo {
         .direct_lights => .{ .label = "Direct lights", .group = .light, .off_hint = "No light from the light list, on surfaces or in fog. What remains is ambient, sky and the photon map." },
         .shadows => .{ .label = "Shadows", .group = .light, .off_hint = "Every surface and every fog step sees every light unoccluded." },
         .ambient_occlusion => .{ .label = "Ambient occlusion", .group = .light, .off_hint = "The ambient term is flat everywhere." },
-        .photon_map => .{ .label = "Photon map", .group = .light, .off_hint = "Gathers nothing: no caustics or bounced light. Shadow rays go back to passing through glass themselves. The map is still traced, so switching it back on is instant." },
+        .photon_map => .{ .label = "Photon map", .group = .light, .off_hint = "Gathers nothing: no caustics or bounced light. Shadow rays go back to passing through glass themselves. The map is not traced while this is off, so switching it back on takes a moment." },
         .sky => .{ .label = "Sky", .group = .light, .off_hint = "Black behind the scene and no sky light on surfaces." },
         .fog => .{ .label = "Fog", .group = .transport, .off_hint = "Fog emitters neither glow nor block anything." },
         .reflections => .{ .label = "Reflections", .group = .transport, .off_hint = "Reflective surfaces show only their own shading; the reflected share of the light is dropped, so grazing angles darken a little." },
@@ -68,6 +68,15 @@ pub fn info(part: Part) PartInfo {
     };
 }
 
+pub fn lite(part: Part) bool {
+    return switch (part) {
+        .color_strips, .direct_lights, .specular, .ambient_occlusion, .sky, .screen_shaders => true,
+        else => false,
+    };
+}
+
+const geometry_only_bit: u32 = 1 << 16;
+
 pub const RenderParts = struct {
     enabled: bool = false,
     window_open: bool = false,
@@ -76,6 +85,18 @@ pub const RenderParts = struct {
 
     pub fn geometryOnly(self: RenderParts) bool {
         return self.enabled and self.geometry_only;
+    }
+
+    pub fn liteOnly(self: RenderParts) bool {
+        for (std.enums.values(Part)) |part| {
+            if (self.isOn(part) and !lite(part)) return false;
+        }
+        return true;
+    }
+
+    pub fn fastPath(self: RenderParts, ft_view: bool) bool {
+        if (!self.enabled) return false;
+        return self.geometry_only or (!ft_view and self.liteOnly());
     }
 
     pub fn isOn(self: RenderParts, part: Part) bool {
@@ -91,12 +112,18 @@ pub const RenderParts = struct {
     }
 
     pub fn mask(self: RenderParts) u32 {
-        if (!self.enabled or self.geometry_only) return 0;
+        if (!self.enabled) return 0;
+        if (self.geometry_only) return geometry_only_bit;
         var bits: u32 = 0;
         for (std.enums.values(Part)) |part| {
             if (!self.isOn(part)) bits |= part.bit();
         }
         return bits;
+    }
+
+    pub fn shaderMask(self: RenderParts) u32 {
+        if (self.geometry_only) return 0;
+        return self.mask() & (Part.screen_shaders.bit() - 1);
     }
 
     pub fn maskUniform(self: RenderParts) f32 {
@@ -110,9 +137,28 @@ test "mask bits follow the enum order and clear when the feature is off" {
     parts.set(.shadows, false);
     parts.set(.fog, false);
     try std.testing.expectEqual((@as(u32, 1) << 3) | (@as(u32, 1) << 5), parts.mask());
+    parts.set(.screen_shaders, false);
+    try std.testing.expectEqual((@as(u32, 1) << 3) | (@as(u32, 1) << 5), parts.shaderMask());
     parts.geometry_only = true;
-    try std.testing.expectEqual(@as(u32, 0), parts.mask());
+    try std.testing.expectEqual(geometry_only_bit, parts.mask());
+    try std.testing.expectEqual(@as(u32, 0), parts.shaderMask());
     parts.geometry_only = false;
     parts.enabled = false;
     try std.testing.expectEqual(@as(u32, 0), parts.mask());
+}
+
+test "fast path covers geometry only and lite-only part sets" {
+    var parts = RenderParts{ .enabled = true, .geometry_only = false };
+    try std.testing.expect(!parts.fastPath(false));
+    parts.setAll(false);
+    parts.set(.color_strips, true);
+    parts.set(.direct_lights, true);
+    try std.testing.expect(parts.fastPath(false));
+    try std.testing.expect(!parts.fastPath(true));
+    parts.set(.shadows, true);
+    try std.testing.expect(!parts.fastPath(false));
+    parts.geometry_only = true;
+    try std.testing.expect(parts.fastPath(true));
+    parts.enabled = false;
+    try std.testing.expect(!parts.fastPath(false));
 }

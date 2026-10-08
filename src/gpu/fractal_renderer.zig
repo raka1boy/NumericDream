@@ -18,10 +18,12 @@ pub const mesher = @import("mesher.zig");
 pub const particles = @import("particles.zig");
 const ParticleGpu = particles.ParticleGpu;
 const PostChain = post_process.PostChain;
+const PartsPipelines = @import("parts_pipelines.zig").PartsPipelines;
 const photon_state = @import("../app/photon_state.zig");
 const accel_state = @import("../app/accel_state.zig");
 const sky_state = @import("../app/sky.zig");
 const perf_probe = @import("../app/perf_probe.zig");
+const oidn = @import("../bindings/oidn.zig");
 
 const shader_template = @embedFile("shaders/template.wgsl");
 const particles_sim_source = @embedFile("shaders/particles_sim.wgsl");
@@ -43,7 +45,7 @@ pub const uniform_ring_slots: u32 = 32;
 
 const hdr_format = wgpu.WGPUTextureFormat_RGBA16Float;
 
-fn accumFormat(ctx: *const Context) wgpu.WGPUTextureFormat {
+pub fn accumFormat(ctx: *const Context) wgpu.WGPUTextureFormat {
     return if (ctx.float32_accum) wgpu.WGPUTextureFormat_RGBA32Float else hdr_format;
 }
 
@@ -51,6 +53,11 @@ const select_format = wgpu.WGPUTextureFormat_R8Unorm;
 
 const depth_format = wgpu.WGPUTextureFormat_R32Float;
 const normal_format = wgpu.WGPUTextureFormat_RGBA16Float;
+
+const aov_format = wgpu.WGPUTextureFormat_RGBA16Float;
+const aov_bytes_per_pixel: u32 = 8;
+const aov_max_samples: u32 = 16;
+const aov_sub_side: u32 = 512;
 
 pub const builtin_formula_source = @embedFile("shaders/mandelbrot.wgsl");
 
@@ -618,7 +625,9 @@ const ProgressTracker = struct {
     }
 };
 
-fn tileTransform(full_width: u32, full_height: u32, tile_x: u32, tile_y: u32, tile_w: u32, tile_h: u32) struct { scale: [2]f32, bias: [2]f32 } {
+const TileTransform = struct { scale: [2]f32, bias: [2]f32 };
+
+fn tileTransform(full_width: u32, full_height: u32, tile_x: u32, tile_y: u32, tile_w: u32, tile_h: u32) TileTransform {
     const fw: f32 = @floatFromInt(@max(full_width, 1));
     const fh: f32 = @floatFromInt(@max(full_height, 1));
     const tw: f32 = @floatFromInt(tile_w);
@@ -883,6 +892,7 @@ const PipelinePair = struct {
     alloc_photons: wgpu.WGPUComputePipeline = null,
     scatter_photons: wgpu.WGPUComputePipeline = null,
     aim_photons: wgpu.WGPUComputePipeline = null,
+    aov: wgpu.WGPURenderPipeline = null,
     build_fft_voxelize: wgpu.WGPUComputePipeline = null,
     build_fft_axis_seed: wgpu.WGPUComputePipeline = null,
     build_fft_axis_complex: wgpu.WGPUComputePipeline = null,
@@ -925,6 +935,7 @@ const PipelinePair = struct {
         if (self.alloc_photons != null) wgpu.wgpuComputePipelineRelease(self.alloc_photons);
         if (self.scatter_photons != null) wgpu.wgpuComputePipelineRelease(self.scatter_photons);
         if (self.aim_photons != null) wgpu.wgpuComputePipelineRelease(self.aim_photons);
+        if (self.aov != null) wgpu.wgpuRenderPipelineRelease(self.aov);
         if (self.build_fft_voxelize != null) wgpu.wgpuComputePipelineRelease(self.build_fft_voxelize);
         if (self.build_fft_axis_seed != null) wgpu.wgpuComputePipelineRelease(self.build_fft_axis_seed);
         if (self.build_fft_axis_complex != null) wgpu.wgpuComputePipelineRelease(self.build_fft_axis_complex);
@@ -1143,6 +1154,10 @@ pub const FractalRenderer = struct {
 
     variant: ShaderVariant = .{},
 
+    denoise: bool = false,
+    denoise_strength: f32 = 1.0,
+    display_override: ?wgpu.WGPUBindGroup = null,
+
     particles: ParticleGpu,
     particle_sim_pipeline_layout: wgpu.WGPUPipelineLayout,
     particle_build_pipeline_layout: wgpu.WGPUPipelineLayout,
@@ -1153,6 +1168,7 @@ pub const FractalRenderer = struct {
     cache_clock: u64 = 0,
 
     pending: ?PendingRebuild = null,
+    parts: PartsPipelines = .{},
     last_err_buf: [512]u8 = undefined,
     last_err_len: usize = 0,
 
@@ -1533,6 +1549,7 @@ pub const FractalRenderer = struct {
             p.shared.allocator.destroy(p.shared);
             self.pending = null;
         }
+        self.parts.deinit();
 
         for (self.pipeline_cache) |slot| {
             if (slot) |entry| entry.pipelines.release();
@@ -1589,7 +1606,7 @@ pub const FractalRenderer = struct {
         const new_texture = wgpu.wgpuDeviceCreateTexture(ctx.device, &wgpu.WGPUTextureDescriptor{
             .nextInChain = null,
             .label = sv("fractal offscreen"),
-            .usage = wgpu.WGPUTextureUsage_RenderAttachment | wgpu.WGPUTextureUsage_TextureBinding,
+            .usage = wgpu.WGPUTextureUsage_RenderAttachment | wgpu.WGPUTextureUsage_TextureBinding | wgpu.WGPUTextureUsage_CopySrc,
             .dimension = wgpu.WGPUTextureDimension_2D,
             .size = .{ .width = w, .height = h, .depthOrArrayLayers = 1 },
             .format = accumFormat(ctx),
@@ -1667,6 +1684,18 @@ pub const FractalRenderer = struct {
     }
 
     fn createPipeline(ctx: *const Context, pipeline_layout: wgpu.WGPUPipelineLayout, module: wgpu.WGPUShaderModule, label: []const u8, fragment_entry: []const u8, target_format: wgpu.WGPUTextureFormat, enable_blend: bool, gbuffer: bool) wgpu.WGPURenderPipeline {
+        return createPipelineWith(ctx, pipeline_layout, module, label, fragment_entry, target_format, enable_blend, gbuffer, &.{});
+    }
+
+    pub fn createPartsPipeline(ctx: *const Context, pipeline_layout: wgpu.WGPUPipelineLayout, module: wgpu.WGPUShaderModule, parts_off: u32) wgpu.WGPURenderPipeline {
+        const constants = [_]wgpu.WGPUConstantEntry{
+            .{ .nextInChain = null, .key = sv("PARTS_FIXED"), .value = 1 },
+            .{ .nextInChain = null, .key = sv("PARTS_FIXED_OFF"), .value = @floatFromInt(parts_off) },
+        };
+        return createPipelineWith(ctx, pipeline_layout, module, "fractal parts pipeline", "fs_main", accumFormat(ctx), true, true, &constants);
+    }
+
+    fn createPipelineWith(ctx: *const Context, pipeline_layout: wgpu.WGPUPipelineLayout, module: wgpu.WGPUShaderModule, label: []const u8, fragment_entry: []const u8, target_format: wgpu.WGPUTextureFormat, enable_blend: bool, gbuffer: bool, constants: []const wgpu.WGPUConstantEntry) wgpu.WGPURenderPipeline {
         const blend_state = wgpu.WGPUBlendState{
             .color = .{ .operation = wgpu.WGPUBlendOperation_Add, .srcFactor = wgpu.WGPUBlendFactor_Constant, .dstFactor = wgpu.WGPUBlendFactor_OneMinusConstant },
             .alpha = .{ .operation = wgpu.WGPUBlendOperation_Add, .srcFactor = wgpu.WGPUBlendFactor_One, .dstFactor = wgpu.WGPUBlendFactor_Zero },
@@ -1701,8 +1730,8 @@ pub const FractalRenderer = struct {
                 .nextInChain = null,
                 .module = module,
                 .entryPoint = sv(fragment_entry),
-                .constantCount = 0,
-                .constants = null,
+                .constantCount = constants.len,
+                .constants = if (constants.len > 0) constants.ptr else null,
                 .targetCount = if (gbuffer) color_targets.len else 1,
                 .targets = &color_targets,
             },
@@ -1769,6 +1798,63 @@ pub const FractalRenderer = struct {
         std.debug.print("[photons] built aim pipeline in {d}ms\n", .{sdl.SDL_GetTicks() -| started});
 
         self.pipelines.aim_photons = pipeline;
+        for (&self.pipeline_cache) |*slot| {
+            if (slot.*) |*entry| {
+                if (entry.pipelines.march == self.pipelines.march) entry.pipelines = self.pipelines;
+            }
+        }
+    }
+
+    fn createAovPipeline(ctx: *const Context, layout: wgpu.WGPUPipelineLayout, module: wgpu.WGPUShaderModule) wgpu.WGPURenderPipeline {
+        const average = wgpu.WGPUBlendComponent{ .operation = wgpu.WGPUBlendOperation_Add, .srcFactor = wgpu.WGPUBlendFactor_Constant, .dstFactor = wgpu.WGPUBlendFactor_OneMinusConstant };
+        const blend_state = wgpu.WGPUBlendState{ .color = average, .alpha = average };
+        const targets = [_]wgpu.WGPUColorTargetState{
+            .{ .nextInChain = null, .format = aov_format, .blend = &blend_state, .writeMask = wgpu.WGPUColorWriteMask_All },
+            .{ .nextInChain = null, .format = aov_format, .blend = &blend_state, .writeMask = wgpu.WGPUColorWriteMask_All },
+        };
+        return wgpu.wgpuDeviceCreateRenderPipeline(ctx.device, &wgpu.WGPURenderPipelineDescriptor{
+            .nextInChain = null,
+            .label = sv("fractal denoise aov pipeline"),
+            .layout = layout,
+            .vertex = .{
+                .nextInChain = null,
+                .module = module,
+                .entryPoint = sv("vs_main"),
+                .constantCount = 0,
+                .constants = null,
+                .bufferCount = 0,
+                .buffers = null,
+            },
+            .primitive = webgpu_context.default_primitive_state,
+            .depthStencil = null,
+            .multisample = webgpu_context.default_multisample_state,
+            .fragment = &wgpu.WGPUFragmentState{
+                .nextInChain = null,
+                .module = module,
+                .entryPoint = sv("fs_aov"),
+                .constantCount = 0,
+                .constants = null,
+                .targetCount = targets.len,
+                .targets = &targets,
+            },
+        });
+    }
+
+    pub fn ensureAovPipeline(self: *FractalRenderer, ctx: *const Context) !void {
+        if (self.pipelines.aov != null) return;
+        const module = self.pipelines.module orelse return error.DenoiserNotReady;
+        const started = sdl.SDL_GetTicks();
+        g_error_sink.reset();
+        const pipeline = createAovPipeline(ctx, self.pipeline_layout, module);
+        wgpu.wgpuInstanceProcessEvents(ctx.instance);
+        wgpu.wgpuInstanceProcessEvents(ctx.instance);
+        if (pipeline == null or g_error_sink.has_error) {
+            if (pipeline != null) wgpu.wgpuRenderPipelineRelease(pipeline);
+            return error.PipelineCreationFailed;
+        }
+        std.debug.print("[denoise] built albedo/normal pipeline in {d}ms\n", .{sdl.SDL_GetTicks() -| started});
+
+        self.pipelines.aov = pipeline;
         for (&self.pipeline_cache) |*slot| {
             if (slot.*) |*entry| {
                 if (entry.pipelines.march == self.pipelines.march) entry.pipelines = self.pipelines;
@@ -2006,6 +2092,7 @@ pub const FractalRenderer = struct {
     }
 
     pub fn rebuild(self: *FractalRenderer, ctx: *const Context, allocator: std.mem.Allocator, formula_sources: [max_instances][]const u8, mixin_sources: [max_instances][max_mixins][]const u8) !void {
+        self.parts.waitIdle();
         const hash = hashSources(formula_sources, mixin_sources, self.variant);
         if (self.findCachedPipeline(hash)) |pipelines| {
             std.debug.print("[stage] rebuild: cache hit (hash={x})\n", .{hash});
@@ -2023,6 +2110,7 @@ pub const FractalRenderer = struct {
     }
 
     pub fn rebuildAsync(self: *FractalRenderer, ctx: *const Context, allocator: std.mem.Allocator, formula_sources: [max_instances][]const u8, mixin_sources: [max_instances][max_mixins][]const u8, requester: ?*anyopaque) !RebuildStart {
+        self.parts.waitIdle();
         const hash = hashSources(formula_sources, mixin_sources, self.variant);
         if (self.findCachedPipeline(hash)) |pipelines| {
             std.debug.print("[stage] rebuildAsync: cache hit (hash={x})\n", .{hash});
@@ -2519,7 +2607,7 @@ pub const FractalRenderer = struct {
             tile_dim /= 2;
         }
 
-        if (self.post_effect_count > 0 and tile_dim < @max(width, height)) {
+        if ((self.post_effect_count > 0 or self.denoiseWanted(samples)) and tile_dim < @max(width, height)) {
             const padded_row = ((width * bytes_per_pixel + row_align - 1) / row_align) * row_align;
             const one_tile = @max(width, height);
             if (one_tile <= ctx.limits.maxTextureDimension2D and
@@ -2529,7 +2617,7 @@ pub const FractalRenderer = struct {
                 tile_dim = one_tile;
             } else {
                 std.debug.print(
-                    "[post] {d}x{d} is too large to render in one piece; screen-space effects will seam at {d}px tile edges\n",
+                    "[export] {d}x{d} is too large to render in one piece; screen-space effects and denoising will seam at {d}px tile edges\n",
                     .{ width, height, tile_dim },
                 );
             }
@@ -2595,7 +2683,8 @@ pub const FractalRenderer = struct {
         const export_texture = wgpu.wgpuDeviceCreateTexture(ctx.device, &wgpu.WGPUTextureDescriptor{
             .nextInChain = null,
             .label = sv("fractal export tile texture"),
-            .usage = wgpu.WGPUTextureUsage_RenderAttachment | wgpu.WGPUTextureUsage_TextureBinding,
+            .usage = wgpu.WGPUTextureUsage_RenderAttachment | wgpu.WGPUTextureUsage_TextureBinding |
+                wgpu.WGPUTextureUsage_CopySrc | wgpu.WGPUTextureUsage_CopyDst,
             .dimension = wgpu.WGPUTextureDimension_2D,
             .size = .{ .width = tile_w, .height = tile_h, .depthOrArrayLayers = 1 },
             .format = accumFormat(ctx),
@@ -2712,6 +2801,12 @@ pub const FractalRenderer = struct {
             });
         }
 
+        if (self.denoiseWanted(samples)) {
+            self.denoiseTile(ctx, samples, tile, export_texture, tile_w, tile_h) catch |err| {
+                std.debug.print("[denoise] tile {d}x{d} left noisy ({s})\n", .{ tile_w, tile_h, @errorName(err) });
+            };
+        }
+
         const encoder = wgpu.wgpuDeviceCreateCommandEncoder(ctx.device, null) orelse return error.EncoderCreationFailed;
 
         var tile_post = post_process.Targets{};
@@ -2812,6 +2907,240 @@ pub const FractalRenderer = struct {
         wgpu.wgpuBufferUnmap(readback_buffer);
     }
 
+    fn denoiseWanted(self: *const FractalRenderer, samples: *const SampleSet) bool {
+        return self.denoise and !samples.is2d() and oidn.available();
+    }
+
+    fn aovSampleCount(samples: *const SampleSet) u32 {
+        const first = samples.at(0);
+        const lens = first.dof_enabled > 0.5 and first.aperture > 0.0001;
+        const moving = std.meta.activeTag(samples.*) == .per_sample;
+        return if (lens or moving) @min(samples.count(), aov_max_samples) else 1;
+    }
+
+    pub fn createAovTexture(ctx: *const Context, label: []const u8, w: u32, h: u32) wgpu.WGPUTexture {
+        return wgpu.wgpuDeviceCreateTexture(ctx.device, &wgpu.WGPUTextureDescriptor{
+            .nextInChain = null,
+            .label = sv(label),
+            .usage = wgpu.WGPUTextureUsage_RenderAttachment | wgpu.WGPUTextureUsage_CopySrc,
+            .dimension = wgpu.WGPUTextureDimension_2D,
+            .size = .{ .width = w, .height = h, .depthOrArrayLayers = 1 },
+            .format = aov_format,
+            .mipLevelCount = 1,
+            .sampleCount = 1,
+            .viewFormatCount = 0,
+            .viewFormats = null,
+        });
+    }
+
+    pub fn encodeAovPass(
+        self: *FractalRenderer,
+        encoder: wgpu.WGPUCommandEncoder,
+        albedo_view: wgpu.WGPUTextureView,
+        normal_view: wgpu.WGPUTextureView,
+        load_existing: bool,
+        slot: u32,
+        blend: f64,
+        scissor: ?Rect,
+    ) void {
+        const attachments = [_]wgpu.WGPURenderPassColorAttachment{
+            colorAttachment(albedo_view, load_existing),
+            colorAttachment(normal_view, load_existing),
+        };
+        const pass = wgpu.wgpuCommandEncoderBeginRenderPass(encoder, &wgpu.WGPURenderPassDescriptor{
+            .nextInChain = null,
+            .label = sv("fractal denoise aov pass"),
+            .colorAttachmentCount = attachments.len,
+            .colorAttachments = &attachments,
+            .depthStencilAttachment = null,
+            .occlusionQuerySet = null,
+            .timestampWrites = null,
+        }).?;
+        if (scissor) |r| wgpu.wgpuRenderPassEncoderSetScissorRect(pass, r.x, r.y, r.w, r.h);
+        wgpu.wgpuRenderPassEncoderSetPipeline(pass, self.pipelines.aov);
+        self.bindSceneGroupsSlot(pass, slot);
+        wgpu.wgpuRenderPassEncoderSetBlendConstant(pass, &wgpu.WGPUColor{ .r = blend, .g = blend, .b = blend, .a = blend });
+        wgpu.wgpuRenderPassEncoderDraw(pass, 3, 1, 0, 0);
+        wgpu.wgpuRenderPassEncoderEnd(pass);
+        wgpu.wgpuRenderPassEncoderRelease(pass);
+    }
+
+    fn renderAovs(
+        self: *FractalRenderer,
+        ctx: *const Context,
+        samples: *const SampleSet,
+        tile: TileTransform,
+        albedo_view: wgpu.WGPUTextureView,
+        normal_view: wgpu.WGPUTextureView,
+        tile_w: u32,
+        tile_h: u32,
+        aov_samples: u32,
+    ) !void {
+        const count = samples.count();
+        var cleared = false;
+        var k: u32 = 0;
+        while (k < aov_samples) : (k += 1) {
+            const index = k * count / aov_samples;
+            var uniforms = samples.at(index).*;
+            uniforms.tile_scale = tile.scale;
+            uniforms.tile_bias = tile.bias;
+            uniforms.mc_sample = @floatFromInt(index);
+            self.stampAccelUniforms(&uniforms);
+            self.stampPhotonUniforms(&uniforms);
+            self.stampSkyUniforms(&uniforms);
+            const slot = k % uniform_ring_slots;
+            self.writeUniformSlot(ctx, slot, uniforms);
+            const blend: f64 = 1.0 / @as(f64, @floatFromInt(k + 1));
+
+            var y: u32 = 0;
+            while (y < tile_h) : (y += aov_sub_side) {
+                var x: u32 = 0;
+                while (x < tile_w) : (x += aov_sub_side) {
+                    const encoder = wgpu.wgpuDeviceCreateCommandEncoder(ctx.device, null) orelse return error.EncoderCreationFailed;
+                    self.encodeAovPass(encoder, albedo_view, normal_view, cleared, slot, blend, .{
+                        .x = x,
+                        .y = y,
+                        .w = @min(aov_sub_side, tile_w - x),
+                        .h = @min(aov_sub_side, tile_h - y),
+                    });
+                    cleared = true;
+
+                    const cmd = wgpu.wgpuCommandEncoderFinish(encoder, null);
+                    wgpu.wgpuCommandEncoderRelease(encoder);
+                    wgpu.wgpuQueueSubmit(ctx.queue, 1, &cmd);
+                    wgpu.wgpuCommandBufferRelease(cmd);
+                }
+            }
+        }
+        try waitForQueueIdle(ctx);
+    }
+
+    fn denoiseTile(
+        self: *FractalRenderer,
+        ctx: *const Context,
+        samples: *const SampleSet,
+        tile: TileTransform,
+        color_texture: wgpu.WGPUTexture,
+        tile_w: u32,
+        tile_h: u32,
+    ) !void {
+        const started_ms = nowMs();
+        try self.ensureAovPipeline(ctx);
+
+        const albedo_texture = createAovTexture(ctx, "fractal denoise albedo", tile_w, tile_h) orelse return error.TextureCreationFailed;
+        defer wgpu.wgpuTextureRelease(albedo_texture);
+        const normal_texture = createAovTexture(ctx, "fractal denoise normal", tile_w, tile_h) orelse return error.TextureCreationFailed;
+        defer wgpu.wgpuTextureRelease(normal_texture);
+        const albedo_view = wgpu.wgpuTextureCreateView(albedo_texture, null) orelse return error.TextureViewCreationFailed;
+        defer wgpu.wgpuTextureViewRelease(albedo_view);
+        const normal_view = wgpu.wgpuTextureCreateView(normal_texture, null) orelse return error.TextureViewCreationFailed;
+        defer wgpu.wgpuTextureViewRelease(normal_view);
+
+        const aov_samples = aovSampleCount(samples);
+        try self.renderAovs(ctx, samples, tile, albedo_view, normal_view, tile_w, tile_h, aov_samples);
+        const aov_done_ms = nowMs();
+
+        const color_bpp: u32 = if (ctx.float32_accum) 16 else 8;
+        const textures = [3]wgpu.WGPUTexture{ color_texture, albedo_texture, normal_texture };
+        const bpps = [3]u32{ color_bpp, aov_bytes_per_pixel, aov_bytes_per_pixel };
+        var rows: [3]u32 = undefined;
+        var sizes: [3]u64 = undefined;
+        var buffers: [3]wgpu.WGPUBuffer = .{ null, null, null };
+        var mapped: [3]bool = .{ false, false, false };
+        defer for (buffers, mapped) |buffer, is_mapped| {
+            if (buffer == null) continue;
+            if (is_mapped) wgpu.wgpuBufferUnmap(buffer);
+            wgpu.wgpuBufferRelease(buffer);
+        };
+
+        for (0..3) |i| {
+            rows[i] = std.mem.alignForward(u32, tile_w * bpps[i], 256);
+            sizes[i] = @as(u64, rows[i]) * tile_h;
+            if (sizes[i] > ctx.limits.maxBufferSize) return error.TileTooLargeToDenoise;
+            buffers[i] = wgpu.wgpuDeviceCreateBuffer(ctx.device, &wgpu.WGPUBufferDescriptor{
+                .nextInChain = null,
+                .label = sv("fractal denoise readback"),
+                .usage = wgpu.WGPUBufferUsage_CopyDst | wgpu.WGPUBufferUsage_MapRead,
+                .size = sizes[i],
+                .mappedAtCreation = 0,
+            }) orelse return error.BufferCreationFailed;
+        }
+
+        {
+            const encoder = wgpu.wgpuDeviceCreateCommandEncoder(ctx.device, null) orelse return error.EncoderCreationFailed;
+            for (0..3) |i| {
+                wgpu.wgpuCommandEncoderCopyTextureToBuffer(
+                    encoder,
+                    &wgpu.WGPUTexelCopyTextureInfo{ .texture = textures[i], .mipLevel = 0, .origin = .{ .x = 0, .y = 0, .z = 0 }, .aspect = wgpu.WGPUTextureAspect_All },
+                    &wgpu.WGPUTexelCopyBufferInfo{ .layout = .{ .offset = 0, .bytesPerRow = rows[i], .rowsPerImage = tile_h }, .buffer = buffers[i] },
+                    &wgpu.WGPUExtent3D{ .width = tile_w, .height = tile_h, .depthOrArrayLayers = 1 },
+                );
+            }
+            const cmd = wgpu.wgpuCommandEncoderFinish(encoder, null);
+            wgpu.wgpuCommandEncoderRelease(encoder);
+            wgpu.wgpuQueueSubmit(ctx.queue, 1, &cmd);
+            wgpu.wgpuCommandBufferRelease(cmd);
+        }
+
+        var map_states: [3]MapState = .{ .{}, .{}, .{} };
+        for (0..3) |i| {
+            _ = wgpu.wgpuBufferMapAsync(buffers[i], wgpu.WGPUMapMode_Read, 0, sizes[i], wgpu.WGPUBufferMapCallbackInfo{
+                .nextInChain = null,
+                .mode = wgpu.WGPUCallbackMode_AllowProcessEvents,
+                .callback = onBufferMapped,
+                .userdata1 = &map_states[i],
+                .userdata2 = null,
+            });
+        }
+        var views: [3][*]u8 = undefined;
+        for (0..3) |i| {
+            _ = webgpu_context.pollUntil(ctx.instance, &map_states[i].done, gpu_work_timeout_ms);
+            if (!map_states[i].done or map_states[i].status != wgpu.WGPUMapAsyncStatus_Success) return error.BufferMapFailed;
+            mapped[i] = true;
+            const ptr = wgpu.wgpuBufferGetConstMappedRange(buffers[i], 0, sizes[i]) orelse return error.MappedRangeFailed;
+            views[i] = @ptrCast(@constCast(ptr));
+        }
+
+        const color_size: usize = @intCast(sizes[0]);
+        const result = try std.heap.page_allocator.alloc(u8, color_size);
+        defer std.heap.page_allocator.free(result);
+        @memcpy(result, views[0][0..color_size]);
+        const readback_done_ms = nowMs();
+
+        const color_format: oidn.Format = if (ctx.float32_accum) .float3 else .half3;
+        const raw_image = oidn.Image{ .ptr = views[0], .format = color_format, .pixel_stride = color_bpp, .row_stride = rows[0] };
+        const out_image = oidn.Image{ .ptr = result.ptr, .format = color_format, .pixel_stride = color_bpp, .row_stride = rows[0] };
+        try oidn.denoise(.{
+            .width = tile_w,
+            .height = tile_h,
+            .color = raw_image,
+            .albedo = .{ .ptr = views[1], .format = .half3, .pixel_stride = aov_bytes_per_pixel, .row_stride = rows[1] },
+            .normal = .{ .ptr = views[2], .format = .half3, .pixel_stride = aov_bytes_per_pixel, .row_stride = rows[2] },
+            .clean_aux = aov_samples == 1,
+            .output = out_image,
+        });
+        oidn.blendTowardRaw(out_image, raw_image, tile_w, tile_h, self.denoise_strength);
+        const denoise_done_ms = nowMs();
+
+        wgpu.wgpuQueueWriteTexture(
+            ctx.queue,
+            &wgpu.WGPUTexelCopyTextureInfo{ .texture = color_texture, .mipLevel = 0, .origin = .{ .x = 0, .y = 0, .z = 0 }, .aspect = wgpu.WGPUTextureAspect_All },
+            result.ptr,
+            color_size,
+            &wgpu.WGPUTexelCopyBufferLayout{ .offset = 0, .bytesPerRow = rows[0], .rowsPerImage = tile_h },
+            &wgpu.WGPUExtent3D{ .width = tile_w, .height = tile_h, .depthOrArrayLayers = 1 },
+        );
+
+        std.debug.print("[denoise] tile {d}x{d}: albedo/normal x{d} {d:.0}ms, readback {d:.0}ms, CPU denoise {d:.0}ms\n", .{
+            tile_w,
+            tile_h,
+            aov_samples,
+            aov_done_ms - started_ms,
+            readback_done_ms - aov_done_ms,
+            denoise_done_ms - readback_done_ms,
+        });
+    }
+
     fn gbufferViews(self: *const FractalRenderer) GBuffer {
         return .{
             .depth_texture = self.depth_texture,
@@ -2879,10 +3208,14 @@ pub const FractalRenderer = struct {
             encoder,
             &self.post_targets,
             self.resolve_pipeline,
-            self.blit_bind_group,
+            self.displaySource(),
             effects,
             frame,
         );
+    }
+
+    fn displaySource(self: *const FractalRenderer) wgpu.WGPUBindGroup {
+        return self.display_override orelse self.blit_bind_group;
     }
 
     pub fn postFrameInfo(uniforms: Uniforms, width: u32, height: u32) post_process.FrameInfo {
@@ -2901,25 +3234,38 @@ pub const FractalRenderer = struct {
         };
     }
 
-    pub fn draw(self: *FractalRenderer, pass: wgpu.WGPURenderPassEncoder, blend_constant: f32, mode: RenderMode) void {
-        self.drawSlot(pass, blend_constant, mode, 0);
+    pub fn partsPipeline(self: *FractalRenderer, ctx: *const Context, parts_off: u32) wgpu.WGPURenderPipeline {
+        if (self.isCompiling()) return null;
+        return self.parts.lookup(ctx, self.pipeline_layout, self.pipelines.module, parts_off);
+    }
+
+    pub fn draw(self: *FractalRenderer, pass: wgpu.WGPURenderPassEncoder, blend_constant: f32, mode: RenderMode, parts_pipeline: wgpu.WGPURenderPipeline) void {
+        if (mode == .march and parts_pipeline != null) {
+            self.drawPipeline(pass, blend_constant, parts_pipeline, 0);
+        } else {
+            self.drawSlot(pass, blend_constant, mode, 0);
+        }
     }
 
     fn drawSlot(self: *FractalRenderer, pass: wgpu.WGPURenderPassEncoder, blend_constant: f32, mode: RenderMode, slot: u32) void {
-        wgpu.wgpuRenderPassEncoderSetPipeline(pass, switch (mode) {
+        self.drawPipeline(pass, blend_constant, switch (mode) {
             .march => self.pipelines.march,
             .slice => self.pipelines.slice,
             .simple => self.pipelines.simple,
-        });
+        }, slot);
+    }
+
+    fn drawPipeline(self: *FractalRenderer, pass: wgpu.WGPURenderPassEncoder, blend_constant: f32, pipeline: wgpu.WGPURenderPipeline, slot: u32) void {
+        wgpu.wgpuRenderPassEncoderSetPipeline(pass, pipeline);
         self.bindSceneGroupsSlot(pass, slot);
         wgpu.wgpuRenderPassEncoderSetBlendConstant(pass, &wgpu.WGPUColor{ .r = blend_constant, .g = blend_constant, .b = blend_constant, .a = 1.0 });
         wgpu.wgpuRenderPassEncoderDraw(pass, 3, 1, 0, 0);
     }
 
-    pub fn drawOffscreenNow(self: *FractalRenderer, ctx: *const Context, load_existing: bool, blend_constant: f32, mode: RenderMode) void {
+    pub fn drawOffscreenNow(self: *FractalRenderer, ctx: *const Context, load_existing: bool, blend_constant: f32, mode: RenderMode, parts_pipeline: wgpu.WGPURenderPipeline) void {
         const encoder = wgpu.wgpuDeviceCreateCommandEncoder(ctx.device, null) orelse return;
         const pass = self.beginOffscreenPass(encoder, load_existing);
-        self.draw(pass, blend_constant, mode);
+        self.draw(pass, blend_constant, mode, parts_pipeline);
         wgpu.wgpuRenderPassEncoderEnd(pass);
         wgpu.wgpuRenderPassEncoderRelease(pass);
         const cmd = wgpu.wgpuCommandEncoderFinish(encoder, null);
@@ -3050,7 +3396,7 @@ pub const FractalRenderer = struct {
             wgpu.wgpuRenderPassEncoderSetBindGroup(pass, 0, group, 0, null);
         } else {
             wgpu.wgpuRenderPassEncoderSetPipeline(pass, self.blit_pipeline);
-            wgpu.wgpuRenderPassEncoderSetBindGroup(pass, 0, self.blit_bind_group, 0, null);
+            wgpu.wgpuRenderPassEncoderSetBindGroup(pass, 0, self.displaySource(), 0, null);
         }
         wgpu.wgpuRenderPassEncoderDraw(pass, 3, 1, 0, 0);
     }

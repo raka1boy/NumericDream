@@ -24,6 +24,11 @@
             .hash = "N-V-__8AACvXrAO11f5LA-Qfgm2C0XyWNhS_0N30HTL-Y5pQ",
             .lazy = true,
         },
+        .oidn_windows_x86_64 = .{
+            .url = "https://github.com/RenderKit/oidn/releases/download/v2.5.1/oidn-2.5.1.x64.windows.zip",
+            .hash = "N-V-__8AAIcf9ASNcxMQ1_aCiVrR73No3xmGTQkQdHMHZNtb",
+            .lazy = true,
+        },
     },
     .paths = .{
         "build.zig",

@@ -144,6 +144,7 @@ pub const ErrorSink = struct {
 };
 
 pub var g_error_sink: ErrorSink = .{};
+pub var g_error_count = std.atomic.Value(u32).init(0);
 
 const wgpu_log_level = wgpu.WGPULogLevel_Warn;
 
@@ -216,6 +217,7 @@ fn onUncapturedError(
     }
     sink.len = len;
     sink.has_error = true;
+    _ = g_error_count.fetchAdd(1, .acq_rel);
 
     if (std.mem.indexOf(u8, sink.buf[0..len], "device is lost") != null) {
         g_device_lost.store(true, .release);

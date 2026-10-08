@@ -367,6 +367,8 @@ const FrameRender = struct {
         var scene: FrameScene = undefined;
 
         self.fractal.photon_settings = self.photon;
+        self.fractal.denoise = self.mc.denoise;
+        self.fractal.denoise_strength = self.mc.denoise_strength;
 
         if (self.shutter <= 0) {
             self.sceneAt(t, &scene);

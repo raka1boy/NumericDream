@@ -60,6 +60,8 @@ const photons_gpu = @import("gpu/photons.zig");
 const fft_policy = @import("app/fft_state.zig");
 const play_mode = @import("app/play_mode.zig");
 const PlayState = play_mode.PlayState;
+const PreviewDenoiser = @import("gpu/preview_denoiser.zig").PreviewDenoiser;
+const oidn = @import("bindings/oidn.zig");
 
 const allocator = std.heap.page_allocator;
 
@@ -86,6 +88,14 @@ fn ftViewSlot(instances: []const FractalInstanceState) ?usize {
         if (inst.ft_view and inst.visible) return i;
     }
     return null;
+}
+
+fn fastRender(parts: RenderParts, instances: []const FractalInstanceState) bool {
+    return parts.fastPath(ftViewSlot(instances) != null);
+}
+
+fn photonsShown(parts: RenderParts, instances: []const FractalInstanceState) bool {
+    return !fastRender(parts, instances) and (!parts.enabled or parts.isOn(.photon_map));
 }
 
 fn anyMovementKeyDown(keys: [*c]const bool) bool {
@@ -218,6 +228,9 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var photon_settings = PhotonSettings{};
     var photon_state = PhotonPolicy{};
     var play = PlayState{};
+    var preview_denoiser = PreviewDenoiser{};
+    defer preview_denoiser.deinit();
+    var preview_denoise_wanted = false;
 
     var mc_sample_count: u32 = 0;
     var last_render_uniforms = std.mem.zeroes(fractal_gpu.Uniforms);
@@ -252,17 +265,20 @@ pub fn main(init: std.process.Init.Minimal) !void {
         }
 
         const keys_for_wait = sdl.SDL_GetKeyboardState(null);
+        preview_denoiser.strength = std.math.clamp(mc.denoise_strength, 0.0, 1.0);
 
-        const mc_active = mc.enabled and !camera.mode_2d and !render_parts.geometryOnly();
+        const fast_before_ui = fastRender(render_parts, instances[0..instance_count]);
+        const mc_active = mc.enabled and !camera.mode_2d and !fast_before_ui;
         const mc_converging = mc_active and mc_sample_count < @as(u32, @intFromFloat(@max(mc.max_samples, 1)));
         const screen_shaders_animating = screen_shader_mod.anyAnimated(screen_shaders[0..screen_shader_count]);
         const play_active = play.enabled and !camera.mode_2d;
         const rebuild_waiting = !camera.mode_2d and
             ((accel_state.enabled and accel_state.debounce_state.dirty) or
-                (photon_settings.enabled and !render_parts.geometryOnly() and photon_state.debounce_state.dirty) or
+                (photon_settings.enabled and photonsShown(render_parts, instances[0..instance_count]) and photon_state.debounce_state.dirty) or
                 (if (ftViewSlot(instances[0..instance_count])) |slot| instances[slot].fft_state.debounce_state.dirty else false));
         const continuous_input = (!uiHasMouse(&ui, &play) and (dragging or anyMovementKeyDown(keys_for_wait))) or
-            mc_converging or timeline.playing or redraw_pending or screen_shaders_animating or play_active or rebuild_waiting;
+            mc_converging or timeline.playing or redraw_pending or screen_shaders_animating or play_active or rebuild_waiting or fractal.parts.compiling() or
+            preview_denoiser.busy(preview_denoise_wanted);
         redraw_pending = false;
 
         var event: sdl.SDL_Event = undefined;
@@ -381,7 +397,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
         play.syncCapture(window);
         if (export_image.quit_requested) running = false;
         editor_windows.buildStereoSettingsWindow(&ui.ctx, &stereo);
-        editor_windows.buildRenderPartsWindow(&ui.ctx, &render_parts);
+        editor_windows.buildRenderPartsWindow(&ui.ctx, &render_parts, fractal.parts.compiling());
         editor_windows.buildRenderSettingsWindow(&ui.ctx, &render_settings);
         editor_windows.buildAnimRenderWindow(&ui.ctx, window, &gpu_ctx, &fractal, allocator, &timeline, &anim_render, instances[0..instance_count], instance_count, lights[0..light_count], light_count, fog_emitters[0..fog_count], fog_count, warps[0..warp_count], warp_count, screen_shaders[0..screen_shader_count], particle_systems[0..particle_count], camera, render_settings, photon_settings, stereo, mc, &progress_overlay);
         editor_windows.buildMeshExportWindow(&ui.ctx, window, &gpu_ctx, &fractal, allocator, &mesh_export, .{ .instances = instances[0..instance_count], .warps = warps[0..warp_count], .camera = camera }, &progress_overlay);
@@ -520,7 +536,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
         perf.mark("accel");
 
         fractal.photon_settings = photon_settings;
-        const photon_wanted = photon_settings.enabled and !camera.mode_2d and !render_parts.geometryOnly();
+        const fast_render = fastRender(render_parts, instances[0..instance_count]);
+        const photon_wanted = photon_settings.enabled and !camera.mode_2d and photonsShown(render_parts, instances[0..instance_count]);
         if (photon_wanted) {
             const want_grid = photon_settings.gridLog2();
             if (want_grid != fractal.photon_map.grid_log2) {
@@ -660,10 +677,11 @@ pub fn main(init: std.process.Init.Minimal) !void {
         uniforms.debug_parts = render_parts.maskUniform();
         const render_mode: fractal_gpu.RenderMode = if (camera.mode_2d)
             .slice
-        else if (render_parts.geometryOnly())
+        else if (fast_render)
             .simple
         else
             .march;
+        const parts_pipeline = if (render_mode == .march) fractal.partsPipeline(&gpu_ctx, render_parts.shaderMask()) else null;
 
         const generation = fractal.imageGeneration();
         const offscreen_current = drawn_generation != null and drawn_generation.? == generation and
@@ -671,13 +689,17 @@ pub fn main(init: std.process.Init.Minimal) !void {
         const march_needed = scene_changed or mc_advanced or !offscreen_current;
         if (march_needed) drawn_generation = null;
 
+        preview_denoise_wanted = mc.denoise_preview and render_mode == .march and !stereo_preview and oidn.available();
+        preview_denoiser.update(&gpu_ctx, &fractal, preview_denoise_wanted);
+        if (march_needed) preview_denoiser.noteDraw(&fractal, !load_existing, now_ticks);
+
         if (stereo_preview) {
             const n: f32 = @floatFromInt(@max(mc_sample_count, 1));
             if (march_needed) {
                 var left_uniforms = uniforms;
                 export_image.stampEyeBasis(&left_uniforms, eye_left);
                 fractal.updateUniforms(&gpu_ctx, left_uniforms);
-                fractal.drawOffscreenNow(&gpu_ctx, load_existing, 1.0 / (2.0 * n - 1.0), render_mode);
+                fractal.drawOffscreenNow(&gpu_ctx, load_existing, 1.0 / (2.0 * n - 1.0), render_mode, parts_pipeline);
             }
             export_image.stampEyeBasis(&uniforms, eye_right);
             load_existing = true;
@@ -695,7 +717,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
         if (march_needed) {
             const offscreen_pass = fractal.beginOffscreenPass(frame.encoder, load_existing);
-            fractal.draw(offscreen_pass, blend_constant, render_mode);
+            fractal.draw(offscreen_pass, blend_constant, render_mode, parts_pipeline);
             wgpu.wgpuRenderPassEncoderEnd(offscreen_pass);
             wgpu.wgpuRenderPassEncoderRelease(offscreen_pass);
             drawn_generation = generation;
@@ -765,6 +787,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
         wgpu.wgpuRenderPassEncoderEnd(pass);
         wgpu.wgpuRenderPassEncoderRelease(pass);
         gpu_ctx.endFrame(frame);
+        const lens_noisy_aux = mc_active and camera.dof_enabled and camera.aperture > 0.0001;
+        preview_denoiser.maybeCapture(&gpu_ctx, &fractal, preview_denoise_wanted, !lens_noisy_aux, sdl.SDL_GetTicks());
         perf.renderEnd();
         perf.mark("submit");
         if (perf.tracing()) {
