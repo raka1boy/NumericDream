@@ -1,13 +1,14 @@
-// Menger3: the classic Menger sponge as an abs-fold-and-sort IFS.
-
 // @param Iterations min=1 max=8 default=4 int
+// @param Scalex min=1 max=12 default=1
+// @param Scaley min=1 max=12 default=1
+// @param Scalez min=1 max=12 default=1
 fn de_iterations(p: array<f32, 8>) -> i32 {
     return i32(p[0]);
 }
 
 fn de_step(carry: IterCarry, pos: vec3f, p: array<f32, 8>) -> IterCarry {
     let scale = 3.0;
-    let offset = vec3f(1.0, 1.0, 1.0);
+    let offset = vec3f(1.0 * p[1], 1.0 * p[2], 1.0 * p[3]);
 
     var z = sort_desc_abs(carry.z);
     z = z * scale - offset * (scale - 1.0);

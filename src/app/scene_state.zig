@@ -21,6 +21,8 @@ const Vec3 = camera.Vec3;
 const formula_mod = @import("formula.zig");
 const FormulaState = formula_mod.FormulaState;
 const CustomParam = formula_mod.CustomParam;
+const fft_state_mod = @import("fft_state.zig");
+const FftBakeState = fft_state_mod.FftBakeState;
 
 pub const max_formula_file_bytes: usize = 1 << 20;
 
@@ -34,10 +36,10 @@ pub const ColorStopState = struct {
     reflectiveness: f32 = 0.1,
     ior: f32 = 1.5,
     subsurface: f32 = 0.0,
-    abbe: f32 = 0.0, // 0 = no dispersion, lower nonzero disperses more
+    abbe: f32 = 0.0,
     inner_max_steps: f32 = 64.0,
     roughness: f32 = 0.0,
-    film_thickness: f32 = 400.0, // nm
+    film_thickness: f32 = 400.0,
     film_ior: f32 = 1.8,
     film_strength: f32 = 0.0,
     film_angle_scale: f32 = 1.0,
@@ -58,7 +60,7 @@ pub const ColorStopState = struct {
     film_perturb_range: SliderRange = .{ .min = 0, .max = 1 },
     film_perturb_scale_range: SliderRange = .{ .min = 0.01, .max = 2 },
 
-    fn toGpu(self: ColorStopState) GpuColorStop {
+    pub fn toGpu(self: ColorStopState) GpuColorStop {
         return .{
             .color = self.color,
             .position = self.position,
@@ -124,6 +126,84 @@ pub const CombineMode = enum {
     }
 };
 
+pub const TrapShape = enum {
+    point,
+    sphere,
+    box,
+    cross,
+    torus,
+
+    pub const all = std.enums.values(TrapShape);
+
+    pub fn label(self: TrapShape) [:0]const u8 {
+        return switch (self) {
+            .point => "Point",
+            .sphere => "Sphere shell",
+            .box => "Box shell",
+            .cross => "Cross (axis planes)",
+            .torus => "Torus ring",
+        };
+    }
+};
+
+pub const TrapMode = enum {
+    min,
+    max,
+    average,
+    last,
+    iteration,
+
+    pub const all = std.enums.values(TrapMode);
+
+    pub fn label(self: TrapMode) [:0]const u8 {
+        return switch (self) {
+            .min => "Closest approach",
+            .max => "Farthest approach",
+            .average => "Average distance",
+            .last => "Final distance",
+            .iteration => "Iteration of closest",
+        };
+    }
+};
+
+pub const TrapRepeat = enum {
+    clamp,
+    repeat,
+    mirror,
+
+    pub const all = std.enums.values(TrapRepeat);
+
+    pub fn label(self: TrapRepeat) [:0]const u8 {
+        return switch (self) {
+            .clamp => "Clamp",
+            .repeat => "Repeat",
+            .mirror => "Mirror",
+        };
+    }
+};
+
+pub const OrbitTrapState = struct {
+    shape: TrapShape = .point,
+    mode: TrapMode = .min,
+    repeat: TrapRepeat = .clamp,
+    center: Vec3 = .{ .x = 0, .y = 0, .z = 0 },
+    center_range_x: SliderRange = .{ .min = -2, .max = 2 },
+    center_range_y: SliderRange = .{ .min = -2, .max = 2 },
+    center_range_z: SliderRange = .{ .min = -2, .max = 2 },
+    radius: f32 = 1.0,
+    radius_range: SliderRange = .{ .min = 0, .max = 4 },
+    tube: f32 = 0.0,
+    tube_range: SliderRange = .{ .min = 0, .max = 2 },
+    box: Vec3 = .{ .x = 1, .y = 1, .z = 1 },
+    box_range_x: SliderRange = .{ .min = 0, .max = 4 },
+    box_range_y: SliderRange = .{ .min = 0, .max = 4 },
+    box_range_z: SliderRange = .{ .min = 0, .max = 4 },
+    span: f32 = 1.5,
+    span_range: SliderRange = .{ .min = 0.05, .max = 10 },
+    offset: f32 = 0.0,
+    offset_range: SliderRange = .{ .min = -1, .max = 1 },
+};
+
 pub const MixinState = struct {
     formula: FormulaState,
 
@@ -173,8 +253,22 @@ pub const FractalInstanceState = struct {
     colors: [max_color_stops]ColorStopState,
     color_count: usize,
     selected_color: ?usize,
+    trap: OrbitTrapState = .{},
+
+    ft_view: bool = false,
+    fft_box_radius: f32 = 2.5,
+    fft_box_radius_range: SliderRange = .{ .min = 0.5, .max = 8.0 },
+    fft_cloud_density: f32 = 4.0,
+    fft_cloud_density_range: SliderRange = .{ .min = 0.0, .max = 20.0 },
+    fft_lowpass: f32 = 1.0,
+    fft_lowpass_range: SliderRange = .{ .min = 0.0, .max = 1.0 },
+    fft_highpass: f32 = 0.0,
+    fft_highpass_range: SliderRange = .{ .min = 0.0, .max = 1.0 },
+    fft_normalize: bool = false,
+    fft_state: FftBakeState = .{},
 
     window_open: bool,
+    visible: bool = true,
 
     pub fn toGpu(self: FractalInstanceState) GpuFractalInstance {
         const params = self.formula.packedParams();
@@ -205,6 +299,7 @@ pub const FractalInstanceState = struct {
                 std.math.degreesToRadians(self.rotation.z),
             },
             .step_safety = self.step_safety,
+            .hidden = if (self.visible) 0.0 else 1.0,
             .blend_k = self.blend_k,
             .combine_mode = @floatFromInt(@backingInt(self.combine_mode)),
             .color_count = @floatFromInt(self.color_count),
@@ -213,6 +308,15 @@ pub const FractalInstanceState = struct {
             .mixin_count = @floatFromInt(self.mixin_count),
             .hybrid_base_iters = self.hybrid_base_iters,
             .hybrid_total_iters = self.hybrid_total_iters,
+            .trap_repeat = @floatFromInt(@backingInt(self.trap.repeat)),
+            .trap_center = .{ self.trap.center.x, self.trap.center.y, self.trap.center.z },
+            .trap_shape = @floatFromInt(@backingInt(self.trap.shape)),
+            .trap_box = .{ self.trap.box.x, self.trap.box.y, self.trap.box.z },
+            .trap_mode = @floatFromInt(@backingInt(self.trap.mode)),
+            .trap_radius = self.trap.radius,
+            .trap_tube = self.trap.tube,
+            .trap_span = self.trap.span,
+            .trap_offset = self.trap.offset,
             .mixins = mixins,
             .colors = colors,
         };
@@ -254,12 +358,18 @@ pub fn newInstance() FractalInstanceState {
     return inst;
 }
 
+pub fn setFtViewExclusive(instances: []FractalInstanceState, target: usize, value: bool) void {
+    for (instances, 0..) |*inst, i| {
+        inst.ft_view = value and i == target;
+    }
+}
+
 pub fn freeInstanceOwned(allocator: std.mem.Allocator, inst: *const FractalInstanceState) void {
     inst.formula.deinit(allocator);
     for (0..inst.mixin_count) |j| inst.mixins[j].formula.deinit(allocator);
 }
 
-fn buildFormulaSources(instances: []const FractalInstanceState, instance_count: usize) [max_instances][]const u8 {
+pub fn buildFormulaSources(instances: []const FractalInstanceState, instance_count: usize) [max_instances][]const u8 {
     var sources: [max_instances][]const u8 = undefined;
     for (0..max_instances) |i| {
         sources[i] = if (i < instance_count) (instances[i].formula.formula_body orelse builtin_formula_source) else filler_formula_source;
@@ -267,7 +377,7 @@ fn buildFormulaSources(instances: []const FractalInstanceState, instance_count: 
     return sources;
 }
 
-fn buildMixinSources(instances: []const FractalInstanceState, instance_count: usize) [max_instances][max_mixins][]const u8 {
+pub fn buildMixinSources(instances: []const FractalInstanceState, instance_count: usize) [max_instances][max_mixins][]const u8 {
     var sources: [max_instances][max_mixins][]const u8 = undefined;
     for (0..max_instances) |i| {
         const mixin_count = if (i < instance_count) instances[i].mixin_count else 0;
@@ -429,7 +539,6 @@ fn resolveFormulaCompile(formula: *FormulaState, allocator: std.mem.Allocator, o
 
 pub const LightKind = enum { point, global, ray };
 
-//must match BEAM_WAIST in template.wgsl
 pub const beam_waist: f32 = 0.05;
 
 pub fn beamRadiusAt(spread_deg: f32, dist: f32) f32 {
@@ -462,6 +571,7 @@ pub const LightState = struct {
     shadow_softness_range: SliderRange,
 
     window_open: bool,
+    visible: bool = true,
 
     pub fn toGpu(self: LightState) GpuLight {
         const pos_or_dir: [3]f32 = switch (self.kind) {
@@ -523,6 +633,7 @@ pub const FogEmitterState = struct {
     anisotropy_range: SliderRange,
 
     window_open: bool,
+    visible: bool = true,
 
     pub fn toGpu(self: FogEmitterState) GpuFogEmitter {
         return .{

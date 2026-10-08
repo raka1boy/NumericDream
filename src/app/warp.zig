@@ -90,6 +90,7 @@ pub const WarpState = struct {
     displace_freq_range_z: SliderRange,
 
     window_open: bool = false,
+    visible: bool = true,
 
     pub fn safetyRadius(self: WarpState) f32 {
         return switch (self.region_kind) {
@@ -257,7 +258,6 @@ fn rotateFrame(w: *const WarpState, v: Vec3, inverse: bool) Vec3 {
     }
     return cols[0].scale(v.x).add(cols[1].scale(v.y)).add(cols[2].scale(v.z));
 }
-//negative inside
 fn regionDe(w: *const WarpState, p: Vec3) f32 {
     if (w.region_kind == .global) return -1e20;
     const q = rotateFrame(w, p.sub(w.center), true);
@@ -346,6 +346,7 @@ fn foldAxis(v: f32, cell: f32) f32 {
 pub fn applyAll(warps: []const WarpState, p: Vec3) Vec3 {
     var q = p;
     for (warps) |*w| {
+        if (!w.visible) continue;
         const inf = influence(w, p);
         if (inf <= 1e-4) continue;
         const raw = coordWarpRaw(w, q);

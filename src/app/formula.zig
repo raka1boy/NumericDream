@@ -92,12 +92,20 @@ fn parseParamLine(line: []const u8) ?CustomParam {
     const idx = std.mem.indexOf(u8, line, marker) orelse return null;
     const rest = std.mem.trim(u8, line[idx + marker.len ..], " \t");
     var tokens = std.mem.tokenizeAny(u8, rest, " \t");
-    const name = tokens.next() orelse return null;
+
+    var name_end: usize = 0;
+    while (tokens.next()) |tok| {
+        if (std.mem.indexOfScalar(u8, tok, '=') != null or std.mem.eql(u8, tok, "int")) break;
+        name_end = (@intFromPtr(tok.ptr) - @intFromPtr(rest.ptr)) + tok.len;
+    }
+    const name = rest[0..name_end];
+    if (name.len == 0) return null;
 
     var min_v: f32 = 0.0;
     var max_v: f32 = 1.0;
     var default_v: f32 = 0.0;
     var integral = false;
+    tokens.reset();
     while (tokens.next()) |tok| {
         const eq = std.mem.indexOfScalar(u8, tok, '=') orelse {
             if (std.mem.eql(u8, tok, "int")) integral = true;

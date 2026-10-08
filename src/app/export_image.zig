@@ -39,6 +39,9 @@ const StereoState = @import("stereo.zig").StereoState;
 const MarchPrecision = @import("render_precision.zig").MarchPrecision;
 const McRenderState = @import("mc_render.zig").McRenderState;
 const PhotonSettings = @import("photon_state.zig").PhotonSettings;
+const accel_state = @import("accel_state.zig");
+const particles_mod = @import("particles.zig");
+const ParticleSystemState = particles_mod.ParticleSystemState;
 
 pub var quit_requested: bool = false;
 pub var cancel_requested: bool = false;
@@ -84,11 +87,19 @@ pub fn onProgress(frac: f32, userdata: ?*anyopaque) void {
     pc.overlay.draw(pc.gpu_ctx, frac, hover);
 }
 
+pub fn stampEyeBasis(uniforms: *Uniforms, eye: CameraBasis) void {
+    uniforms.camera_pos = .{ eye.pos.x, eye.pos.y, eye.pos.z };
+    uniforms.camera_right = .{ eye.right.x, eye.right.y, eye.right.z };
+    uniforms.camera_up = .{ eye.up.x, eye.up.y, eye.up.z };
+    uniforms.camera_forward = .{ eye.forward.x, eye.forward.y, eye.forward.z };
+}
+
 pub fn buildUniforms(
     instances: []const FractalInstanceState,
     lights: []const LightState,
     fog_emitters: []const FogEmitterState,
     warps: []const WarpState,
+    particle_systems: []const ParticleSystemState,
     camera: FreeCamera,
     eye: CameraBasis,
     max_steps: f32,
@@ -102,16 +113,16 @@ pub fn buildUniforms(
     height: u32,
 ) Uniforms {
     var uniforms = Uniforms{
-        .camera_pos = .{ eye.pos.x, eye.pos.y, eye.pos.z },
+        .camera_pos = undefined,
         .time = 0.0,
-        .camera_right = .{ eye.right.x, eye.right.y, eye.right.z },
+        .camera_right = undefined,
         .max_steps = max_steps,
-        .camera_up = .{ eye.up.x, eye.up.y, eye.up.z },
+        .camera_up = undefined,
         .max_dist = max_dist,
-        .camera_forward = .{ eye.forward.x, eye.forward.y, eye.forward.z },
+        .camera_forward = undefined,
         .instance_count = @floatFromInt(instances.len),
         .resolution = .{ @floatFromInt(width), @floatFromInt(height) },
-        .light_count = @floatFromInt(lights.len),
+        .light_count = 0,
         .max_reflection_bounces = max_reflection_bounces,
         .light_bounces = photon.bounces,
         .high_quality = 1.0,
@@ -124,8 +135,6 @@ pub fn buildUniforms(
         .focus_distance = camera.focus_distance,
         .aperture = camera.aperture,
         .focus_range = camera.focus_range,
-        .fog_count = @floatFromInt(fog_emitters.len),
-        .warp_count = @floatFromInt(warps.len),
         .fog_samples = @max(fog_samples, 1.0),
         .mode_2d = if (camera.mode_2d) 1.0 else 0.0,
         .slice_zoom = camera.zoom_2d,
@@ -135,20 +144,47 @@ pub fn buildUniforms(
         .fog_emitters = undefined,
         .warps = undefined,
     };
+    stampEyeBasis(&uniforms, eye);
     for (0..max_instances) |i| {
         uniforms.instances[i] = if (i < instances.len) instances[i].toGpu() else std.mem.zeroes(GpuFractalInstance);
     }
-    for (0..max_lights) |i| {
-        uniforms.lights[i] = if (i < lights.len) lights[i].toGpu() else std.mem.zeroes(GpuLight);
-    }
-    for (0..max_fog_emitters) |i| {
-        uniforms.fog_emitters[i] = if (i < fog_emitters.len) fog_emitters[i].toGpu() else std.mem.zeroes(GpuFogEmitter);
-    }
-    for (0..max_warps) |i| {
-        uniforms.warps[i] = if (i < warps.len) warps[i].toGpu() else GpuWarp{};
-    }
+    particles_mod.stampUniforms(&uniforms, particle_systems);
+    uniforms.has_transparency = if (anyTransparent(uniforms.instances[0..instances.len], &uniforms.particle_systems)) 1.0 else 0.0;
+    uniforms.light_count = packVisible(GpuLight, &uniforms.lights, lights, std.mem.zeroes(GpuLight));
+    uniforms.fog_count = packVisible(GpuFogEmitter, &uniforms.fog_emitters, fog_emitters, std.mem.zeroes(GpuFogEmitter));
+    uniforms.warp_count = packVisible(GpuWarp, &uniforms.warps, warps, GpuWarp{});
 
     return uniforms;
+}
+
+fn anyTransparent(instances: []const GpuFractalInstance, systems: []const fractal_gpu.ParticleSystem) bool {
+    for (instances) |*inst| {
+        if (inst.hidden > 0.5) continue;
+        if (stopsTransparent(&inst.colors, inst.color_count)) return true;
+    }
+    for (systems) |*sys| {
+        if (sys.mode > 0.5 and sys.mode < 1.5 and stopsTransparent(&sys.colors, sys.color_count)) return true;
+    }
+    return false;
+}
+
+fn stopsTransparent(colors: []const fractal_gpu.ColorStop, count: f32) bool {
+    const stops: usize = @intFromFloat(std.math.clamp(count, 0, @as(f32, @floatFromInt(colors.len))));
+    for (colors[0..stops]) |stop| {
+        if (stop.transparency > 0.001) return true;
+    }
+    return false;
+}
+
+fn packVisible(comptime Gpu: type, dst: []Gpu, src: anytype, empty: Gpu) f32 {
+    var n: usize = 0;
+    for (src) |*s| {
+        if (!s.visible or n == dst.len) continue;
+        dst[n] = s.toGpu();
+        n += 1;
+    }
+    for (n..dst.len) |i| dst[i] = empty;
+    return @floatFromInt(n);
 }
 
 fn renderErrorStatus(buf: []u8, err: anyerror) [:0]const u8 {
@@ -169,6 +205,14 @@ pub fn combineStereoRows(allocator: std.mem.Allocator, left: []const u8, right: 
     return combined;
 }
 
+pub fn prepareParticles(gpu_ctx: *const Context, fractal: *FractalRenderer, particle_systems: []const ParticleSystemState, uniforms: *Uniforms) void {
+    const jobs = particles_mod.buildJobs(particle_systems, accel_state.geometryHash(uniforms));
+    _ = fractal.updateParticles(gpu_ctx, &jobs, uniforms.*) catch |err| {
+        std.debug.print("[particles] update failed: {s} -- particles may look stale\n", .{@errorName(err)});
+    };
+    fractal.stampParticleUniforms(uniforms);
+}
+
 pub fn mcSampleCount(mc: McRenderState, mode_2d: bool) u32 {
     if (mode_2d) return 1;
     return if (mc.enabled) @intFromFloat(@max(mc.export_samples, 1)) else 1;
@@ -182,6 +226,7 @@ pub fn renderEye(
     lights: []const LightState,
     fog_emitters: []const FogEmitterState,
     warps: []const WarpState,
+    particle_systems: []const ParticleSystemState,
     camera: FreeCamera,
     eye: CameraBasis,
     max_steps: f32,
@@ -195,11 +240,12 @@ pub fn renderEye(
     height: u32,
     progress: RenderProgress,
 ) ![]u8 {
-    const uniforms = buildUniforms(
+    var uniforms = buildUniforms(
         instances,
         lights,
         fog_emitters,
         warps,
+        particle_systems,
         camera,
         eye,
         max_steps,
@@ -212,6 +258,7 @@ pub fn renderEye(
         width,
         height,
     );
+    prepareParticles(gpu_ctx, fractal, particle_systems, &uniforms);
     fractal.photon_settings = photon;
     const samples = fractal_gpu.SampleSet{ .repeat = .{ .uniforms = uniforms, .count = mcSampleCount(mc, camera.mode_2d) } };
     return fractal.renderToImage(gpu_ctx, &samples, width, height, allocator, progress);
@@ -226,6 +273,7 @@ pub fn exportImage(
     lights: []const LightState,
     fog_emitters: []const FogEmitterState,
     warps: []const WarpState,
+    particle_systems: []const ParticleSystemState,
     camera: FreeCamera,
     max_steps: f32,
     max_dist: f32,
@@ -270,6 +318,7 @@ pub fn exportImage(
                 lights,
                 fog_emitters,
                 warps,
+                particle_systems,
                 camera,
                 cam,
                 max_steps,
@@ -298,6 +347,7 @@ pub fn exportImage(
             lights,
             fog_emitters,
             warps,
+            particle_systems,
             camera,
             left_eye,
             max_steps,
@@ -321,6 +371,7 @@ pub fn exportImage(
             lights,
             fog_emitters,
             warps,
+            particle_systems,
             camera,
             right_eye,
             max_steps,

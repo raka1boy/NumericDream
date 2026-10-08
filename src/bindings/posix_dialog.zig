@@ -12,8 +12,8 @@ const Helper = struct { exe: []const u8, flavor: Flavor };
 const helpers = [_]Helper{
     .{ .exe = "zenity", .flavor = .zenity },
     .{ .exe = "kdialog", .flavor = .kdialog },
-    .{ .exe = "qarma", .flavor = .zenity }, // Qt port of zenity
-    .{ .exe = "matedialog", .flavor = .zenity }, // MATE fork of zenity
+    .{ .exe = "qarma", .flavor = .zenity },
+    .{ .exe = "matedialog", .flavor = .zenity },
 };
 
 const Filter = struct { desc: []const u8, patterns: []const []const u8 };
@@ -37,6 +37,11 @@ const sky_image_filters = [_]Filter{
 
 const dream_filters = [_]Filter{
     .{ .desc = "Numeric Dream scene (*.dream)", .patterns = &.{"*.dream"} },
+};
+
+const mesh_filters = [_]Filter{
+    .{ .desc = "Binary PLY mesh (*.ply)", .patterns = &.{"*.ply"} },
+    .{ .desc = "Wavefront OBJ mesh (*.obj)", .patterns = &.{"*.obj"} },
 };
 
 const Kind = enum { open_file, save_file, folder };
@@ -117,7 +122,7 @@ fn tryHelper(
         },
     }
 
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = @import("process_io.zig").io();
     const result = try std.process.run(arena, io, .{ .argv = argv.items });
 
     if (!result.term.success()) return null;
@@ -167,6 +172,13 @@ pub fn pickSaveDreamFile(window: *sdl.SDL_Window, out: []u8) ?usize {
 
 pub fn pickOpenDreamFile(window: *sdl.SDL_Window, out: []u8) ?usize {
     return pick(window, .open_file, "Open scene", &dream_filters, out);
+}
+
+pub fn pickSaveMeshFile(window: *sdl.SDL_Window, out: []u8) ?file_dialog.SavedMeshPath {
+    const len = pick(window, .save_file, "Export mesh as", &mesh_filters, out) orelse return null;
+    const format = file_dialog.meshFormatFromPath(out[0..len]) orelse .ply;
+    const final_len = ensureExtension(out, len, file_dialog.meshExtension(format)) orelse return null;
+    return .{ .len = final_len, .format = format };
 }
 
 pub fn pickFolder(window: *sdl.SDL_Window, out: []u8) ?usize {

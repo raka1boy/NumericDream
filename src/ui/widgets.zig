@@ -3,7 +3,6 @@ const nk = @import("../bindings/nuklear.zig").c;
 const SliderRange = @import("../app/slider_range.zig").SliderRange;
 const Vec3 = @import("../app/camera.zig").Vec3;
 const scene_state = @import("../app/scene_state.zig");
-const FractalInstanceState = scene_state.FractalInstanceState;
 const max_color_stops = @import("../gpu/fractal_renderer.zig").max_color_stops;
 
 var open_slider_menu: ?*f32 = null;
@@ -51,7 +50,6 @@ fn normalizeRange(range: *SliderRange, integral: bool) void {
         range.max = @round(range.max);
     }
     const min_width: f32 = if (integral) 1.0 else 1e-12;
-    //written as a negated >= so nan endpoint is repaired too
     if (!(range.max - range.min >= min_width)) range.max = range.min + min_width;
 }
 
@@ -178,25 +176,64 @@ pub fn separator(ctx: *nk.nk_context) void {
     nk.nk_rule_horizontal(ctx, nk.nk_rgb(70, 70, 70), 0);
 }
 
-pub fn selectableRemovableRow(ctx: *nk.nk_context, label: [:0]const u8, window_open: *bool, row_height: f32) bool {
-    nk.nk_layout_row_dynamic(ctx, row_height, 2);
+pub fn visibilityCheckbox(ctx: *nk.nk_context, visible: *bool) void {
+    if (nk.nk_widget_is_hovered(ctx) != 0) nk.nk_tooltip(ctx, "Render this object");
+    const now: nk.nk_bool = if (visible.*) 1 else 0;
+    visible.* = nk.nk_check_label(ctx, "", now) != 0;
+}
+
+pub fn selectableRemovableRow(ctx: *nk.nk_context, label: [:0]const u8, window_open: *bool, visible: ?*bool, row_height: f32) bool {
+    if (visible) |v| {
+        nk.nk_layout_row_template_begin(ctx, row_height);
+        nk.nk_layout_row_template_push_static(ctx, 22);
+        nk.nk_layout_row_template_push_dynamic(ctx);
+        nk.nk_layout_row_template_push_dynamic(ctx);
+        nk.nk_layout_row_template_end(ctx);
+        visibilityCheckbox(ctx, v);
+    } else {
+        nk.nk_layout_row_dynamic(ctx, row_height, 2);
+    }
     var selected: nk.nk_bool = if (window_open.*) 1 else 0;
     _ = nk.nk_selectable_label(ctx, label.ptr, @intCast(nk.NK_TEXT_CENTERED), &selected);
     window_open.* = selected != 0;
     return nk.nk_button_label(ctx, "Remove") != 0;
 }
 
-var dragging_inst: ?*FractalInstanceState = null;
+pub const RowAction = enum { none, up, down, remove };
+
+pub fn reorderableRow(ctx: *nk.nk_context, label: [:0]const u8, window_open: *bool, visible: *bool, index: usize, count: usize) RowAction {
+    nk.nk_layout_row_template_begin(ctx, 24);
+    nk.nk_layout_row_template_push_static(ctx, 22);
+    nk.nk_layout_row_template_push_dynamic(ctx);
+    nk.nk_layout_row_template_push_static(ctx, 22);
+    nk.nk_layout_row_template_push_static(ctx, 22);
+    nk.nk_layout_row_template_push_static(ctx, 62);
+    nk.nk_layout_row_template_end(ctx);
+
+    visibilityCheckbox(ctx, visible);
+
+    var selected: nk.nk_bool = if (window_open.*) 1 else 0;
+    _ = nk.nk_selectable_label(ctx, label.ptr, @intCast(nk.NK_TEXT_LEFT), &selected);
+    window_open.* = selected != 0;
+
+    var action: RowAction = .none;
+    if (nk.nk_button_label(ctx, "^") != 0 and index > 0) action = .up;
+    if (nk.nk_button_label(ctx, "v") != 0 and index + 1 < count) action = .down;
+    if (nk.nk_button_label(ctx, "Remove") != 0) action = .remove;
+    return action;
+}
+
+var dragging_inst: ?*const anyopaque = null;
 var dragging_index: usize = 0;
 
-pub fn colorStripWidget(ctx: *nk.nk_context, inst: *FractalInstanceState) void {
+pub fn colorStripWidget(ctx: *nk.nk_context, inst: anytype) void {
     nk.nk_layout_row_dynamic(ctx, 36, 1);
     var bounds: nk.struct_nk_rect = undefined;
     const state = nk.nk_widget(&bounds, ctx);
     if (state == nk.NK_WIDGET_INVALID) return;
 
     var handled_click = false;
-    if (dragging_inst == inst) {
+    if (dragging_inst == @as(*const anyopaque, inst)) {
         if (dragging_index >= inst.color_count) {
             dragging_inst = null;
         } else if (nk.nk_input_is_mouse_down(&ctx.input, nk.NK_BUTTON_LEFT) != 0) {
@@ -272,7 +309,7 @@ pub fn colorStripWidget(ctx: *nk.nk_context, inst: *FractalInstanceState) void {
         var i = idx;
         while (i + 1 < inst.color_count) : (i += 1) inst.colors[i] = inst.colors[i + 1];
         inst.color_count -= 1;
-        if (dragging_inst == inst) dragging_inst = null;
+        if (dragging_inst == @as(*const anyopaque, inst)) dragging_inst = null;
         if (inst.selected_color) |sel| {
             if (sel == idx) {
                 inst.selected_color = null;

@@ -1,5 +1,3 @@
-// Juliabulb: the Mandelbulb power step with a fixed Julia constant.
-
 // @param Power min=2 max=16 default=8
 // @param Iterations min=2 max=16 default=8 int
 // @param JuliaX min=-2 max=2 default=-0.65

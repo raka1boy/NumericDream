@@ -1,5 +1,3 @@
-// Diagonal Icosa: icosahedral mirror planes with a diagonal pre-swap.
-
 // @param Scale min=1 max=3 default=2
 // @param OffsetX min=0 max=1.2 default=0.850650808
 // @param OffsetY min=0 max=1.2 default=0.525731112

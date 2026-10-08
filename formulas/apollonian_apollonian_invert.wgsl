@@ -1,5 +1,3 @@
-// Apollonian gasket: sphere inversion + abs-fold packing.
-
 // @param Scale min=-3 max=3 default=-1.5
 // @param MinRadius min=0.05 max=1 default=0.5
 // @param FixedRadius min=0.5 max=3 default=1

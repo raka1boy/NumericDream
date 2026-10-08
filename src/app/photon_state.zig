@@ -2,10 +2,16 @@ const std = @import("std");
 const SliderRange = @import("slider_range.zig").SliderRange;
 const photons = @import("../gpu/photons.zig");
 const debounce = @import("debounce.zig");
+const accel_state = @import("accel_state.zig");
 const DebouncedDirty = debounce.DebouncedDirty;
+
+const progressive_alpha: f32 = 2.0 / 3.0;
+const progressive_floor: f32 = 0.25;
 
 pub const PhotonSettings = struct {
     enabled: bool = true,
+
+    aim: bool = true,
 
     bounces: f32 = 2,
     bounces_range: SliderRange = .{ .min = 0, .max = 8 },
@@ -15,6 +21,13 @@ pub const PhotonSettings = struct {
 
     radius: f32 = 0.05,
     radius_range: SliderRange = .{ .min = 0.002, .max = 1.0 },
+
+    bounce_radius_scale: f32 = 4,
+    bounce_radius_scale_range: SliderRange = .{ .min = 1, .max = 16 },
+
+    progressive: bool = true,
+    progressive_start: f32 = 3,
+    progressive_start_range: SliderRange = .{ .min = 1, .max = 8 },
 
     volume_scale: f32 = 1,
     volume_scale_range: SliderRange = .{ .min = 1, .max = 6 },
@@ -36,8 +49,31 @@ pub const PhotonSettings = struct {
     debounce_ms: f32 = 180,
     debounce_ms_range: SliderRange = .{ .min = 0, .max = 1000 },
 
-    pub fn cellSize(self: PhotonSettings) f32 {
-        return @max(self.radius, 1e-4) * 2.0;
+    pub fn baseRadius(self: PhotonSettings) f32 {
+        return @max(self.radius, 1e-4);
+    }
+
+    pub fn bounceScale(self: PhotonSettings) f32 {
+        return std.math.clamp(self.bounce_radius_scale, 1, 64);
+    }
+
+    pub fn progressiveOn(self: PhotonSettings) bool {
+        return self.progressive and self.refine_per_sample;
+    }
+
+    pub fn sampleRadius(self: PhotonSettings, mc_active: bool, sample: f32) f32 {
+        const base = self.baseRadius();
+        if (!mc_active or !self.progressiveOn()) return base;
+        const start = std.math.clamp(self.progressive_start, 1, 16);
+        const n: u32 = @intFromFloat(std.math.clamp(sample, 0, 1 << 20));
+        var scale2: f32 = start * start;
+        var k: u32 = 1;
+        while (k <= n) : (k += 1) {
+            const kf: f32 = @floatFromInt(k);
+            scale2 *= (kf + progressive_alpha) / (kf + 1);
+            if (scale2 <= progressive_floor * progressive_floor) break;
+        }
+        return base * @max(@sqrt(scale2), progressive_floor);
     }
 
     pub fn gridLog2(self: PhotonSettings) u32 {
@@ -52,8 +88,8 @@ pub const PhotonSettings = struct {
         return @intFromFloat(std.math.clamp(self.paths, 0, 16_777_216));
     }
 
-    pub fn dispersionSoftRadians(self: PhotonSettings) f32 {
-        return std.math.clamp(self.dispersion_softness, 0, 90) * (std.math.pi / 180.0);
+    pub fn dispersionSoftness(self: PhotonSettings) f32 {
+        return std.math.clamp(self.dispersion_softness, 0, 90);
     }
 };
 
@@ -77,15 +113,36 @@ pub fn sceneHash(uniforms: anytype, settings: PhotonSettings) u64 {
     hashCounted(&h, uniforms.light_count, &uniforms.lights);
     hashCounted(&h, uniforms.fog_count, &uniforms.fog_emitters);
     hashCounted(&h, uniforms.warp_count, &uniforms.warps);
+    hashCounted(&h, uniforms.carve_count, &uniforms.carves);
+    accel_state.hashLitParticles(&h, uniforms);
     h.update(std.mem.asBytes(&uniforms.max_dist));
     h.update(std.mem.asBytes(&uniforms.sky));
     h.update(std.mem.asBytes(&settings.enabled));
+    h.update(std.mem.asBytes(&settings.aim));
     h.update(std.mem.asBytes(&settings.bounces));
     h.update(std.mem.asBytes(&settings.paths));
     h.update(std.mem.asBytes(&settings.radius));
+    h.update(std.mem.asBytes(&settings.bounce_radius_scale));
+    h.update(std.mem.asBytes(&settings.progressive));
+    h.update(std.mem.asBytes(&settings.progressive_start));
     h.update(std.mem.asBytes(&settings.grid_log2));
     h.update(std.mem.asBytes(&settings.volume_scale));
     h.update(std.mem.asBytes(&settings.dispersion_softness));
+    return h.final();
+}
+
+pub fn aimKey(uniforms: anytype) u64 {
+    var h = std.hash.Wyhash.init(1);
+    hashCounted(&h, uniforms.instance_count, &uniforms.instances);
+    hashCounted(&h, uniforms.light_count, &uniforms.lights);
+    hashCounted(&h, uniforms.fog_count, &uniforms.fog_emitters);
+    hashCounted(&h, uniforms.warp_count, &uniforms.warps);
+    hashCounted(&h, uniforms.carve_count, &uniforms.carves);
+    accel_state.hashLitParticles(&h, uniforms);
+    h.update(std.mem.asBytes(&uniforms.max_dist));
+    h.update(std.mem.asBytes(&uniforms.max_steps));
+    h.update(std.mem.asBytes(&uniforms.photon_centre));
+    h.update(std.mem.asBytes(&uniforms.photon_extent));
     return h.final();
 }
 
@@ -101,6 +158,7 @@ pub fn update(
     camera_pos: [3]f32,
     recenter_distance: f32,
     mc_sample: f32,
+    wanted_radius: f32,
 ) Decision {
     if (!enabled) {
         map.invalidate();
@@ -110,6 +168,9 @@ pub fn update(
     }
 
     if (settings.refine_per_sample and map.valid and mc_sample != policy.traced_sample) {
+        return .retrace;
+    }
+    if (map.valid and wanted_radius != map.stored_radius) {
         return .retrace;
     }
 

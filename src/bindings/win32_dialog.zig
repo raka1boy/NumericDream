@@ -59,7 +59,7 @@ fn filterOf(comptime segments: []const []const u8) [filterLen(segments):0]u16 {
 }
 
 fn filterLen(comptime segments: []const []const u8) usize {
-    var total: usize = 1; // final extra NUL
+    var total: usize = 1;
     for (segments) |seg| total += seg.len + 1;
     return total;
 }
@@ -77,6 +77,10 @@ const sky_image_filter = filterOf(&.{
 });
 const dream_filter = filterOf(&.{ "Numeric Dream scene (*.dream)", "*.dream" });
 const dream_default_ext = [_:0]u16{ 'd', 'r', 'e', 'a', 'm' };
+const mesh_filter = filterOf(&.{
+    "Binary PLY mesh (*.ply)",    "*.ply",
+    "Wavefront OBJ mesh (*.obj)", "*.obj",
+});
 
 const max_path_wide_len: usize = 1024;
 
@@ -143,6 +147,19 @@ pub fn pickOpenDreamFile(window: *sdl.SDL_Window, out: []u8) ?usize {
     return runFileDialog(window, &dream_filter, null, OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_EXPLORER | OFN_HIDEREADONLY, GetOpenFileNameW, out, null);
 }
 
+pub fn pickSaveMeshFile(window: *sdl.SDL_Window, out: []u8) ?file_dialog.SavedMeshPath {
+    var filter_index: u32 = 1;
+    var len = runFileDialog(window, &mesh_filter, null, OFN_PATHMUSTEXIST | OFN_EXPLORER | OFN_HIDEREADONLY | OFN_OVERWRITEPROMPT, GetSaveFileNameW, out, &filter_index) orelse return null;
+
+    if (file_dialog.meshFormatFromPath(out[0..len])) |format| return .{ .len = len, .format = format };
+    const format: file_dialog.MeshFormat = if (filter_index == 2) .obj else .ply;
+    const ext = file_dialog.meshExtension(format);
+    if (len + ext.len > out.len) return null;
+    @memcpy(out[len..][0..ext.len], ext);
+    len += ext.len;
+    return .{ .len = len, .format = format };
+}
+
 const BFFCALLBACK = ?*const fn (?*anyopaque, u32, isize, isize) callconv(.c) c_int;
 const BROWSEINFOW = extern struct {
     hwndOwner: HWND,
@@ -159,8 +176,8 @@ const BIF_RETURNONLYFSDIRS: DWORD = 0x00000001;
 const BIF_NEWDIALOGSTYLE: DWORD = 0x00000040;
 const COINIT_APARTMENTTHREADED: DWORD = 0x2;
 
-extern "shell32" fn SHBrowseForFolderW(*BROWSEINFOW) callconv(.c) ?*anyopaque; // LPITEMIDLIST
-extern "shell32" fn SHGetPathFromIDListW(?*anyopaque, [*]u16) callconv(.c) i32; // BOOL
+extern "shell32" fn SHBrowseForFolderW(*BROWSEINFOW) callconv(.c) ?*anyopaque;
+extern "shell32" fn SHGetPathFromIDListW(?*anyopaque, [*]u16) callconv(.c) i32;
 extern "ole32" fn CoTaskMemFree(?*anyopaque) callconv(.c) void;
 extern "ole32" fn CoInitializeEx(?*anyopaque, DWORD) callconv(.c) i32;
 

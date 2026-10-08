@@ -18,6 +18,7 @@ pub const SkyTexture = struct {
     loaded: bool = false,
     width: u32 = 0,
     height: u32 = 0,
+    generation: u32 = 0,
 
     pub fn init(ctx: *const Context) !SkyTexture {
         const entries = [_]wgpu.WGPUBindGroupLayoutEntry{
@@ -144,6 +145,7 @@ pub const SkyTexture = struct {
         self.width = width;
         self.height = height;
         self.loaded = true;
+        self.generation +%= 1;
     }
 
     pub fn clear(self: *SkyTexture, ctx: *const Context) void {

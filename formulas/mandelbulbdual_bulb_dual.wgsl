@@ -1,5 +1,3 @@
-// Mandelbulb Dual: two Mandelbulb power steps of different powers alternated.
-
 // @param Power1 min=2 max=16 default=8
 // @param Iterations min=2 max=16 default=6 int
 // @param Power2 min=2 max=16 default=3

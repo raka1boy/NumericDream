@@ -1,5 +1,3 @@
-// Kaleidoscopic IFS: abs-fold-sort-scale-translate with a per-iteration rotation.
-
 // @param Scale min=1.5 max=5 default=3
 // @param RotationDeg min=-180 max=180 default=0
 // @param Iterations min=1 max=16 default=8 int

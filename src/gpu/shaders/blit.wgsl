@@ -40,15 +40,28 @@ fn dof_blur(uv: vec2f, radius_px: f32) -> vec3f {
     return accum / total;
 }
 
+fn resolve_dof(uv: vec2f) -> vec4f {
+    let hdr = textureSampleLevel(src_texture, src_sampler, uv, 0.0);
+    let radius_px = min(hdr.a, DOF_BLUR_MAX_PX);
+    if (radius_px > DOF_BLUR_MIN_PX) {
+        return vec4f(dof_blur(uv, radius_px), hdr.a);
+    }
+    return hdr;
+}
+
 @fragment
 fn fs_main(in: VertexOut) -> @location(0) vec4f {
-    let hdr = textureSampleLevel(src_texture, src_sampler, in.uv, 0.0);
-    let radius_px = min(hdr.a, DOF_BLUR_MAX_PX);
-    var color = hdr.rgb;
-    if (radius_px > DOF_BLUR_MIN_PX) {
-        color = dof_blur(in.uv, radius_px);
-    }
+    let color = resolve_dof(in.uv).rgb;
+    return vec4f(color / (color + vec3f(1.0)), 1.0);
+}
 
-    let tonemapped = color / (color + vec3f(1.0));
-    return vec4f(tonemapped, 1.0);
+@fragment
+fn fs_resolve(in: VertexOut) -> @location(0) vec4f {
+    return resolve_dof(in.uv);
+}
+
+@fragment
+fn fs_tonemap(in: VertexOut) -> @location(0) vec4f {
+    let color = textureSampleLevel(src_texture, src_sampler, in.uv, 0.0).rgb;
+    return vec4f(color / (color + vec3f(1.0)), 1.0);
 }

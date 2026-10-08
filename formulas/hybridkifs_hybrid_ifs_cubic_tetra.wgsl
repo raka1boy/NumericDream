@@ -1,5 +1,3 @@
-// Hybrid KIFS: Sierpinski tetra fold alternated with a Menger cube fold.
-
 // @param Scale min=1.5 max=3 default=2.5
 // @param Iterations min=1 max=20 default=10 int
 fn de_iterations(p: array<f32, 8>) -> i32 {

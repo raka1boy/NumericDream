@@ -1,7 +1,7 @@
-//requires ffmpeg in order to compile frames into actual video.
 const std = @import("std");
 const sdl = @import("../bindings/sdl3.zig").c;
 const file_dialog = @import("../bindings/file_dialog.zig");
+const process_io = @import("../bindings/process_io.zig");
 const stbiw = @import("../bindings/stb_image_write.zig").c;
 const wgpu = @import("../bindings/webgpu.zig").c;
 
@@ -36,6 +36,12 @@ const max_lights = fractal_gpu.max_lights;
 const max_fog_emitters = fractal_gpu.max_fog_emitters;
 const max_warps = fractal_gpu.max_warps;
 const WarpState = @import("warp.zig").WarpState;
+const ParticleSystemState = @import("particles.zig").ParticleSystemState;
+const max_particle_systems = fractal_gpu.max_particle_systems;
+const screen_shader = @import("screen_shader.zig");
+const ScreenShaderState = screen_shader.ScreenShaderState;
+const max_screen_shaders = screen_shader.max_screen_shaders;
+const post_process = @import("../gpu/post_process.zig");
 
 pub fn renderAnimation(
     allocator: std.mem.Allocator,
@@ -51,6 +57,8 @@ pub fn renderAnimation(
     fog_count: usize,
     warps: []const WarpState,
     warp_count: usize,
+    screen_shaders: []const ScreenShaderState,
+    particle_systems: []const ParticleSystemState,
     camera: FreeCamera,
     render_settings: RenderSettingsState,
     photon: PhotonSettings,
@@ -110,6 +118,8 @@ pub fn renderAnimation(
         .lights = lights[0..light_count],
         .fog_emitters = fog_emitters[0..fog_count],
         .warps = warps[0..warp_count],
+        .screen_shaders = screen_shaders,
+        .particle_systems = particle_systems,
         .camera = camera,
         .render_settings = render_settings,
         .photon = photon,
@@ -131,6 +141,11 @@ pub fn renderAnimation(
 
     var pipe = startFfmpegPipe(folder, safe_fps, final_width_hint, h, pix_fmt);
     const write_pngs = save_frames or pipe == null;
+
+    defer {
+        var live_effects: [max_screen_shaders]post_process.Effect = undefined;
+        fractal.setPostEffects(screen_shader.buildEffects(screen_shaders, &live_effects));
+    }
 
     var frames_written: u32 = 0;
     var aborted = false;
@@ -248,11 +263,16 @@ const FrameScene = struct {
     lights: [max_lights]LightState,
     fog_emitters: [max_fog_emitters]FogEmitterState,
     warps: [max_warps]WarpState,
+    screen_shaders: [max_screen_shaders]ScreenShaderState,
+    particle_systems: [max_particle_systems]ParticleSystemState,
     camera: FreeCamera,
     instance_count: usize,
     light_count: usize,
     fog_count: usize,
     warp_count: usize,
+    screen_shader_count: usize,
+    particle_count: usize,
+    time: f32,
 };
 
 const FrameRender = struct {
@@ -264,6 +284,8 @@ const FrameRender = struct {
     lights: []const LightState,
     fog_emitters: []const FogEmitterState,
     warps: []const WarpState,
+    screen_shaders: []const ScreenShaderState,
+    particle_systems: []const ParticleSystemState,
     camera: FreeCamera,
     render_settings: RenderSettingsState,
     photon: PhotonSettings,
@@ -280,11 +302,16 @@ const FrameRender = struct {
         out.light_count = self.lights.len;
         out.fog_count = self.fog_emitters.len;
         out.warp_count = self.warps.len;
+        out.screen_shader_count = @min(self.screen_shaders.len, max_screen_shaders);
         for (self.instances, 0..) |inst, i| out.instances[i] = inst;
         for (self.lights, 0..) |light, i| out.lights[i] = light;
         for (self.fog_emitters, 0..) |fog, i| out.fog_emitters[i] = fog;
         for (self.warps, 0..) |w, i| out.warps[i] = w;
+        for (0..out.screen_shader_count) |i| out.screen_shaders[i] = self.screen_shaders[i];
+        out.particle_count = @min(self.particle_systems.len, max_particle_systems);
+        for (0..out.particle_count) |i| out.particle_systems[i] = self.particle_systems[i];
         out.camera = self.camera;
+        out.time = t;
 
         const snap = animation.evaluate(self.timeline, t);
         animation.applySnapshot(
@@ -297,6 +324,8 @@ const FrameRender = struct {
             out.fog_count,
             out.warps[0..out.warp_count],
             out.warp_count,
+            out.screen_shaders[0..out.screen_shader_count],
+            out.particle_systems[0..out.particle_count],
             &out.camera,
         );
     }
@@ -307,11 +336,12 @@ const FrameRender = struct {
     }
 
     fn uniformsFor(self: *const FrameRender, scene: *const FrameScene, half_sep: ?f32) Uniforms {
-        return export_image.buildUniforms(
+        var uniforms = export_image.buildUniforms(
             scene.instances[0..scene.instance_count],
             scene.lights[0..scene.light_count],
             scene.fog_emitters[0..scene.fog_count],
             scene.warps[0..scene.warp_count],
+            scene.particle_systems[0..scene.particle_count],
             scene.camera,
             self.basisFor(scene, half_sep),
             self.render_settings.max_steps,
@@ -324,6 +354,13 @@ const FrameRender = struct {
             self.width,
             self.height,
         );
+        uniforms.time = scene.time;
+        return uniforms;
+    }
+
+    fn stampEffects(self: *const FrameRender, scene: *const FrameScene) void {
+        var buf: [max_screen_shaders]post_process.Effect = undefined;
+        self.fractal.setPostEffects(screen_shader.buildEffects(scene.screen_shaders[0..scene.screen_shader_count], &buf));
     }
 
     fn eye(self: *const FrameRender, t: f32, half_sep: ?f32, progress: RenderProgress) ![]u8 {
@@ -333,16 +370,26 @@ const FrameRender = struct {
 
         if (self.shutter <= 0) {
             self.sceneAt(t, &scene);
-            const samples = SampleSet{ .repeat = .{ .uniforms = self.uniformsFor(&scene, half_sep), .count = self.sample_count } };
+            self.stampEffects(&scene);
+            var uniforms = self.uniformsFor(&scene, half_sep);
+            export_image.prepareParticles(self.gpu_ctx, self.fractal, scene.particle_systems[0..scene.particle_count], &uniforms);
+            const samples = SampleSet{ .repeat = .{ .uniforms = uniforms, .count = self.sample_count } };
             return self.fractal.renderToImage(self.gpu_ctx, &samples, self.width, self.height, self.allocator, progress);
         }
+
+        self.sceneAt(t, &scene);
+        var frame_uniforms = self.uniformsFor(&scene, half_sep);
+        export_image.prepareParticles(self.gpu_ctx, self.fractal, scene.particle_systems[0..scene.particle_count], &frame_uniforms);
 
         const n: f32 = @floatFromInt(self.sample_count);
         for (0..self.sample_count) |s| {
             const offset = ((@as(f32, @floatFromInt(s)) + 0.5) / n - 0.5) * self.shutter;
             self.sceneAt(t + offset, &scene);
             self.sample_buf[s] = self.uniformsFor(&scene, half_sep);
+            self.sample_buf[s].particle_systems = frame_uniforms.particle_systems;
         }
+        self.sceneAt(t, &scene);
+        self.stampEffects(&scene);
         const samples = SampleSet{ .per_sample = self.sample_buf[0..self.sample_count] };
         return self.fractal.renderToImage(self.gpu_ctx, &samples, self.width, self.height, self.allocator, progress);
     }
@@ -374,7 +421,7 @@ const FfmpegPipe = struct {
 };
 
 fn startFfmpegPipe(folder: []const u8, fps: f32, width: u32, height: u32, pix_fmt: []const u8) ?FfmpegPipe {
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = process_io.io();
 
     var fps_buf: [32]u8 = undefined;
     const fps_str = std.fmt.bufPrint(&fps_buf, "{d}", .{fps}) catch return null;
@@ -405,7 +452,7 @@ fn startFfmpegPipe(folder: []const u8, fps: f32, width: u32, height: u32, pix_fm
 }
 
 fn muxToMp4(allocator: std.mem.Allocator, folder: []const u8, fps: f32) MuxResult {
-    const io = std.Io.Threaded.global_single_threaded.io();
+    const io = process_io.io();
 
     var fps_buf: [32]u8 = undefined;
     const fps_str = std.fmt.bufPrint(&fps_buf, "{d}", .{fps}) catch return .failed;
@@ -424,4 +471,36 @@ fn muxToMp4(allocator: std.mem.Allocator, folder: []const u8, fps: f32) MuxResul
         .exited => |code| if (code == 0) .muxed else .failed,
         else => .failed,
     };
+}
+
+pub const FfmpegProbe = struct {
+    found: bool,
+    version_buf: [48]u8 = undefined,
+    version_len: usize = 0,
+
+    pub fn version(self: *const FfmpegProbe) []const u8 {
+        return self.version_buf[0..self.version_len];
+    }
+};
+
+pub fn probeFfmpeg(allocator: std.mem.Allocator) FfmpegProbe {
+    const result = std.process.run(allocator, process_io.io(), .{
+        .argv = &.{ "ffmpeg", "-version" },
+        .stdout_limit = .limited(4096),
+        .stderr_limit = .limited(4096),
+    }) catch return .{ .found = false };
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    var probe = FfmpegProbe{ .found = result.term == .exited and result.term.exited == 0 };
+    if (!probe.found) return probe;
+
+    const first_line = std.mem.sliceTo(result.stdout, '\n');
+    const prefix = "ffmpeg version ";
+    if (std.mem.startsWith(u8, first_line, prefix)) {
+        const token = std.mem.sliceTo(first_line[prefix.len..], ' ');
+        probe.version_len = @min(token.len, probe.version_buf.len);
+        @memcpy(probe.version_buf[0..probe.version_len], token[0..probe.version_len]);
+    }
+    return probe;
 }

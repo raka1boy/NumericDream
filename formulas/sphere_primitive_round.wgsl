@@ -1,5 +1,3 @@
-// Sphere primitive: the reference for how a primitive is made mixable (size travels in dr).
-
 // @param Radius min=0.05 max=8 default=1
 fn de_iterations(p: array<f32, 8>) -> i32 {
     return primitive_de_iterations();

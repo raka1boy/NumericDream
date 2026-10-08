@@ -1,10 +1,10 @@
 struct Uniforms {
     progress: f32,
     aspect: f32,
-    digit0: f32, // hundreds place; blank (0) segment mask when not shown
-    digit1: f32, // tens place; blank unless digit0 is also shown
-    digit2: f32, // ones place -- always shown
-    button_hover: f32, // 1.0 while the mouse is over the Cancel button
+    digit0: f32,
+    digit1: f32,
+    digit2: f32,
+    button_hover: f32,
     _pad1: f32,
     _pad2: f32,
 }

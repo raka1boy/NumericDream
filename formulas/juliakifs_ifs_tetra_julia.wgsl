@@ -1,5 +1,3 @@
-// Julia KIFS: Sierpinski tetra fold with a fixed Julia translate.
-
 // @param Scale min=1.5 max=3 default=2
 // @param JuliaX min=-2 max=2 default=0.4
 // @param JuliaY min=-2 max=2 default=0.4

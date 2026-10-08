@@ -1,5 +1,3 @@
-// Prism KIFS: polar wedge fold ahead of the Mandelbox fold.
-
 // @param Degree min=2 max=16 default=5
 // @param Scale min=-3 max=3 default=2
 // @param MinRadius min=0.05 max=1 default=0.5

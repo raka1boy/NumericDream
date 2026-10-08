@@ -1,5 +1,3 @@
-// Buffalo Twist: the Buffalo fold with a per-iteration rotation.
-
 // @param Scale min=-3 max=3 default=-1.6
 // @param MinRadius min=0.05 max=1 default=0.5
 // @param FixedRadius min=0.5 max=3 default=1

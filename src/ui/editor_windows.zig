@@ -26,6 +26,12 @@ const LightState = scene_state.LightState;
 const FogEmitterState = scene_state.FogEmitterState;
 const warp_mod = @import("../app/warp.zig");
 const WarpState = warp_mod.WarpState;
+const particles_mod = @import("../app/particles.zig");
+const ParticleSystemState = particles_mod.ParticleSystemState;
+const max_particle_systems = fractal_gpu.max_particle_systems;
+const screen_shader_mod = @import("../app/screen_shader.zig");
+const ScreenShaderState = screen_shader_mod.ScreenShaderState;
+const max_screen_shaders = screen_shader_mod.max_screen_shaders;
 const sky_mod = @import("../app/sky.zig");
 const SkyState = sky_mod.SkyState;
 const selection = @import("../app/selection.zig");
@@ -45,6 +51,8 @@ const MarchPrecision = render_precision.MarchPrecision;
 const RenderSettingsState = render_precision.RenderSettingsState;
 const animation = @import("../app/animation.zig");
 const export_anim = @import("../app/export_anim.zig");
+const export_mesh = @import("../app/export_mesh.zig");
+const PlayState = @import("../app/play_mode.zig").PlayState;
 
 fn buildFormulaSection(
     ctx: *nk.nk_context,
@@ -73,7 +81,7 @@ fn buildFormulaSection(
     }
     nk.nk_layout_row_dynamic(ctx, 22, 2);
     if (nk.nk_button_label(ctx, "Library") != 0) {
-        library_panel.openFor(formula);
+        library_panel.openFor(.{ .formula = formula });
     }
     if (!fractal.isCompiling()) {
         if (nk.nk_button_label(ctx, "Compile") != 0) {
@@ -116,7 +124,7 @@ pub fn buildFractalEditorWindow(
     allocator: std.mem.Allocator,
     inst: *FractalInstanceState,
     index: usize,
-    instances: []const FractalInstanceState,
+    instances: []FractalInstanceState,
     instance_count: usize,
     library_panel: *formula_library.PanelState,
 ) void {
@@ -143,6 +151,24 @@ pub fn buildFractalEditorWindow(
         widgets.sliderVec3(ctx, "Rotation", &inst.rotation, &inst.rotation_range_x, &inst.rotation_range_y, &inst.rotation_range_z);
 
         widgets.sliderFloat(ctx, "Step-size safety factor", &inst.step_safety, &inst.step_safety_range);
+
+        widgets.sectionLabel(ctx, "FT View");
+        nk.nk_layout_row_dynamic(ctx, 22, 1);
+        var ft_view_on: c_int = if (inst.ft_view) 1 else 0;
+        _ = nk.nk_checkbox_label(ctx, "FT View (Fourier magnitude cloud)", &ft_view_on);
+        if ((ft_view_on != 0) != inst.ft_view) {
+            scene_state.setFtViewExclusive(instances, index, ft_view_on != 0);
+        }
+        if (inst.ft_view) {
+            widgets.sliderFloat(ctx, "FT box radius", &inst.fft_box_radius, &inst.fft_box_radius_range);
+            widgets.sliderFloat(ctx, "FT cloud density", &inst.fft_cloud_density, &inst.fft_cloud_density_range);
+            widgets.sliderFloat(ctx, "FT low-pass cutoff", &inst.fft_lowpass, &inst.fft_lowpass_range);
+            widgets.sliderFloat(ctx, "FT high-pass cutoff", &inst.fft_highpass, &inst.fft_highpass_range);
+            nk.nk_layout_row_dynamic(ctx, 22, 1);
+            var normalize_on: c_int = if (inst.fft_normalize) 1 else 0;
+            _ = nk.nk_checkbox_label(ctx, "Normalize (peak = 1)", &normalize_on);
+            inst.fft_normalize = normalize_on != 0;
+        }
 
         if (index > 0) {
             widgets.sectionLabel(ctx, "Combine mode");
@@ -171,7 +197,7 @@ pub fn buildFractalEditorWindow(
         for (0..inst.mixin_count) |j| {
             var mixin_buf: [32]u8 = undefined;
             const mixin_label: [:0]const u8 = std.fmt.bufPrintSentinel(&mixin_buf, "Mixin {d}", .{j + 1}, 0) catch "Mixin";
-            if (widgets.selectableRemovableRow(ctx, mixin_label, &inst.mixins[j].window_open, 22)) {
+            if (widgets.selectableRemovableRow(ctx, mixin_label, &inst.mixins[j].window_open, null, 22)) {
                 remove_mixin_index = j;
             }
         }
@@ -182,6 +208,7 @@ pub fn buildFractalEditorWindow(
                 var j = idx;
                 while (j + 1 < inst.mixin_count) : (j += 1) inst.mixins[j] = inst.mixins[j + 1];
                 inst.mixin_count -= 1;
+                formula_library.noteListChanged();
                 scene_state.rebuildAllChecked(gpu_ctx, fractal, allocator, instances, instance_count) catch |err| {
                     std.log.err("Failed to rebuild shader: {s}: {s}", .{ @errorName(err), webgpu_context.g_error_sink.message() });
                 };
@@ -215,42 +242,92 @@ pub fn buildFractalEditorWindow(
         }
 
         widgets.separator(ctx);
-        widgets.sectionLabel(ctx, "Color strip");
-        widgets.colorStripWidget(ctx, inst);
+        buildOrbitTrapSection(ctx, &inst.trap);
 
-        if (inst.selected_color) |sel| {
-            if (sel < inst.color_count) {
-                const stop = &inst.colors[sel];
-                nk.nk_layout_row_dynamic(ctx, 20, 1);
-                widgets.colorPickerCombo(ctx, &stop.color);
-                widgets.sliderFloat(ctx, "Glossiness", &stop.glossiness, &stop.glossiness_range);
-                widgets.sliderFloat(ctx, "Transparency", &stop.transparency, &stop.transparency_range);
-                widgets.sliderFloat(ctx, "Reflectiveness", &stop.reflectiveness, &stop.reflectiveness_range);
-                widgets.sliderFloat(ctx, "Subsurface scattering", &stop.subsurface, &stop.subsurface_range);
-
-                widgets.separator(ctx);
-                widgets.sectionLabel(ctx, "Refraction");
-                widgets.sliderFloat(ctx, "IOR", &stop.ior, &stop.ior_range);
-                widgets.sliderFloat(ctx, "Abbe number", &stop.abbe, &stop.abbe_range);
-                widgets.sliderFloat(ctx, "Roughness", &stop.roughness, &stop.roughness_range);
-                widgets.sliderInt(ctx, "Inner max steps", &stop.inner_max_steps, &stop.inner_max_steps_range);
-
-                widgets.separator(ctx);
-                widgets.sectionLabel(ctx, "Iridescence");
-                widgets.sliderFloat(ctx, "Strength", &stop.film_strength, &stop.film_strength_range);
-                widgets.sliderFloat(ctx, "Film thickness (nm)", &stop.film_thickness, &stop.film_thickness_range);
-                widgets.sliderFloat(ctx, "Film IOR", &stop.film_ior, &stop.film_ior_range);
-                widgets.sliderFloat(ctx, "Angle scale", &stop.film_angle_scale, &stop.film_angle_scale_range);
-                widgets.sliderFloat(ctx, "Normal perturbation", &stop.film_perturb, &stop.film_perturb_range);
-                widgets.sliderFloat(ctx, "Perturbation scale", &stop.film_perturb_scale, &stop.film_perturb_scale_range);
-            } else {
-                inst.selected_color = null;
-            }
-        }
+        widgets.separator(ctx);
+        buildColorStripSection(ctx, inst);
     }
     nk.nk_end(ctx);
     if (nk.nk_window_is_closed(ctx, title.ptr) != 0) {
         inst.window_open = false;
+    }
+}
+
+fn buildColorStripSection(ctx: *nk.nk_context, inst: anytype) void {
+    widgets.sectionLabel(ctx, "Color strip");
+    widgets.colorStripWidget(ctx, inst);
+
+    if (inst.selected_color) |sel| {
+        if (sel < inst.color_count) {
+            const stop = &inst.colors[sel];
+            nk.nk_layout_row_dynamic(ctx, 20, 1);
+            widgets.colorPickerCombo(ctx, &stop.color);
+            widgets.sliderFloat(ctx, "Glossiness", &stop.glossiness, &stop.glossiness_range);
+            widgets.sliderFloat(ctx, "Transparency", &stop.transparency, &stop.transparency_range);
+            widgets.sliderFloat(ctx, "Reflectiveness", &stop.reflectiveness, &stop.reflectiveness_range);
+            widgets.sliderFloat(ctx, "Subsurface scattering", &stop.subsurface, &stop.subsurface_range);
+
+            widgets.separator(ctx);
+            widgets.sectionLabel(ctx, "Refraction");
+            widgets.sliderFloat(ctx, "IOR", &stop.ior, &stop.ior_range);
+            widgets.sliderFloat(ctx, "Abbe number", &stop.abbe, &stop.abbe_range);
+            widgets.sliderFloat(ctx, "Roughness", &stop.roughness, &stop.roughness_range);
+            widgets.sliderInt(ctx, "Inner max steps", &stop.inner_max_steps, &stop.inner_max_steps_range);
+
+            widgets.separator(ctx);
+            widgets.sectionLabel(ctx, "Iridescence");
+            widgets.sliderFloat(ctx, "Strength", &stop.film_strength, &stop.film_strength_range);
+            widgets.sliderFloat(ctx, "Film thickness (nm)", &stop.film_thickness, &stop.film_thickness_range);
+            widgets.sliderFloat(ctx, "Film IOR", &stop.film_ior, &stop.film_ior_range);
+            widgets.sliderFloat(ctx, "Angle scale", &stop.film_angle_scale, &stop.film_angle_scale_range);
+            widgets.sliderFloat(ctx, "Normal perturbation", &stop.film_perturb, &stop.film_perturb_range);
+            widgets.sliderFloat(ctx, "Perturbation scale", &stop.film_perturb_scale, &stop.film_perturb_scale_range);
+        } else {
+            inst.selected_color = null;
+        }
+    }
+}
+
+fn labeledEnumCombo(ctx: *nk.nk_context, label: [:0]const u8, comptime E: type, value: *E) void {
+    nk.nk_layout_row_template_begin(ctx, 22);
+    nk.nk_layout_row_template_push_static(ctx, 80);
+    nk.nk_layout_row_template_push_dynamic(ctx);
+    nk.nk_layout_row_template_end(ctx);
+    nk.nk_label(ctx, label.ptr, @intCast(nk.NK_TEXT_LEFT));
+    if (nk.nk_combo_begin_label(ctx, value.label().ptr, nk.nk_vec2(nk.nk_widget_width(ctx), 200)) != 0) {
+        nk.nk_layout_row_dynamic(ctx, 20, 1);
+        for (E.all) |v| {
+            if (nk.nk_combo_item_label(ctx, v.label().ptr, @intCast(nk.NK_TEXT_LEFT)) != 0) {
+                value.* = v;
+            }
+        }
+        nk.nk_combo_end(ctx);
+    }
+}
+
+fn buildOrbitTrapSection(ctx: *nk.nk_context, trap: *scene_state.OrbitTrapState) void {
+    widgets.sectionLabel(ctx, "Orbit trap");
+    labeledEnumCombo(ctx, "Shape", scene_state.TrapShape, &trap.shape);
+    labeledEnumCombo(ctx, "Measure", scene_state.TrapMode, &trap.mode);
+
+    widgets.sliderVec3(ctx, "Trap centre", &trap.center, &trap.center_range_x, &trap.center_range_y, &trap.center_range_z);
+    switch (trap.shape) {
+        .point, .cross => {},
+        .sphere => widgets.sliderFloat(ctx, "Trap radius", &trap.radius, &trap.radius_range),
+        .box => widgets.sliderVec3(ctx, "Box half-extent", &trap.box, &trap.box_range_x, &trap.box_range_y, &trap.box_range_z),
+        .torus => {
+            widgets.sliderFloat(ctx, "Ring radius", &trap.radius, &trap.radius_range);
+            widgets.sliderFloat(ctx, "Tube radius", &trap.tube, &trap.tube_range);
+        },
+    }
+
+    widgets.sliderFloat(ctx, "Strip span", &trap.span, &trap.span_range);
+    widgets.sliderFloat(ctx, "Strip offset", &trap.offset, &trap.offset_range);
+    labeledEnumCombo(ctx, "Past the end", scene_state.TrapRepeat, &trap.repeat);
+
+    if (trap.mode == .iteration) {
+        nk.nk_layout_row_dynamic(ctx, 28, 1);
+        nk.nk_label_colored_wrap(ctx, "Iteration value runs 0..1 over the formula's iterations: span 1 covers the strip", nk.nk_rgb(180, 180, 190));
     }
 }
 
@@ -406,8 +483,6 @@ pub fn buildFogEmitterEditorWindow(ctx: *nk.nk_context, fog: *FogEmitterState, i
 
         widgets.separator(ctx);
 
-        //nk.nk_layout_row_dynamic(ctx, 56, 1);
-        //nk.nk_label_wrap(ctx, "dklddklasdjkasjdkasd");
     }
     nk.nk_end(ctx);
     if (nk.nk_window_is_closed(ctx, title.ptr) != 0) {
@@ -432,7 +507,6 @@ pub fn buildSkyEditorWindow(
     );
     if (shown != 0) {
         widgets.sectionLabel(ctx, "Source");
-        //nk.nk_layout_row_dynamic(ctx, 22, 2);
         if (nk.nk_option_label(ctx, "Procedural", if (sky.mode == .procedural) 1 else 0) != 0) {
             sky.mode = .procedural;
         }
@@ -669,13 +743,208 @@ pub fn buildWarpEditorWindow(ctx: *nk.nk_context, w: *WarpState, index: usize) v
     }
 }
 
+pub fn buildParticleSystemEditorWindow(ctx: *nk.nk_context, ps: *ParticleSystemState, index: usize, steps_simulated: u32) void {
+    var title_buf: [40]u8 = undefined;
+    const title: [:0]const u8 = std.fmt.bufPrintSentinel(&title_buf, "Particle System {d} Editor", .{index + 1}, 0) catch "Particle System Editor";
+
+    const x: f32 = 540 + @as(f32, @floatFromInt(index)) * 40;
+    const y: f32 = 80 + @as(f32, @floatFromInt(index)) * 40;
+    const shown = nk.nk_begin(
+        ctx,
+        title.ptr,
+        nk.nk_rect(x, y, 340, 900),
+        @intCast(nk.NK_WINDOW_BORDER | nk.NK_WINDOW_MOVABLE | nk.NK_WINDOW_TITLE | nk.NK_WINDOW_SCALABLE | nk.NK_WINDOW_CLOSABLE),
+    );
+    if (shown != 0) {
+        widgets.sectionLabel(ctx, "Time");
+        widgets.sliderFloat(ctx, "t", &ps.t, &ps.t_range);
+        widgets.sliderInt(ctx, "Sim steps per unit of t", &ps.sim_rate, &ps.sim_rate_range);
+        var step_buf: [96]u8 = undefined;
+        const step_line: [:0]const u8 = if (ps.targetSteps() >= particles_mod.max_steps)
+            std.fmt.bufPrintSentinel(&step_buf, "Capped at {d} steps: t stops at {d:.2}", .{ particles_mod.max_steps, ps.effectiveT() }, 0) catch ""
+        else
+            std.fmt.bufPrintSentinel(&step_buf, "{d} steps simulated", .{steps_simulated}, 0) catch "";
+        nk.nk_layout_row_dynamic(ctx, 16, 1);
+        nk.nk_label(ctx, step_line.ptr, @intCast(nk.NK_TEXT_LEFT));
+
+        widgets.separator(ctx);
+        widgets.sectionLabel(ctx, "Spawn");
+        labeledEnumCombo(ctx, "Shape", particles_mod.SpawnShape, &ps.spawn_shape);
+        widgets.sliderVec3(ctx, "Centre", &ps.center, &ps.center_range_x, &ps.center_range_y, &ps.center_range_z);
+        switch (ps.spawn_shape) {
+            .sphere => widgets.sliderFloat(ctx, "Radius (0 = point)", &ps.spawn_radius, &ps.spawn_radius_range),
+            .disc => widgets.sliderFloat(ctx, "Disc radius", &ps.spawn_radius, &ps.spawn_radius_range),
+            .rectangle => {
+                widgets.sliderFloat(ctx, "Half-extent X", &ps.extent_x, &ps.extent_x_range);
+                widgets.sliderFloat(ctx, "Half-extent Z", &ps.extent_z, &ps.extent_z_range);
+            },
+        }
+        if (ps.spawn_shape != .sphere) {
+            widgets.sliderVec3(ctx, "Rotation", &ps.rotation, &ps.rotation_range_x, &ps.rotation_range_y, &ps.rotation_range_z);
+        }
+        widgets.sliderInt(ctx, "Count", &ps.count, &ps.count_range);
+        widgets.sliderInt(ctx, "Seed", &ps.seed, &ps.seed_range);
+        widgets.sliderFloat(ctx, "Emission duration (0 = all at once)", &ps.emit_duration, &ps.emit_duration_range);
+        widgets.sliderFloat(ctx, "Lifetime (0 = forever)", &ps.lifetime, &ps.lifetime_range);
+
+        widgets.separator(ctx);
+        widgets.sectionLabel(ctx, "Movement");
+        labeledEnumCombo(ctx, "Velocity", particles_mod.VelocityMode, &ps.velocity_mode);
+        if (ps.velocity_mode == .direction) {
+            widgets.sliderVec3(ctx, "Direction", &ps.direction, &ps.direction_range_x, &ps.direction_range_y, &ps.direction_range_z);
+            widgets.sliderFloat(ctx, "Cone spread (deg)", &ps.spread, &ps.spread_range);
+        }
+        widgets.sliderFloat(ctx, "Speed min", &ps.speed_min, &ps.speed_min_range);
+        widgets.sliderFloat(ctx, "Speed max", &ps.speed_max, &ps.speed_max_range);
+
+        widgets.separator(ctx);
+        widgets.sectionLabel(ctx, "Physics");
+        nk.nk_layout_row_dynamic(ctx, 22, 1);
+        const scene_now: nk.nk_bool = if (ps.stop_on_scene) 1 else 0;
+        ps.stop_on_scene = nk.nk_check_label(ctx, "Stop on contact with fractals", scene_now) != 0;
+        nk.nk_layout_row_dynamic(ctx, 22, 1);
+        const stick_now: nk.nk_bool = if (ps.stick) 1 else 0;
+        ps.stick = nk.nk_check_label(ctx, "Stick to stopped particles", stick_now) != 0;
+        widgets.sliderFloat(ctx, "Kill radius (from centre)", &ps.kill_radius, &ps.kill_radius_range);
+
+        widgets.separator(ctx);
+        widgets.sectionLabel(ctx, "Size");
+        widgets.sliderFloat(ctx, "Radius", &ps.size, &ps.size_range);
+        widgets.sliderFloat(ctx, "Radius variation", &ps.size_variation, &ps.size_variation_range);
+
+        widgets.separator(ctx);
+        widgets.sectionLabel(ctx, "Look");
+        labeledEnumCombo(ctx, "Render as", particles_mod.RenderMode, &ps.render_mode);
+        nk.nk_layout_row_dynamic(ctx, 16, 1);
+        nk.nk_label_colored(ctx, "Switching recompiles the shader", @intCast(nk.NK_TEXT_LEFT), nk.nk_rgb(180, 180, 190));
+        switch (ps.render_mode) {
+            .spheres => {
+                labeledEnumCombo(ctx, "Combine", scene_state.CombineMode, &ps.combine_mode);
+                if (ps.combine_mode != .hard_union) {
+                    widgets.sliderFloat(ctx, "Blend smoothness", &ps.blend_k, &ps.blend_k_range);
+                }
+            },
+            .dots => {
+                labeledEnumCombo(ctx, "Style", particles_mod.DotStyle, &ps.dot_style);
+                widgets.sliderFloat(ctx, "Brightness", &ps.glow, &ps.glow_range);
+                if (ps.dot_style == .soft_glow) {
+                    widgets.sliderFloat(ctx, "Glow reach (x radius)", &ps.glow_extent, &ps.glow_extent_range);
+                }
+            },
+        }
+
+        widgets.separator(ctx);
+        labeledEnumCombo(ctx, "Strip by", particles_mod.StripMode, &ps.strip_mode);
+        if (ps.strip_mode == .distance) {
+            widgets.sliderFloat(ctx, "Strip span", &ps.strip_span, &ps.strip_span_range);
+        }
+        widgets.sliderFloat(ctx, "Strip offset", &ps.strip_offset, &ps.strip_offset_range);
+        buildColorStripSection(ctx, ps);
+    }
+    nk.nk_end(ctx);
+    if (nk.nk_window_is_closed(ctx, title.ptr) != 0) {
+        ps.window_open = false;
+    }
+}
+
+pub fn buildScreenShaderEditorWindow(
+    ctx: *nk.nk_context,
+    window: *sdl.SDL_Window,
+    gpu_ctx: *Context,
+    fractal: *FractalRenderer,
+    allocator: std.mem.Allocator,
+    shader: *ScreenShaderState,
+    index: usize,
+    library_panel: *formula_library.PanelState,
+) void {
+    var title_buf: [48]u8 = undefined;
+    const title: [:0]const u8 = std.fmt.bufPrintSentinel(&title_buf, "Screen Shader {d} Editor", .{index + 1}, 0) catch "Screen Shader Editor";
+
+    const x: f32 = 560 + @as(f32, @floatFromInt(index % 8)) * 40;
+    const y: f32 = 140 + @as(f32, @floatFromInt(index % 8)) * 40;
+    const shown = nk.nk_begin(
+        ctx,
+        title.ptr,
+        nk.nk_rect(x, y, 330, 520),
+        @intCast(nk.NK_WINDOW_BORDER | nk.NK_WINDOW_MOVABLE | nk.NK_WINDOW_TITLE | nk.NK_WINDOW_SCALABLE | nk.NK_WINDOW_CLOSABLE),
+    );
+    if (shown != 0) {
+        nk.nk_layout_row_dynamic(ctx, 22, 2);
+        const on_now: nk.nk_bool = if (shader.enabled) 1 else 0;
+        shader.enabled = nk.nk_check_label(ctx, "Enabled", on_now) != 0;
+        const anim_now: nk.nk_bool = if (shader.animated) 1 else 0;
+        shader.animated = nk.nk_check_label(ctx, "Animated", anim_now) != 0;
+        if (shader.animated) {
+            nk.nk_layout_row_dynamic(ctx, 30, 1);
+            nk.nk_label_colored_wrap(ctx, "Keeps redrawing the preview so effects that read pp.time keep moving.", nk.nk_rgb(180, 180, 190));
+        }
+
+        widgets.separator(ctx);
+
+        widgets.sectionLabel(ctx, ".wgsl screen-space effect");
+        nk.nk_layout_row_template_begin(ctx, 24);
+        nk.nk_layout_row_template_push_dynamic(ctx);
+        nk.nk_layout_row_template_push_static(ctx, 76);
+        nk.nk_layout_row_template_end(ctx);
+        _ = nk.nk_edit_string_zero_terminated(ctx, @intCast(nk.NK_EDIT_FIELD), &shader.path, shader.path.len, nk.nk_filter_default);
+        if (nk.nk_button_label(ctx, "Browse") != 0) {
+            var buf: [screen_shader_mod.max_path_len]u8 = undefined;
+            if (file_dialog.pickWgslFile(window, &buf)) |len| {
+                shader.setPath(buf[0..@min(len, buf.len)]);
+            }
+        }
+
+        nk.nk_layout_row_dynamic(ctx, 22, 2);
+        if (nk.nk_button_label(ctx, "Library") != 0) {
+            library_panel.openFor(.{ .screen = shader });
+        }
+        if (!fractal.isCompiling()) {
+            if (nk.nk_button_label(ctx, "Compile") != 0) {
+                screen_shader_mod.compileInto(allocator, gpu_ctx, &fractal.post, shader);
+            }
+        } else {
+            nk.nk_label(ctx, "Busy", @intCast(nk.NK_TEXT_CENTERED));
+        }
+
+        if (shader.pipeline != null) {
+            nk.nk_layout_row_dynamic(ctx, 16, 1);
+            nk.nk_label_colored(ctx, "Effect compiled", @intCast(nk.NK_TEXT_LEFT), nk.nk_rgb(140, 220, 140));
+        }
+        if (shader.compile_error_len > 0) {
+            nk.nk_layout_row_dynamic(ctx, 60, 1);
+            nk.nk_label_colored_wrap(ctx, shader.compile_error[0..shader.compile_error_len :0].ptr, nk.nk_rgb(230, 90, 90));
+        }
+
+        widgets.separator(ctx);
+
+        widgets.sectionLabel(ctx, "Parameters");
+        if (shader.param_count == 0) {
+            nk.nk_layout_row_dynamic(ctx, 30, 1);
+            nk.nk_label_colored_wrap(ctx, "This effect declares no @param lines.", nk.nk_rgb(180, 180, 190));
+        }
+        for (0..shader.param_count) |i| {
+            const param = &shader.params[i];
+            if (param.name_len == 0) continue;
+            if (param.integral) {
+                widgets.sliderInt(ctx, param.label(), &param.value, &param.range);
+            } else {
+                widgets.sliderFloat(ctx, param.label(), &param.value, &param.range);
+            }
+        }
+    }
+    nk.nk_end(ctx);
+    if (nk.nk_window_is_closed(ctx, title.ptr) != 0) {
+        shader.window_open = false;
+    }
+}
+
 pub fn buildStereoSettingsWindow(ctx: *nk.nk_context, stereo: *StereoState) void {
     if (!stereo.settings_open) return;
 
     const shown = nk.nk_begin(
         ctx,
         "Stereoscopic Settings",
-        nk.nk_rect(420, 220, 320, 260),
+        nk.nk_rect(420, 220, 320, 280),
         @intCast(nk.NK_WINDOW_BORDER | nk.NK_WINDOW_MOVABLE | nk.NK_WINDOW_TITLE | nk.NK_WINDOW_SCALABLE | nk.NK_WINDOW_CLOSABLE),
     );
     if (shown != 0) {
@@ -683,6 +952,12 @@ pub fn buildStereoSettingsWindow(ctx: *nk.nk_context, stereo: *StereoState) void
 
         widgets.sliderFloat(ctx, "Eye separation", &stereo.eye_separation, &stereo.eye_separation_range);
         widgets.sliderFloat(ctx, "Convergence distance", &stereo.convergence_distance, &stereo.convergence_distance_range);
+
+        widgets.separator(ctx);
+
+        nk.nk_layout_row_dynamic(ctx, 22, 1);
+        const preview_now: nk.nk_bool = if (stereo.preview) 1 else 0;
+        stereo.preview = nk.nk_check_label(ctx, "Preview (overlap both eyes)", preview_now) != 0;
 
         widgets.separator(ctx);
     }
@@ -785,6 +1060,8 @@ pub fn buildAnimRenderWindow(
     fog_count: usize,
     warps: []const WarpState,
     warp_count: usize,
+    screen_shaders: []const ScreenShaderState,
+    particle_systems: []const ParticleSystemState,
     camera: FreeCamera,
     render_settings: RenderSettingsState,
     photon: PhotonSettings,
@@ -825,6 +1102,22 @@ pub fn buildAnimRenderWindow(
         }
         widgets.separator(ctx);
 
+        const ffmpeg = anim_render.ffmpeg orelse blk: {
+            anim_render.ffmpeg = export_anim.probeFfmpeg(allocator);
+            break :blk anim_render.ffmpeg.?;
+        };
+        var ffmpeg_buf: [96]u8 = undefined;
+        const ffmpeg_text: [:0]const u8 = if (ffmpeg.found)
+            std.fmt.bufPrintSentinel(&ffmpeg_buf, "ffmpeg found ({s}) -- output: anim.mp4", .{ffmpeg.version()}, 0) catch "ffmpeg found"
+        else
+            "ffmpeg not found on PATH -- only PNG frames will be saved";
+        nk.nk_layout_row_dynamic(ctx, 32, 1);
+        nk.nk_label_wrap(ctx, ffmpeg_text.ptr);
+        nk.nk_layout_row_dynamic(ctx, 22, 1);
+        if (nk.nk_button_label(ctx, "Re-check ffmpeg") != 0) {
+            anim_render.ffmpeg = null;
+        }
+
         nk.nk_layout_row_dynamic(ctx, 22, 1);
         var save_frames_val: c_int = if (anim_render.save_frames) 1 else 0;
         _ = nk.nk_checkbox_label(ctx, "Also save PNG frames", &save_frames_val);
@@ -848,6 +1141,8 @@ pub fn buildAnimRenderWindow(
                 fog_count,
                 warps,
                 warp_count,
+                screen_shaders,
+                particle_systems,
                 camera,
                 render_settings,
                 photon,
@@ -872,6 +1167,71 @@ pub fn buildAnimRenderWindow(
     nk.nk_end(ctx);
     if (nk.nk_window_is_closed(ctx, "Render Animation") != 0) {
         anim_render.window_open = false;
+    }
+}
+
+pub fn buildMeshExportWindow(
+    ctx: *nk.nk_context,
+    window: *sdl.SDL_Window,
+    gpu_ctx: *Context,
+    fractal: *FractalRenderer,
+    allocator: std.mem.Allocator,
+    state: *export_mesh.MeshExportState,
+    scene: export_mesh.Scene,
+    progress_overlay: *ProgressOverlay,
+) void {
+    if (!state.window_open) return;
+
+    const shown = nk.nk_begin(
+        ctx,
+        "Mesh Export",
+        nk.nk_rect(440, 200, 340, 560),
+        @intCast(nk.NK_WINDOW_BORDER | nk.NK_WINDOW_MOVABLE | nk.NK_WINDOW_TITLE | nk.NK_WINDOW_SCALABLE | nk.NK_WINDOW_CLOSABLE),
+    );
+    if (shown != 0) {
+        nk.nk_layout_row_dynamic(ctx, 32, 1);
+        nk.nk_label_wrap(ctx, "Fractal surfaces only -- lights, fog and sky are not exported.");
+
+        widgets.separator(ctx);
+        widgets.sectionLabel(ctx, "Bounds");
+        widgets.sliderVec3(ctx, "Center", &state.center, &state.center_range_x, &state.center_range_y, &state.center_range_z);
+        widgets.sliderVec3(ctx, "Size", &state.size, &state.size_range_x, &state.size_range_y, &state.size_range_z);
+        nk.nk_layout_row_dynamic(ctx, 22, 1);
+        if (nk.nk_button_label(ctx, "Auto-fit bounds") != 0) {
+            export_mesh.autoFit(state, allocator, gpu_ctx, fractal, scene, progress_overlay);
+        }
+
+        widgets.separator(ctx);
+        widgets.sectionLabel(ctx, "Surface");
+        widgets.sliderInt(ctx, "Resolution (cells, longest side)", &state.resolution, &state.resolution_range);
+        widgets.sliderFloat(ctx, "Surface offset (cells)", &state.iso_scale, &state.iso_scale_range);
+        widgets.sliderFloat(ctx, "Sharp features", &state.sharpness, &state.sharpness_range);
+        widgets.sliderInt(ctx, "Drop pieces under (quads)", &state.min_piece, &state.min_piece_range);
+        nk.nk_layout_row_dynamic(ctx, 22, 1);
+        var colors_val: c_int = if (state.vertex_colors) 1 else 0;
+        _ = nk.nk_checkbox_label(ctx, "Vertex colors", &colors_val);
+        state.vertex_colors = colors_val != 0;
+
+        widgets.separator(ctx);
+        nk.nk_layout_row_dynamic(ctx, 22, 2);
+        if (nk.nk_button_label(ctx, "Estimate size") != 0) {
+            export_mesh.estimate(state, allocator, gpu_ctx, fractal, scene, progress_overlay);
+        }
+        if (nk.nk_button_label(ctx, "Export mesh...") != 0) {
+            export_mesh.exportMesh(state, allocator, window, gpu_ctx, fractal, scene, progress_overlay);
+        }
+        if (state.info.len > 0) {
+            nk.nk_layout_row_dynamic(ctx, 32, 1);
+            nk.nk_label_wrap(ctx, state.info.ptr);
+        }
+        if (state.status.len > 0) {
+            nk.nk_layout_row_dynamic(ctx, 32, 1);
+            nk.nk_label_wrap(ctx, state.status.ptr);
+        }
+    }
+    nk.nk_end(ctx);
+    if (nk.nk_window_is_closed(ctx, "Mesh Export") != 0) {
+        state.window_open = false;
     }
 }
 
@@ -988,11 +1348,16 @@ fn buildPhotonSection(ctx: *nk.nk_context, photon: *PhotonSettings, map: *const 
     widgets.sliderInt(ctx, "Scatter bounces", &photon.bounces, &photon.bounces_range);
     widgets.sliderInt(ctx, "Photon paths", &photon.paths, &photon.paths_range);
     widgets.sliderFloat(ctx, "Gather radius", &photon.radius, &photon.radius_range);
+    widgets.sliderFloat(ctx, "Bounce light radius (x)", &photon.bounce_radius_scale, &photon.bounce_radius_scale_range);
     widgets.sliderFloat(ctx, "Fog cell scale", &photon.volume_scale, &photon.volume_scale_range);
-    widgets.sliderFloat(ctx, "Dispersion softness (deg)", &photon.dispersion_softness, &photon.dispersion_softness_range);
+    widgets.sliderFloat(ctx, "Dispersion softness", &photon.dispersion_softness, &photon.dispersion_softness_range);
     widgets.sliderFloat(ctx, "Photon brightness", &photon.intensity, &photon.intensity_range);
     widgets.sliderInt(ctx, "Grid size (power of two)", &photon.grid_log2, &photon.grid_log2_range);
     widgets.sliderInt(ctx, "Retrace delay (ms)", &photon.debounce_ms, &photon.debounce_ms_range);
+
+    nk.nk_layout_row_dynamic(ctx, 22, 1);
+    const aim_now: nk.nk_bool = if (photon.aim) 1 else 0;
+    photon.aim = nk.nk_check_label(ctx, "Aim photons at geometry", aim_now) != 0;
 
     nk.nk_layout_row_dynamic(ctx, 22, 1);
     const refine_now: nk.nk_bool = if (photon.refine_per_sample) 1 else 0;
@@ -1003,6 +1368,115 @@ fn buildPhotonSection(ctx: *nk.nk_context, photon: *PhotonSettings, map: *const 
         "Every accumulated sample gets its own photons"
     else
         "One trace stands for the whole accumulation");
+
+    if (photon.refine_per_sample) {
+        nk.nk_layout_row_dynamic(ctx, 22, 1);
+        const progressive_now: nk.nk_bool = if (photon.progressive) 1 else 0;
+        photon.progressive = nk.nk_check_label(ctx, "Progressive radius", progressive_now) != 0;
+        if (photon.progressive) {
+            widgets.sliderFloat(ctx, "Progressive start (x)", &photon.progressive_start, &photon.progressive_start_range);
+        }
+    }
+}
+
+fn hiddenSuffix(visible: bool) []const u8 {
+    return if (visible) "" else " (hidden)";
+}
+
+fn buildScreenShaderList(
+    ctx: *nk.nk_context,
+    allocator: std.mem.Allocator,
+    shaders: *[max_screen_shaders]ScreenShaderState,
+    count: *usize,
+) void {
+    nk.nk_layout_row_dynamic(ctx, 18, 1);
+    nk.nk_label(ctx, "Screen space shaders", @intCast(nk.NK_TEXT_LEFT));
+
+    var remove_index: ?usize = null;
+    var swap_index: ?usize = null;
+    for (0..count.*) |i| {
+        var buf: [64]u8 = undefined;
+        const label: [:0]const u8 = std.fmt.bufPrintSentinel(&buf, "{d}. {s}{s}", .{
+            i + 1,
+            shaders[i].label(),
+            if (shaders[i].enabled) "" else " (off)",
+        }, 0) catch "Screen shader";
+
+        switch (widgets.reorderableRow(ctx, label, &shaders[i].window_open, &shaders[i].enabled, i, count.*)) {
+            .none => {},
+            .up => swap_index = i - 1,
+            .down => swap_index = i,
+            .remove => remove_index = i,
+        }
+    }
+
+    if (swap_index) |idx| {
+        std.mem.swap(ScreenShaderState, &shaders[idx], &shaders[idx + 1]);
+        formula_library.noteListChanged();
+    }
+
+    if (remove_index) |idx| {
+        shaders[idx].deinit(allocator);
+        var j = idx;
+        while (j + 1 < count.*) : (j += 1) shaders[j] = shaders[j + 1];
+        count.* -= 1;
+        formula_library.noteListChanged();
+    }
+
+    nk.nk_layout_row_dynamic(ctx, 24, 1);
+    if (count.* < max_screen_shaders) {
+        if (nk.nk_button_label(ctx, "Add screen shader") != 0) {
+            shaders[count.*] = screen_shader_mod.newScreenShader();
+            shaders[count.*].window_open = true;
+            count.* += 1;
+        }
+    } else {
+        nk.nk_label(ctx, "Max screen shaders reached", @intCast(nk.NK_TEXT_CENTERED));
+    }
+}
+
+pub fn buildCrosshair(ctx: *nk.nk_context, play: *const PlayState, width: f32, height: f32) void {
+    if (!play.captured) return;
+    const arm: f32 = 8;
+    const gap: f32 = 3;
+    const cx = @round(width * 0.5);
+    const cy = @round(height * 0.5);
+    _ = nk.nk_style_push_style_item(ctx, &ctx.style.window.fixed_background, nk.nk_style_item_color(nk.nk_rgba(0, 0, 0, 0)));
+    defer _ = nk.nk_style_pop_style_item(ctx);
+    const half: f32 = arm + 24;
+    const bounds = nk.nk_rect(cx - half, cy - half, 2 * half, 2 * half);
+    if (nk.nk_begin(ctx, "##crosshair", bounds, @intCast(nk.NK_WINDOW_NO_INPUT | nk.NK_WINDOW_NO_SCROLLBAR | nk.NK_WINDOW_BACKGROUND)) != 0) {
+        const canvas = nk.nk_window_get_canvas(ctx);
+        inline for (.{ .{ 3.0, nk.nk_rgba(0, 0, 0, 160) }, .{ 1.5, nk.nk_rgba(255, 255, 255, 230) } }) |pass| {
+            nk.nk_stroke_line(canvas, cx - arm, cy, cx - gap, cy, pass[0], pass[1]);
+            nk.nk_stroke_line(canvas, cx + gap, cy, cx + arm, cy, pass[0], pass[1]);
+            nk.nk_stroke_line(canvas, cx, cy - arm, cx, cy - gap, pass[0], pass[1]);
+            nk.nk_stroke_line(canvas, cx, cy + gap, cx, cy + arm, pass[0], pass[1]);
+        }
+    }
+    nk.nk_end(ctx);
+}
+
+fn buildPlaySection(ctx: *nk.nk_context, play: *PlayState, camera: *FreeCamera) void {
+    nk.nk_layout_row_dynamic(ctx, 22, 1);
+    const play_now: nk.nk_bool = if (play.enabled) 1 else 0;
+    play.enabled = nk.nk_check_label(ctx, "Play mode", play_now) != 0;
+    if (play.enabled) {
+        camera.mode_2d = false;
+        var buf: [96]u8 = undefined;
+        const line: [:0]const u8 = std.fmt.bufPrintSentinel(&buf, "{s}{s}", .{
+            play.stateLabel(),
+            if (play.captured) "  (Esc frees the mouse)" else "  (click the view to play)",
+        }, 0) catch "";
+        nk.nk_layout_row_dynamic(ctx, 16, 1);
+        nk.nk_label(ctx, line.ptr, @intCast(nk.NK_TEXT_LEFT));
+        nk.nk_layout_row_dynamic(ctx, 72, 1);
+        nk.nk_label_wrap(ctx, "WASD walk, mouse looks, Space jumps. Double-tap Space to fly (Space/Shift up/down). Z/C shrink/grow you. Left click carves a hole for 10 s. Gravity pulls towards the nearest surface.");
+    } else if (play.status.len > 0) {
+        nk.nk_layout_row_dynamic(ctx, 30, 1);
+        nk.nk_label_colored_wrap(ctx, play.status.ptr, nk.nk_rgb(220, 120, 100));
+    }
+    widgets.separator(ctx);
 }
 
 pub fn buildFractalsListUi(
@@ -1030,6 +1504,10 @@ pub fn buildFractalsListUi(
     fog_count: *usize,
     warps: *[max_warps]WarpState,
     warp_count: *usize,
+    particle_systems: *[max_particle_systems]ParticleSystemState,
+    particle_count: *usize,
+    screen_shaders: *[max_screen_shaders]ScreenShaderState,
+    screen_shader_count: *usize,
     sky: *SkyState,
     camera: *FreeCamera,
     width: f32,
@@ -1047,8 +1525,10 @@ pub fn buildFractalsListUi(
     progress_overlay: *ProgressOverlay,
     timeline: *animation.TimelineState,
     anim_render: *animation.AnimRenderState,
+    mesh_export: *export_mesh.MeshExportState,
     accel_state: *AccelState,
     selection_state: *selection.State,
+    play: *PlayState,
 ) void {
     _ = height;
     if (nk.nk_begin(
@@ -1057,6 +1537,8 @@ pub fn buildFractalsListUi(
         nk.nk_rect(width - 300, 20, 280, 760),
         @intCast(nk.NK_WINDOW_BORDER | nk.NK_WINDOW_MOVABLE | nk.NK_WINDOW_TITLE | nk.NK_WINDOW_SCALABLE),
     ) != 0) {
+        buildPlaySection(ctx, play, camera);
+
         nk.nk_layout_row_dynamic(ctx, 22, 1);
         const parts_now: nk.nk_bool = if (render_parts.enabled) 1 else 0;
         const parts_next = nk.nk_check_label(ctx, "Simple render", parts_now) != 0;
@@ -1103,6 +1585,7 @@ pub fn buildFractalsListUi(
         const mode_2d_now: nk.nk_bool = if (camera.mode_2d) 1 else 0;
         camera.mode_2d = nk.nk_check_label(ctx, "2D mode", mode_2d_now) != 0;
         if (camera.mode_2d) {
+            play.enabled = false;
             nk.nk_layout_row_dynamic(ctx, 44, 1);
             nk.nk_label_wrap(ctx, "Renders the flat slice the camera cuts through the fractal. F zooms in, R zooms out.");
 
@@ -1122,27 +1605,13 @@ pub fn buildFractalsListUi(
             }
         }
 
-        //literally useless. will remove someday
-
-        // nk.nk_layout_row_dynamic(ctx, 22, 1);
-        // const follow_warp_now: nk.nk_bool = if (camera.follow_warp) 1 else 0;
-        // camera.follow_warp = nk.nk_check_label(ctx, "Follow spatial warp", follow_warp_now) != 0;
-        // if (camera.follow_warp) {
-        //     nk.nk_layout_row_dynamic(ctx, 44, 1);
-        //     if (warp_count.* == 0) {
-        //         nk.nk_label_colored_wrap(ctx, "No warps in the scene yet -- this takes effect once you add one below.", nk.nk_rgb(200, 180, 90));
-        //     } else {
-        //         nk.nk_label_wrap(ctx, "Moves the camera through the fractal's own warped coordinates instead of straight world space: it rolls where space twists, and its speed changes where space stretches.");
-        //     }
-        // }
-
         nk.nk_layout_row_dynamic(ctx, 22, 1);
         const dof_now: nk.nk_bool = if (camera.dof_enabled) 1 else 0;
         camera.dof_enabled = nk.nk_check_label(ctx, "Depth of field", dof_now) != 0;
         if (camera.dof_enabled) {
             widgets.sliderFloat(ctx, "Focus distance", &camera.focus_distance, &camera.focus_distance_range);
             widgets.sliderFloat(ctx, "Focus range", &camera.focus_range, &camera.focus_range_range);
-            widgets.sliderFloat(ctx, "Aperture)", &camera.aperture, &camera.aperture_range); //тимур попросил оставить так
+            widgets.sliderFloat(ctx, "Aperture)", &camera.aperture, &camera.aperture_range);
         }
 
         widgets.separator(ctx);
@@ -1191,6 +1660,7 @@ pub fn buildFractalsListUi(
                 lights[0..light_count.*],
                 fog_emitters[0..fog_count.*],
                 warps[0..warp_count.*],
+                particle_systems[0..particle_count.*],
                 camera.*,
                 render_settings.max_steps,
                 render_settings.max_dist,
@@ -1214,9 +1684,14 @@ pub fn buildFractalsListUi(
             nk.nk_label(ctx, export_status.ptr, @intCast(nk.NK_TEXT_LEFT));
         }
 
-        nk.nk_layout_row_dynamic(ctx, 22, 1);
+        nk.nk_layout_row_dynamic(ctx, 22, 2);
         if (nk.nk_button_label(ctx, "Render Anim") != 0) {
             anim_render.window_open = true;
+            anim_render.ffmpeg = null;
+        }
+        if (nk.nk_button_label(ctx, "Export mesh") != 0) {
+            mesh_export.window_open = true;
+            if (!mesh_export.bounds_seeded) export_mesh.seedBounds(mesh_export, instances[0..instance_count.*]);
         }
 
         widgets.separator(ctx);
@@ -1244,6 +1719,8 @@ pub fn buildFractalsListUi(
                 lights[0..light_count.*],
                 fog_emitters[0..fog_count.*],
                 warps[0..warp_count.*],
+                particle_systems[0..particle_count.*],
+                screen_shaders[0..screen_shader_count.*],
                 sky,
                 stereo.*,
                 mc.*,
@@ -1279,6 +1756,10 @@ pub fn buildFractalsListUi(
                 fog_count,
                 warps,
                 warp_count,
+                particle_systems,
+                particle_count,
+                screen_shaders,
+                screen_shader_count,
                 sky,
                 stereo,
                 mc,
@@ -1296,8 +1777,8 @@ pub fn buildFractalsListUi(
         var remove_index: ?usize = null;
         for (0..instance_count.*) |i| {
             var buf: [32]u8 = undefined;
-            const label: [:0]const u8 = std.fmt.bufPrintSentinel(&buf, "Fractal {d}", .{i + 1}, 0) catch "Fractal";
-            if (widgets.selectableRemovableRow(ctx, label, &instances[i].window_open, 24)) {
+            const label: [:0]const u8 = std.fmt.bufPrintSentinel(&buf, "Fractal {d}{s}", .{ i + 1, hiddenSuffix(instances[i].visible) }, 0) catch "Fractal";
+            if (widgets.selectableRemovableRow(ctx, label, &instances[i].window_open, &instances[i].visible, 24)) {
                 remove_index = i;
             }
         }
@@ -1308,6 +1789,7 @@ pub fn buildFractalsListUi(
                 var j = idx;
                 while (j + 1 < instance_count.*) : (j += 1) instances[j] = instances[j + 1];
                 instance_count.* -= 1;
+                formula_library.noteListChanged();
                 selection_state.noteRemoved(.fractal, idx);
                 scene_state.rebuildAll(gpu_ctx, fractal, allocator, instances[0..instance_count.*], instance_count.*);
             }
@@ -1331,8 +1813,8 @@ pub fn buildFractalsListUi(
         var remove_light_index: ?usize = null;
         for (0..light_count.*) |i| {
             var light_buf: [32]u8 = undefined;
-            const light_label: [:0]const u8 = std.fmt.bufPrintSentinel(&light_buf, "Light {d}", .{i + 1}, 0) catch "Light";
-            if (widgets.selectableRemovableRow(ctx, light_label, &lights[i].window_open, 24)) {
+            const light_label: [:0]const u8 = std.fmt.bufPrintSentinel(&light_buf, "Light {d}{s}", .{ i + 1, hiddenSuffix(lights[i].visible) }, 0) catch "Light";
+            if (widgets.selectableRemovableRow(ctx, light_label, &lights[i].window_open, &lights[i].visible, 24)) {
                 remove_light_index = i;
             }
         }
@@ -1373,8 +1855,8 @@ pub fn buildFractalsListUi(
         var remove_fog_index: ?usize = null;
         for (0..fog_count.*) |i| {
             var fog_buf: [32]u8 = undefined;
-            const fog_label: [:0]const u8 = std.fmt.bufPrintSentinel(&fog_buf, "Fog {d}", .{i + 1}, 0) catch "Fog";
-            if (widgets.selectableRemovableRow(ctx, fog_label, &fog_emitters[i].window_open, 24)) {
+            const fog_label: [:0]const u8 = std.fmt.bufPrintSentinel(&fog_buf, "Fog {d}{s}", .{ i + 1, hiddenSuffix(fog_emitters[i].visible) }, 0) catch "Fog";
+            if (widgets.selectableRemovableRow(ctx, fog_label, &fog_emitters[i].window_open, &fog_emitters[i].visible, 24)) {
                 remove_fog_index = i;
             }
         }
@@ -1402,12 +1884,21 @@ pub fn buildFractalsListUi(
         nk.nk_label(ctx, "Warps", @intCast(nk.NK_TEXT_LEFT));
 
         var remove_warp_index: ?usize = null;
+        var swap_warp_index: ?usize = null;
         for (0..warp_count.*) |i| {
-            var warp_buf: [48]u8 = undefined;
-            const warp_label: [:0]const u8 = std.fmt.bufPrintSentinel(&warp_buf, "Warp {d}: {s}", .{ i + 1, warps[i].coord_kind.label() }, 0) catch "Warp";
-            if (widgets.selectableRemovableRow(ctx, warp_label, &warps[i].window_open, 24)) {
-                remove_warp_index = i;
+            var warp_buf: [64]u8 = undefined;
+            const warp_label: [:0]const u8 = std.fmt.bufPrintSentinel(&warp_buf, "Warp {d}: {s}{s}", .{ i + 1, warps[i].coord_kind.label(), hiddenSuffix(warps[i].visible) }, 0) catch "Warp";
+            switch (widgets.reorderableRow(ctx, warp_label, &warps[i].window_open, &warps[i].visible, i, warp_count.*)) {
+                .none => {},
+                .up => swap_warp_index = i - 1,
+                .down => swap_warp_index = i,
+                .remove => remove_warp_index = i,
             }
+        }
+
+        if (swap_warp_index) |idx| {
+            std.mem.swap(WarpState, &warps[idx], &warps[idx + 1]);
+            selection_state.noteSwapped(.warp, idx, idx + 1);
         }
 
         if (remove_warp_index) |idx| {
@@ -1426,6 +1917,41 @@ pub fn buildFractalsListUi(
         } else {
             nk.nk_label(ctx, "Max warps reached", @intCast(nk.NK_TEXT_CENTERED));
         }
+
+        widgets.separator(ctx);
+
+        nk.nk_layout_row_dynamic(ctx, 18, 1);
+        nk.nk_label(ctx, "Particle systems", @intCast(nk.NK_TEXT_LEFT));
+
+        var remove_particles_index: ?usize = null;
+        for (0..particle_count.*) |i| {
+            var ps_buf: [64]u8 = undefined;
+            const ps_label: [:0]const u8 = std.fmt.bufPrintSentinel(&ps_buf, "Particles {d}: {s}{s}", .{ i + 1, particle_systems[i].render_mode.label(), hiddenSuffix(particle_systems[i].visible) }, 0) catch "Particles";
+            if (widgets.selectableRemovableRow(ctx, ps_label, &particle_systems[i].window_open, &particle_systems[i].visible, 24)) {
+                remove_particles_index = i;
+            }
+        }
+
+        if (remove_particles_index) |idx| {
+            var j = idx;
+            while (j + 1 < particle_count.*) : (j += 1) particle_systems[j] = particle_systems[j + 1];
+            particle_count.* -= 1;
+            selection_state.noteRemoved(.particles, idx);
+        }
+
+        nk.nk_layout_row_dynamic(ctx, 24, 1);
+        if (particle_count.* < max_particle_systems) {
+            if (nk.nk_button_label(ctx, "Add particle system") != 0) {
+                particle_systems[particle_count.*] = .{};
+                particle_count.* += 1;
+            }
+        } else {
+            nk.nk_label(ctx, "Max particle systems reached", @intCast(nk.NK_TEXT_CENTERED));
+        }
+
+        widgets.separator(ctx);
+
+        buildScreenShaderList(ctx, allocator, screen_shaders, screen_shader_count);
 
         widgets.separator(ctx);
 
@@ -1457,19 +1983,23 @@ pub fn buildFormulaLibraryWindow(
     panel: *formula_library.PanelState,
     instances: []const FractalInstanceState,
     instance_count: usize,
+    title: [:0]const u8,
 ) void {
+    _ = panel.liveTarget();
     if (!panel.open) return;
 
     const shown = nk.nk_begin(
         ctx,
-        "Formula Library",
+        title.ptr,
         nk.nk_rect(700, 60, 380, 560),
         @intCast(nk.NK_WINDOW_BORDER | nk.NK_WINDOW_MOVABLE | nk.NK_WINDOW_TITLE | nk.NK_WINDOW_SCALABLE | nk.NK_WINDOW_CLOSABLE),
     );
     if (shown != 0) {
         if (panel.library.dir_missing) {
+            var missing_buf: [96]u8 = undefined;
+            const missing: [:0]const u8 = std.fmt.bufPrintSentinel(&missing_buf, "Couldn't find the {s}/ folder next to the exe.", .{panel.subdir}, 0) catch "Folder not found next to the exe.";
             nk.nk_layout_row_dynamic(ctx, 32, 1);
-            nk.nk_label_colored_wrap(ctx, "Couldn't find the formulas/ folder next to the exe.", nk.nk_rgb(230, 90, 90));
+            nk.nk_label_colored_wrap(ctx, missing.ptr, nk.nk_rgb(230, 90, 90));
         }
 
         nk.nk_layout_row_dynamic(ctx, 22, 2);
@@ -1477,7 +2007,7 @@ pub fn buildFormulaLibraryWindow(
             panel.rescan();
         }
         var count_buf: [32]u8 = undefined;
-        const count_label: [:0]const u8 = std.fmt.bufPrintSentinel(&count_buf, "{d} formulas", .{panel.library.entry_count}, 0) catch "formulas";
+        const count_label: [:0]const u8 = std.fmt.bufPrintSentinel(&count_buf, "{d} files", .{panel.library.entry_count}, 0) catch "files";
         nk.nk_label(ctx, count_label.ptr, @intCast(nk.NK_TEXT_RIGHT));
 
         widgets.separator(ctx);
@@ -1514,7 +2044,7 @@ pub fn buildFormulaLibraryWindow(
 
         widgets.separator(ctx);
 
-        widgets.sectionLabel(ctx, "Click a formula to load it");
+        widgets.sectionLabel(ctx, "Click one to load it");
 
         var chosen: ?usize = null;
         for (0..panel.library.entry_count) |i| {
@@ -1546,19 +2076,24 @@ pub fn buildFormulaLibraryWindow(
         }
 
         if (chosen) |idx| {
-            if (panel.target) |formula| {
-                const entry = &panel.library.entries[idx];
-                const path = entry.pathSlice();
-                const n = @min(path.len, formula.formula_path.len - 1);
-                @memcpy(formula.formula_path[0..n], path[0..n]);
-                formula.formula_path[n] = 0;
-                scene_state.compileFormulaInto(allocator, gpu_ctx, fractal, formula, instances, instance_count);
-            }
+            const path = panel.library.entries[idx].pathSlice();
+            if (panel.target) |target| switch (target) {
+                .formula => |formula| {
+                    const n = @min(path.len, formula.formula_path.len - 1);
+                    @memcpy(formula.formula_path[0..n], path[0..n]);
+                    formula.formula_path[n] = 0;
+                    scene_state.compileFormulaInto(allocator, gpu_ctx, fractal, formula, instances, instance_count);
+                },
+                .screen => |shader| {
+                    shader.setPath(path);
+                    screen_shader_mod.compileInto(allocator, gpu_ctx, &fractal.post, shader);
+                },
+            };
             panel.open = false;
         }
     }
     nk.nk_end(ctx);
-    if (nk.nk_window_is_closed(ctx, "Formula Library") != 0) {
+    if (nk.nk_window_is_closed(ctx, title.ptr) != 0) {
         panel.open = false;
     }
 }

@@ -1,5 +1,3 @@
-// Kaleido Julia: polar wedge fold + cube fold with a fixed Julia constant.
-
 // @param Degree min=2 max=16 default=5
 // @param Scale min=1.5 max=3 default=2.5
 // @param JuliaX min=-2 max=2 default=0.5

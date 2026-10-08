@@ -1,5 +1,3 @@
-// Icosahedral Julia: the icosahedral fold with a fixed Julia constant.
-
 // @param Scale min=1 max=3 default=2
 // @param OffsetX min=0 max=1.2 default=0.850650808
 // @param OffsetY min=0 max=1.2 default=0.525731112

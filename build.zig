@@ -292,7 +292,6 @@ pub fn build(b: *std.Build) void {
     });
     const mod = exe.root_module;
 
-    // --- SDL3 ---
     switch (t.os.tag) {
         .windows => {
             const sdl3 = sdl3_dep.?;
@@ -440,6 +439,14 @@ pub fn build(b: *std.Build) void {
         .include_extensions = &.{".wgsl"},
     });
     b.getInstallStep().dependOn(&install_formulas.step);
+
+    const install_screen_shaders = b.addInstallDirectory(.{
+        .source_dir = b.path("screen_shaders"),
+        .install_dir = .bin,
+        .install_subdir = "screen_shaders",
+        .include_extensions = &.{".wgsl"},
+    });
+    b.getInstallStep().dependOn(&install_screen_shaders.step);
 
     const run_step = b.step("run", "Run the app");
     const run_cmd = b.addRunArtifact(exe);

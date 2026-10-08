@@ -1,5 +1,3 @@
-// Bulb Tetra: Mandelbulb power step alternated with a Sierpinski tetra fold.
-
 // @param Power min=2 max=16 default=6
 // @param Scale min=1.5 max=3 default=2
 // @param Iterations min=1 max=20 default=8 int

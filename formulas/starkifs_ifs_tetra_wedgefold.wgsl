@@ -1,5 +1,3 @@
-// Star KIFS: polar wedge fold ahead of the Sierpinski tetra fold.
-
 // @param Degree min=2 max=16 default=6
 // @param Scale min=1.5 max=3 default=2
 // @param Iterations min=1 max=30 default=12 int

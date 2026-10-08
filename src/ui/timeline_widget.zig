@@ -6,6 +6,8 @@ const FractalInstanceState = scene_state.FractalInstanceState;
 const LightState = scene_state.LightState;
 const FogEmitterState = scene_state.FogEmitterState;
 const WarpState = @import("../app/warp.zig").WarpState;
+const ScreenShaderState = @import("../app/screen_shader.zig").ScreenShaderState;
+const ParticleSystemState = @import("../app/particles.zig").ParticleSystemState;
 const FreeCamera = @import("../app/camera.zig").FreeCamera;
 
 const animation = @import("../app/animation.zig");
@@ -30,6 +32,8 @@ pub fn build(
     fog_count: usize,
     warps: []const WarpState,
     warp_count: usize,
+    screen_shaders: []const ScreenShaderState,
+    particle_systems: []const ParticleSystemState,
     camera: FreeCamera,
     width: f32,
     height: f32,
@@ -44,7 +48,7 @@ pub fn build(
     ) != 0) {
         buildControlsRow(ctx, timeline);
         buildRulerRow(ctx, timeline);
-        buildTrackRow(ctx, timeline, instances, instance_count, lights, light_count, fog_emitters, fog_count, warps, warp_count, camera);
+        buildTrackRow(ctx, timeline, instances, instance_count, lights, light_count, fog_emitters, fog_count, warps, warp_count, screen_shaders, particle_systems, camera);
     }
     nk.nk_end(ctx);
 }
@@ -101,6 +105,8 @@ fn buildTrackRow(
     fog_count: usize,
     warps: []const WarpState,
     warp_count: usize,
+    screen_shaders: []const ScreenShaderState,
+    particle_systems: []const ParticleSystemState,
     camera: FreeCamera,
 ) void {
     nk.nk_layout_row_dynamic(ctx, track_h, 1);
@@ -136,12 +142,12 @@ fn buildTrackRow(
     if (remove_index) |idx| {
         animation.removeKeyframeAt(timeline, idx);
     } else if (recapture_index) |idx| {
-        const snap = animation.captureSnapshot(instances, instance_count, lights, light_count, fog_emitters, fog_count, warps, warp_count, camera);
+        const snap = animation.captureSnapshot(instances, instance_count, lights, light_count, fog_emitters, fog_count, warps, warp_count, screen_shaders, particle_systems, camera);
         animation.updateKeyframeAt(timeline, idx, snap);
         timeline.playhead = timeline.keyframes[idx].time;
     } else if (!handled_click and nk.nk_input_mouse_clicked(&ctx.input, nk.NK_BUTTON_LEFT, bounds) != 0) {
         const t = std.math.clamp((ctx.input.mouse.pos.x - bounds.x) / bounds.w, 0.0, 1.0) * timeline.duration;
-        const snap = animation.captureSnapshot(instances, instance_count, lights, light_count, fog_emitters, fog_count, warps, warp_count, camera);
+        const snap = animation.captureSnapshot(instances, instance_count, lights, light_count, fog_emitters, fog_count, warps, warp_count, screen_shaders, particle_systems, camera);
         if (animation.addKeyframe(timeline, t, snap)) |_| {
             timeline.playhead = t;
         }

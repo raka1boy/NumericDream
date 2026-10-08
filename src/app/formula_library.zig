@@ -1,5 +1,9 @@
 const std = @import("std");
 const FormulaState = @import("formula.zig").FormulaState;
+const ScreenShaderState = @import("screen_shader.zig").ScreenShaderState;
+
+pub const formula_dir = "formulas";
+pub const screen_shader_dir = "screen_shaders";
 
 pub const max_entries = 128;
 pub const max_labels_per_entry = 6;
@@ -70,7 +74,7 @@ fn parseFileName(file_name: []const u8, out: *FormulaEntry) bool {
     return true;
 }
 
-pub fn scan() Library {
+pub fn scan(subdir: []const u8) Library {
     var lib = Library.empty();
 
     const io = std.Io.Threaded.global_single_threaded.io();
@@ -82,7 +86,7 @@ pub fn scan() Library {
     const exe_dir = exe_dir_buf[0..exe_dir_len];
 
     var dir_path_buf: [max_path_len]u8 = undefined;
-    const dir_path = std.fmt.bufPrint(&dir_path_buf, "{s}/formulas", .{exe_dir}) catch {
+    const dir_path = std.fmt.bufPrint(&dir_path_buf, "{s}/{s}", .{ exe_dir, subdir }) catch {
         lib.dir_missing = true;
         return lib;
     };
@@ -200,34 +204,54 @@ pub fn distinctLabels(lib: *const Library) LabelSet {
     return set;
 }
 
+pub const Target = union(enum) {
+    formula: *FormulaState,
+    screen: *ScreenShaderState,
+};
+
+var list_epoch: u32 = 0;
+
+pub fn noteListChanged() void {
+    list_epoch +%= 1;
+}
+
 pub const PanelState = struct {
     library: Library,
     scanned: bool,
     open: bool,
     selected: SelectedLabels,
-    target: ?*FormulaState,
+    target: ?Target,
+    target_epoch: u32 = 0,
+    subdir: []const u8,
 
-    pub fn init() PanelState {
+    pub fn init(subdir: []const u8) PanelState {
         return .{
             .library = Library.empty(),
             .scanned = false,
             .open = false,
             .selected = SelectedLabels.empty(),
             .target = null,
+            .subdir = subdir,
         };
     }
 
-    pub fn openFor(self: *PanelState, target: *FormulaState) void {
-        if (!self.scanned) {
-            self.library = scan();
-            self.scanned = true;
-        }
+    pub fn openFor(self: *PanelState, target: Target) void {
+        if (!self.scanned) self.rescan();
         self.target = target;
+        self.target_epoch = list_epoch;
         self.open = true;
     }
 
+    pub fn liveTarget(self: *PanelState) ?Target {
+        if (self.target_epoch != list_epoch) {
+            self.target = null;
+            self.open = false;
+        }
+        return self.target;
+    }
+
     pub fn rescan(self: *PanelState) void {
-        self.library = scan();
+        self.library = scan(self.subdir);
         self.scanned = true;
     }
 };

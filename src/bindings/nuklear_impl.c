@@ -5,4 +5,5 @@
 #define NK_INCLUDE_FONT_BAKING
 #define NK_INCLUDE_DEFAULT_FONT
 #define NK_INCLUDE_STANDARD_VARARGS
+#define NK_UINT_DRAW_INDEX
 #include "nuklear.h"

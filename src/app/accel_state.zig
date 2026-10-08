@@ -29,6 +29,18 @@ pub const AccelState = struct {
 };
 
 pub fn sceneHash(uniforms: anytype) u64 {
+    var h = std.hash.Wyhash.init(geometryHash(uniforms));
+    hashLitParticles(&h, uniforms);
+    return h.final();
+}
+
+pub fn hashLitParticles(h: *std.hash.Wyhash, uniforms: anytype) void {
+    for (&uniforms.particle_systems) |*ps| {
+        if (ps.mode > 0.5 and ps.mode < 1.5) h.update(std.mem.asBytes(ps));
+    }
+}
+
+pub fn geometryHash(uniforms: anytype) u64 {
     var h = std.hash.Wyhash.init(0);
     const count: usize = @intFromFloat(@max(uniforms.instance_count, 0));
     h.update(std.mem.asBytes(&count));
@@ -39,6 +51,11 @@ pub fn sceneHash(uniforms: anytype) u64 {
     h.update(std.mem.asBytes(&warp_count));
     for (uniforms.warps[0..@min(warp_count, uniforms.warps.len)]) |*warp| {
         h.update(std.mem.asBytes(warp));
+    }
+    const carve_count: usize = @intFromFloat(@max(uniforms.carve_count, 0));
+    h.update(std.mem.asBytes(&carve_count));
+    for (uniforms.carves[0..@min(carve_count, uniforms.carves.len)]) |*carve| {
+        h.update(std.mem.asBytes(carve));
     }
     return h.final();
 }

@@ -1,5 +1,3 @@
-// Mandelbulb Twist: the Mandelbulb power step with a per-iteration rotation.
-
 // @param Power min=2 max=16 default=8
 // @param Iterations min=2 max=16 default=6 int
 // @param RotationDeg min=-180 max=180 default=12

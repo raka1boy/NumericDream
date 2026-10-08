@@ -47,16 +47,23 @@ pub fn linearSamplerDesc(label: wgpu.WGPUStringView) wgpu.WGPUSamplerDescriptor 
     };
 }
 
-pub fn pollUntil(instance: wgpu.WGPUInstance, done: *const bool, max_spins: u32) u32 {
-    var spins: u32 = 0;
-    while (!done.* and spins < max_spins) : (spins += 1) {
+const poll_spin_budget_ns: u64 = 250_000;
+
+pub fn pollUntil(instance: wgpu.WGPUInstance, done: *const bool, timeout_ms: u32) u32 {
+    const start_ns = sdl.SDL_GetTicksNS();
+    const timeout_ns = @as(u64, timeout_ms) *| std.time.ns_per_ms;
+    var elapsed_ns: u64 = 0;
+    while (true) {
         wgpu.wgpuInstanceProcessEvents(instance);
-        if (!done.*) sdl.SDL_Delay(1);
+        if (done.*) break;
+        elapsed_ns = sdl.SDL_GetTicksNS() -| start_ns;
+        if (elapsed_ns >= timeout_ns) break;
+        if (elapsed_ns >= poll_spin_budget_ns) sdl.SDL_Delay(1);
     }
-    return spins;
+    return @intCast(@min(elapsed_ns / std.time.ns_per_ms, std.math.maxInt(u32)));
 }
 
-pub const adapter_request_timeout_spins: u32 = 10_000;
+pub const adapter_request_timeout_ms: u32 = 10_000;
 
 fn createSurface(instance: wgpu.WGPUInstance, window: *sdl.SDL_Window) !wgpu.WGPUSurface {
     const props = sdl.SDL_GetWindowProperties(window);
@@ -101,8 +108,6 @@ fn createSurface(instance: wgpu.WGPUInstance, window: *sdl.SDL_Window) !wgpu.WGP
 
             if (std.mem.eql(u8, driver, "x11")) {
                 const display = sdl.SDL_GetPointerProperty(props, sdl.SDL_PROP_WINDOW_X11_DISPLAY_POINTER, null);
-                // The X11 window id is an integer, not a pointer -- SDL hands
-                // it over as a number property, and wgpu takes it as a u64.
                 const xid = sdl.SDL_GetNumberProperty(props, sdl.SDL_PROP_WINDOW_X11_WINDOW_NUMBER, 0);
                 if (display == null or xid == 0) return error.NoX11Window;
 
@@ -140,7 +145,6 @@ pub const ErrorSink = struct {
 
 pub var g_error_sink: ErrorSink = .{};
 
-//wgpu logging the assembled shader hangs the app and eats ~20GB.
 const wgpu_log_level = wgpu.WGPULogLevel_Warn;
 
 fn onWgpuLog(level: wgpu.WGPULogLevel, message: wgpu.WGPUStringView, userdata: ?*anyopaque) callconv(.c) void {
@@ -228,6 +232,7 @@ pub const Context = struct {
     width: u32,
     height: u32,
     limits: wgpu.WGPULimits,
+    float32_accum: bool = false,
 
     last_acquire_status: wgpu.WGPUSurfaceGetCurrentTextureStatus = wgpu.WGPUSurfaceGetCurrentTextureStatus_SuccessOptimal,
     reconfigure_count: u32 = 0,
@@ -248,6 +253,7 @@ pub const Context = struct {
         if (wgpu.wgpuSurfaceGetCapabilities(surface, adapter, &caps) != wgpu.WGPUStatus_Success or caps.formatCount == 0) {
             return error.WebGPUNoSurfaceCapabilities;
         }
+        defer wgpu.wgpuSurfaceCapabilitiesFreeMembers(caps);
         const format = caps.formats[0];
 
         var w: c_int = 0;
@@ -264,7 +270,10 @@ pub const Context = struct {
             .width = @intCast(w),
             .height = @intCast(h),
             .limits = limits,
+            .float32_accum = wgpu.wgpuDeviceHasFeature(device, wgpu.WGPUFeatureName_Float32Blendable) != 0 and
+                wgpu.wgpuDeviceHasFeature(device, wgpu.WGPUFeatureName_Float32Filterable) != 0,
         };
+        std.debug.print("[stage] MC accumulation format: {s}\n", .{if (ctx.float32_accum) "rgba32float" else "rgba16float (float32-blendable/filterable unavailable)"});
         ctx.configure();
         return ctx;
     }
@@ -402,8 +411,8 @@ fn requestAdapter(instance: wgpu.WGPUInstance, surface: wgpu.WGPUSurface) !wgpu.
     };
     _ = wgpu.wgpuInstanceRequestAdapter(instance, &options, callback_info);
     std.debug.print("[stage] requestAdapter: wgpuInstanceRequestAdapter returned, polling\n", .{});
-    const spins = pollUntil(instance, &req.done, adapter_request_timeout_spins);
-    std.debug.print("[stage] requestAdapter: poll loop exited after {d} spins, done={} status={d}\n", .{ spins, req.done, req.status });
+    const waited_ms = pollUntil(instance, &req.done, adapter_request_timeout_ms);
+    std.debug.print("[stage] requestAdapter: poll loop exited after {d}ms, done={} status={d}\n", .{ waited_ms, req.done, req.status });
 
     if (!req.done or req.status != wgpu.WGPURequestAdapterStatus_Success or req.adapter == null) {
         return error.WebGPUAdapterRequestFailed;
@@ -443,11 +452,20 @@ fn requestDevice(instance: wgpu.WGPUInstance, adapter: wgpu.WGPUAdapter) !wgpu.W
         .{ adapter_limits.maxTextureDimension2D, adapter_limits.maxBufferSize, adapter_limits.maxComputeWorkgroupStorageSize },
     );
 
+    var features: [2]wgpu.WGPUFeatureName = undefined;
+    var feature_count: usize = 0;
+    if (wgpu.wgpuAdapterHasFeature(adapter, wgpu.WGPUFeatureName_Float32Blendable) != 0 and
+        wgpu.wgpuAdapterHasFeature(adapter, wgpu.WGPUFeatureName_Float32Filterable) != 0)
+    {
+        features = .{ wgpu.WGPUFeatureName_Float32Blendable, wgpu.WGPUFeatureName_Float32Filterable };
+        feature_count = 2;
+    }
+
     const descriptor = wgpu.WGPUDeviceDescriptor{
         .nextInChain = null,
         .label = sv("NumericDream device"),
-        .requiredFeatureCount = 0,
-        .requiredFeatures = null,
+        .requiredFeatureCount = feature_count,
+        .requiredFeatures = &features,
         .requiredLimits = &adapter_limits,
         .defaultQueue = .{ .nextInChain = null, .label = sv("NumericDream queue") },
         .deviceLostCallbackInfo = .{
@@ -473,8 +491,8 @@ fn requestDevice(instance: wgpu.WGPUInstance, adapter: wgpu.WGPUAdapter) !wgpu.W
     };
     _ = wgpu.wgpuAdapterRequestDevice(adapter, &descriptor, callback_info);
     std.debug.print("[stage] requestDevice: wgpuAdapterRequestDevice returned, polling\n", .{});
-    const spins = pollUntil(instance, &req.done, adapter_request_timeout_spins);
-    std.debug.print("[stage] requestDevice: poll loop exited after {d} spins, done={} status={d}\n", .{ spins, req.done, req.status });
+    const waited_ms = pollUntil(instance, &req.done, adapter_request_timeout_ms);
+    std.debug.print("[stage] requestDevice: poll loop exited after {d}ms, done={} status={d}\n", .{ waited_ms, req.done, req.status });
 
     if (!req.done or req.status != wgpu.WGPURequestDeviceStatus_Success or req.device == null) {
         return error.WebGPUDeviceRequestFailed;

@@ -1,5 +1,3 @@
-// Sierpinski3: the 3D Sierpinski tetrahedron as a corner-fold IFS.
-
 // @param Scale min=1.5 max=3 default=2
 // @param Iterations min=1 max=30 default=12 int
 fn de_iterations(p: array<f32, 8>) -> i32 {

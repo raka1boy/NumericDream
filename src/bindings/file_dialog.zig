@@ -11,6 +11,23 @@ pub const pickSkyImageFile = impl.pickSkyImageFile;
 pub const pickSaveDreamFile = impl.pickSaveDreamFile;
 pub const pickOpenDreamFile = impl.pickOpenDreamFile;
 pub const pickFolder = impl.pickFolder;
+pub const pickSaveMeshFile = impl.pickSaveMeshFile;
+pub const MeshFormat = enum { obj, ply };
+pub const SavedMeshPath = struct { len: usize, format: MeshFormat };
+pub fn meshFormatFromPath(path: []const u8) ?MeshFormat {
+    const std = @import("std");
+    const ext = std.fs.path.extension(path);
+    if (std.ascii.eqlIgnoreCase(ext, ".obj")) return .obj;
+    if (std.ascii.eqlIgnoreCase(ext, ".ply")) return .ply;
+    return null;
+}
+
+pub fn meshExtension(format: MeshFormat) []const u8 {
+    return switch (format) {
+        .obj => ".obj",
+        .ply => ".ply",
+    };
+}
 pub const ImageFormat = enum { png, jpeg, bmp };
 pub const SavedImagePath = struct { len: usize, format: ImageFormat };
 pub fn imageFormatFromPath(path: []const u8) ?ImageFormat {

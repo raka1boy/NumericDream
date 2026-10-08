@@ -1,5 +1,3 @@
-// Kleinian: lattice-wrapped off-centre sphere inversion with a box fold.
-
 // @param FoldingLimit min=0.1 max=2 default=1
 // @param CenterX min=-2 max=2 default=1
 // @param CenterY min=-2 max=2 default=1

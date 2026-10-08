@@ -1,4 +1,3 @@
-//wgsl formulas are not saved, only their paths.
 const std = @import("std");
 const sdl = @import("../bindings/sdl3.zig").c;
 const file_dialog = @import("../bindings/file_dialog.zig");
@@ -20,6 +19,7 @@ const SliderRange = @import("slider_range.zig").SliderRange;
 const camera_mod = @import("camera.zig");
 const FreeCamera = camera_mod.FreeCamera;
 const formula_mod = @import("formula.zig");
+const formula_library = @import("formula_library.zig");
 const FormulaState = formula_mod.FormulaState;
 const CustomParam = formula_mod.CustomParam;
 const scene_state = @import("scene_state.zig");
@@ -28,6 +28,12 @@ const MixinState = scene_state.MixinState;
 const LightState = scene_state.LightState;
 const FogEmitterState = scene_state.FogEmitterState;
 const WarpState = @import("warp.zig").WarpState;
+const particles_mod = @import("particles.zig");
+const ParticleSystemState = particles_mod.ParticleSystemState;
+const max_particle_systems = fractal_gpu.max_particle_systems;
+const screen_shader = @import("screen_shader.zig");
+const ScreenShaderState = screen_shader.ScreenShaderState;
+const max_screen_shaders = screen_shader.max_screen_shaders;
 const sky_mod = @import("sky.zig");
 const SkyState = sky_mod.SkyState;
 const ColorStopState = scene_state.ColorStopState;
@@ -42,9 +48,16 @@ const animation = @import("animation.zig");
 const TimelineState = animation.TimelineState;
 const Keyframe = animation.Keyframe;
 
-const current_version: u32 = 9;
+const current_version: u32 = 12;
 
 const ParamDto = struct { name: []const u8, value: f32, range: SliderRange };
+
+const ScreenShaderDto = struct {
+    path: []const u8,
+    params: []const ParamDto,
+    enabled: bool = true,
+    animated: bool = false,
+};
 
 const SkyDto = struct {
     mode: sky_mod.SkyMode = .procedural,
@@ -160,6 +173,18 @@ const InstanceDto = struct {
     hybrid_total_iters: f32,
     hybrid_total_iters_range: SliderRange,
     colors: []const ColorStopState,
+    trap: scene_state.OrbitTrapState = .{},
+    ft_view: bool = false,
+    fft_box_radius: f32 = 2.5,
+    fft_box_radius_range: SliderRange = .{ .min = 0.5, .max = 8.0 },
+    fft_cloud_density: f32 = 4.0,
+    fft_cloud_density_range: SliderRange = .{ .min = 0.0, .max = 20.0 },
+    fft_lowpass: f32 = 1.0,
+    fft_lowpass_range: SliderRange = .{ .min = 0.0, .max = 1.0 },
+    fft_highpass: f32 = 0.0,
+    fft_highpass_range: SliderRange = .{ .min = 0.0, .max = 1.0 },
+    fft_normalize: bool = false,
+    visible: bool = true,
 };
 
 const SceneFile = struct {
@@ -182,6 +207,8 @@ const SceneFile = struct {
     lights: []const LightState,
     fog_emitters: []const FogEmitterState,
     warps: []const WarpState = &.{},
+    particle_systems: []const ParticleSystemState = &.{},
+    screen_shaders: []const ScreenShaderDto = &.{},
     sky: SkyDto = .{},
     stereo: StereoState = .{},
     mc: McRenderState = .{},
@@ -244,6 +271,18 @@ fn instanceToDto(inst: *const FractalInstanceState, scratch: *InstanceScratch) I
         .hybrid_total_iters = inst.hybrid_total_iters,
         .hybrid_total_iters_range = inst.hybrid_total_iters_range,
         .colors = scratch.colors[0..inst.color_count],
+        .trap = inst.trap,
+        .ft_view = inst.ft_view,
+        .fft_box_radius = inst.fft_box_radius,
+        .fft_box_radius_range = inst.fft_box_radius_range,
+        .fft_cloud_density = inst.fft_cloud_density,
+        .fft_cloud_density_range = inst.fft_cloud_density_range,
+        .fft_lowpass = inst.fft_lowpass,
+        .fft_lowpass_range = inst.fft_lowpass_range,
+        .fft_highpass = inst.fft_highpass,
+        .fft_highpass_range = inst.fft_highpass_range,
+        .fft_normalize = inst.fft_normalize,
+        .visible = inst.visible,
     };
 }
 
@@ -268,6 +307,8 @@ pub fn saveScene(
     lights: []const LightState,
     fog_emitters: []const FogEmitterState,
     warps: []const WarpState,
+    particle_systems: []const ParticleSystemState,
+    screen_shaders: []const ScreenShaderState,
     sky: *const SkyState,
     stereo: StereoState,
     mc: McRenderState,
@@ -284,6 +325,18 @@ pub fn saveScene(
     var scratch: [max_instances]InstanceScratch = undefined;
     var instance_dtos: [max_instances]InstanceDto = undefined;
     for (instances, 0..) |*inst, i| instance_dtos[i] = instanceToDto(inst, &scratch[i]);
+
+    var screen_params: [max_screen_shaders][max_params]ParamDto = undefined;
+    var screen_dtos: [max_screen_shaders]ScreenShaderDto = undefined;
+    for (screen_shaders, 0..) |*s, i| {
+        for (0..s.param_count) |p| screen_params[i][p] = paramToDto(s.params[p]);
+        screen_dtos[i] = .{
+            .path = s.pathSlice(),
+            .params = screen_params[i][0..s.param_count],
+            .enabled = s.enabled,
+            .animated = s.animated,
+        };
+    }
 
     const scene = SceneFile{
         .camera = camera,
@@ -304,6 +357,8 @@ pub fn saveScene(
         .lights = lights,
         .fog_emitters = fog_emitters,
         .warps = warps,
+        .particle_systems = particle_systems,
+        .screen_shaders = screen_dtos[0..screen_shaders.len],
         .sky = skyToDto(sky),
         .stereo = stereo,
         .mc = mc,
@@ -331,10 +386,10 @@ fn copyPathInto(formula: *FormulaState, path: []const u8) void {
     formula.formula_path[n] = 0;
 }
 
-fn applyParamDtos(formula: *FormulaState, saved: []const ParamDto) void {
+fn applyParamDtosTo(params: []CustomParam, count: usize, saved: []const ParamDto) void {
     for (saved) |sp| {
-        for (0..formula.custom_param_count) |i| {
-            const p = &formula.custom_params[i];
+        for (0..count) |i| {
+            const p = &params[i];
             if (std.mem.eql(u8, p.label(), sp.name)) {
                 p.value = sp.value;
                 p.range = sp.range;
@@ -342,6 +397,10 @@ fn applyParamDtos(formula: *FormulaState, saved: []const ParamDto) void {
             }
         }
     }
+}
+
+fn applyParamDtos(formula: *FormulaState, saved: []const ParamDto) void {
+    applyParamDtosTo(&formula.custom_params, formula.custom_param_count, saved);
 }
 
 pub fn loadScene(
@@ -371,6 +430,10 @@ pub fn loadScene(
     fog_count: *usize,
     warps: *[max_warps]WarpState,
     warp_count: *usize,
+    particle_systems: *[max_particle_systems]ParticleSystemState,
+    particle_count: *usize,
+    screen_shaders: *[max_screen_shaders]ScreenShaderState,
+    screen_shader_count: *usize,
     sky: *SkyState,
     stereo: *StereoState,
     mc: *McRenderState,
@@ -429,6 +492,18 @@ pub fn loadScene(
         instances[i].hybrid_base_iters_range = src.hybrid_base_iters_range;
         instances[i].hybrid_total_iters = src.hybrid_total_iters;
         instances[i].hybrid_total_iters_range = src.hybrid_total_iters_range;
+        instances[i].trap = src.trap;
+        instances[i].ft_view = src.ft_view;
+        instances[i].fft_box_radius = src.fft_box_radius;
+        instances[i].fft_box_radius_range = src.fft_box_radius_range;
+        instances[i].fft_cloud_density = src.fft_cloud_density;
+        instances[i].fft_cloud_density_range = src.fft_cloud_density_range;
+        instances[i].fft_lowpass = src.fft_lowpass;
+        instances[i].fft_lowpass_range = src.fft_lowpass_range;
+        instances[i].fft_highpass = src.fft_highpass;
+        instances[i].fft_highpass_range = src.fft_highpass_range;
+        instances[i].fft_normalize = src.fft_normalize;
+        instances[i].visible = src.visible;
 
         copyPathInto(&instances[i].formula, src.formula.path);
 
@@ -444,6 +519,7 @@ pub fn loadScene(
         for (0..instances[i].color_count) |k| instances[i].colors[k] = src.colors[k];
     }
     instance_count.* = new_instance_count;
+    formula_library.noteListChanged();
 
     for (0..new_instance_count) |i| {
         const src = scene.instances[i];
@@ -460,7 +536,30 @@ pub fn loadScene(
             applyParamDtos(&instances[i].mixins[j].formula, msrc.formula.params);
         }
     }
-    fractal.warps_enabled = scene.warps.len > 0;
+    for (0..screen_shader_count.*) |i| screen_shaders[i].deinit(allocator);
+    screen_shader_count.* = @min(scene.screen_shaders.len, max_screen_shaders);
+    for (0..screen_shader_count.*) |i| {
+        const src = scene.screen_shaders[i];
+        screen_shaders[i] = ScreenShaderState.init();
+        screen_shaders[i].setPath(src.path);
+        screen_shaders[i].enabled = src.enabled;
+        screen_shaders[i].animated = src.animated;
+        if (src.path.len > 0) {
+            screen_shader.compileInto(allocator, gpu_ctx, &fractal.post, &screen_shaders[i]);
+        }
+        applyParamDtosTo(&screen_shaders[i].params, screen_shaders[i].param_count, src.params);
+    }
+
+    particle_count.* = @min(scene.particle_systems.len, max_particle_systems);
+    for (0..particle_count.*) |i| {
+        particle_systems[i] = scene.particle_systems[i];
+        particle_systems[i].window_open = false;
+        particle_systems[i].selected_color = null;
+        particle_systems[i].color_count = @min(particle_systems[i].color_count, max_color_stops);
+    }
+    const needs = particles_mod.shaderNeeds(particle_systems[0..particle_count.*]);
+
+    fractal.variant = .{ .warps = scene.warps.len > 0, .particles_lit = needs.lit, .particles_dots = needs.dots };
     scene_state.rebuildAllAsync(gpu_ctx, fractal, allocator, instances[0..instance_count.*], instance_count.*);
 
     light_count.* = @min(scene.lights.len, max_lights);

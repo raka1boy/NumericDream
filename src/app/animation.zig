@@ -9,7 +9,11 @@ const FractalInstanceState = scene_state.FractalInstanceState;
 const LightState = scene_state.LightState;
 const FogEmitterState = scene_state.FogEmitterState;
 const WarpState = @import("warp.zig").WarpState;
+const ParticleSystemState = @import("particles.zig").ParticleSystemState;
 const FormulaState = @import("formula.zig").FormulaState;
+const screen_shader = @import("screen_shader.zig");
+const ScreenShaderState = screen_shader.ScreenShaderState;
+const max_screen_shaders = screen_shader.max_screen_shaders;
 
 const SliderRange = @import("slider_range.zig").SliderRange;
 
@@ -21,6 +25,7 @@ const max_params = fractal_gpu.max_params;
 const max_lights = fractal_gpu.max_lights;
 const max_fog_emitters = fractal_gpu.max_fog_emitters;
 const max_warps = fractal_gpu.max_warps;
+const max_particle_systems = fractal_gpu.max_particle_systems;
 
 pub const max_keyframes = 64;
 
@@ -47,6 +52,15 @@ pub const ColorStopSnapshot = struct {
     film_perturb_scale: f32 = 0.2,
 };
 
+pub const TrapSnapshot = struct {
+    center: Vec3 = .{ .x = 0, .y = 0, .z = 0 },
+    radius: f32 = 1,
+    tube: f32 = 0,
+    box: Vec3 = .{ .x = 1, .y = 1, .z = 1 },
+    span: f32 = 1.5,
+    offset: f32 = 0,
+};
+
 pub const InstanceSnapshot = struct {
     offset: Vec3 = .{ .x = 0, .y = 0, .z = 0 },
     scale: Vec3 = .{ .x = 1, .y = 1, .z = 1 },
@@ -55,6 +69,7 @@ pub const InstanceSnapshot = struct {
     params: FormulaParamsSnapshot = .{},
     mixins: [max_mixins]MixinSnapshot = std.mem.zeroes([max_mixins]MixinSnapshot),
     colors: [max_color_stops]ColorStopSnapshot = @splat(.{}),
+    trap: TrapSnapshot = .{},
 };
 
 pub const LightSnapshot = struct {
@@ -93,6 +108,34 @@ pub const WarpSnapshot = struct {
     displace_freq: Vec3 = .{ .x = 0, .y = 0, .z = 0 },
 };
 
+pub const ParticleParamsSnapshot = struct {
+    t: f32 = 0,
+    center: Vec3 = .{ .x = 0, .y = 0, .z = 0 },
+    rotation: Vec3 = .{ .x = 0, .y = 0, .z = 0 },
+    spawn_radius: f32 = 1,
+    extent_x: f32 = 1,
+    extent_z: f32 = 1,
+    direction: Vec3 = .{ .x = 0, .y = -1, .z = 0 },
+    spread: f32 = 0,
+    speed_min: f32 = 0,
+    speed_max: f32 = 0,
+    size: f32 = 0.015,
+    size_variation: f32 = 0,
+    emit_duration: f32 = 0,
+    lifetime: f32 = 0,
+    kill_radius: f32 = 20,
+    glow: f32 = 1,
+    glow_extent: f32 = 3,
+    blend_k: f32 = 0,
+    strip_span: f32 = 2,
+    strip_offset: f32 = 0,
+};
+
+pub const ParticleSnapshot = struct {
+    params: ParticleParamsSnapshot = .{},
+    colors: [max_color_stops]ColorStopSnapshot = @splat(.{}),
+};
+
 pub const CameraSnapshot = struct {
     position: Vec3 = .{ .x = 0, .y = 0, .z = 0 },
     forward: Vec3 = .{ .x = 0, .y = 0, .z = -1 },
@@ -103,12 +146,16 @@ pub const CameraSnapshot = struct {
     zoom_2d: f32 = camera_mod.default_zoom_2d,
 };
 
+pub const ScreenShaderSnapshot = struct { params: FormulaParamsSnapshot = .{} };
+
 pub const AnimSnapshot = struct {
     camera: CameraSnapshot = .{},
     instances: [max_instances]InstanceSnapshot = @splat(.{}),
     lights: [max_lights]LightSnapshot = std.mem.zeroes([max_lights]LightSnapshot),
     fog_emitters: [max_fog_emitters]FogSnapshot = std.mem.zeroes([max_fog_emitters]FogSnapshot),
     warps: [max_warps]WarpSnapshot = @splat(.{}),
+    screen_shaders: [max_screen_shaders]ScreenShaderSnapshot = @splat(.{}),
+    particle_systems: [max_particle_systems]ParticleSnapshot = @splat(.{}),
 };
 
 pub const Keyframe = struct { time: f32, snapshot: AnimSnapshot };
@@ -136,6 +183,7 @@ pub const AnimRenderState = struct {
     motion_blur_samples: f32 = 8,
     motion_blur_samples_range: SliderRange = .{ .min = 2, .max = 32 },
     save_frames: bool = false,
+    ffmpeg: ?@import("export_anim.zig").FfmpegProbe = null,
     status_buf: [200]u8 = undefined,
     status: [:0]const u8 = "",
 };
@@ -200,7 +248,6 @@ fn lerpSnapshot(a: AnimSnapshot, b: AnimSnapshot, t: f32) AnimSnapshot {
     return out;
 }
 
-/// Copies every field of `Snap` out of `src` (which must have fields of the same names).
 fn capture(comptime Snap: type, src: anytype) Snap {
     var out: Snap = undefined;
     inline for (@typeInfo(Snap).@"struct".field_names) |name| @field(out, name) = @field(src, name);
@@ -211,14 +258,24 @@ fn apply(snap: anytype, dst: anytype) void {
     inline for (@typeInfo(@TypeOf(snap)).@"struct".field_names) |name| @field(dst, name) = @field(snap, name);
 }
 
-fn captureParams(formula: *const FormulaState) FormulaParamsSnapshot {
+const CustomParam = @import("formula.zig").CustomParam;
+
+fn captureParamList(params: []const CustomParam, count: usize) FormulaParamsSnapshot {
     var out = FormulaParamsSnapshot{};
-    for (0..@min(formula.custom_param_count, max_params)) |p| out.values[p] = formula.custom_params[p].value;
+    for (0..@min(count, max_params)) |p| out.values[p] = params[p].value;
     return out;
 }
 
+fn applyParamList(snap: *const FormulaParamsSnapshot, params: []CustomParam, count: usize) void {
+    for (0..@min(count, max_params)) |p| params[p].value = snap.values[p];
+}
+
+fn captureParams(formula: *const FormulaState) FormulaParamsSnapshot {
+    return captureParamList(&formula.custom_params, formula.custom_param_count);
+}
+
 fn applyParams(snap: *const FormulaParamsSnapshot, formula: *FormulaState) void {
-    for (0..@min(formula.custom_param_count, max_params)) |p| formula.custom_params[p].value = snap.values[p];
+    applyParamList(snap, &formula.custom_params, formula.custom_param_count);
 }
 
 pub fn captureSnapshot(
@@ -230,6 +287,8 @@ pub fn captureSnapshot(
     fog_count: usize,
     warps: []const WarpState,
     warp_count: usize,
+    screen_shaders: []const ScreenShaderState,
+    particle_systems: []const ParticleSystemState,
     camera: FreeCamera,
 ) AnimSnapshot {
     var snap = AnimSnapshot{ .camera = capture(CameraSnapshot, camera) };
@@ -240,11 +299,20 @@ pub fn captureSnapshot(
         s.params = captureParams(&inst.formula);
         for (0..@min(inst.mixin_count, max_mixins)) |m| s.mixins[m].params = captureParams(&inst.mixins[m].formula);
         for (0..@min(inst.color_count, max_color_stops)) |c| s.colors[c] = capture(ColorStopSnapshot, inst.colors[c]);
+        s.trap = capture(TrapSnapshot, inst.trap);
         snap.instances[i] = s;
     }
     for (0..@min(light_count, max_lights)) |i| snap.lights[i] = capture(LightSnapshot, lights[i]);
     for (0..@min(fog_count, max_fog_emitters)) |i| snap.fog_emitters[i] = capture(FogSnapshot, fog_emitters[i]);
     for (0..@min(warp_count, max_warps)) |i| snap.warps[i] = capture(WarpSnapshot, warps[i]);
+    for (0..@min(screen_shaders.len, max_screen_shaders)) |i| {
+        snap.screen_shaders[i].params = captureParamList(&screen_shaders[i].params, screen_shaders[i].param_count);
+    }
+    for (0..@min(particle_systems.len, max_particle_systems)) |i| {
+        const ps = &particle_systems[i];
+        snap.particle_systems[i].params = capture(ParticleParamsSnapshot, ps.*);
+        for (0..@min(ps.color_count, max_color_stops)) |c| snap.particle_systems[i].colors[c] = capture(ColorStopSnapshot, ps.colors[c]);
+    }
     return snap;
 }
 
@@ -258,6 +326,8 @@ pub fn applySnapshot(
     fog_count: usize,
     warps: []WarpState,
     warp_count: usize,
+    screen_shaders: []ScreenShaderState,
+    particle_systems: []ParticleSystemState,
     camera: *FreeCamera,
 ) void {
     apply(snapshot.camera, camera);
@@ -276,13 +346,21 @@ pub fn applySnapshot(
         applyParams(&s.params, &inst.formula);
         for (0..@min(inst.mixin_count, max_mixins)) |m| applyParams(&s.mixins[m].params, &inst.mixins[m].formula);
         for (0..@min(inst.color_count, max_color_stops)) |c| apply(s.colors[c], &inst.colors[c]);
+        apply(s.trap, &inst.trap);
     }
     for (0..@min(light_count, max_lights)) |i| apply(snapshot.lights[i], &lights[i]);
     for (0..@min(fog_count, max_fog_emitters)) |i| apply(snapshot.fog_emitters[i], &fog_emitters[i]);
     for (0..@min(warp_count, max_warps)) |i| apply(snapshot.warps[i], &warps[i]);
+    for (0..@min(screen_shaders.len, max_screen_shaders)) |i| {
+        applyParamList(&snapshot.screen_shaders[i].params, &screen_shaders[i].params, screen_shaders[i].param_count);
+    }
+    for (0..@min(particle_systems.len, max_particle_systems)) |i| {
+        const ps = &particle_systems[i];
+        apply(snapshot.particle_systems[i].params, ps);
+        for (0..@min(ps.color_count, max_color_stops)) |c| apply(snapshot.particle_systems[i].colors[c], &ps.colors[c]);
+    }
 }
 
-// Caller must ensure timeline.keyframe_count > 0.
 pub fn evaluate(timeline: *const TimelineState, t_in: f32) AnimSnapshot {
     const n = timeline.keyframe_count;
     std.debug.assert(n > 0);

@@ -16,6 +16,7 @@ pub const Part = enum(u5) {
     sky,
     depth_of_field,
     mc_indirect,
+    screen_shaders,
 
     pub const count = @typeInfo(Part).@"enum".field_names.len;
 
@@ -63,6 +64,7 @@ pub fn info(part: Part) PartInfo {
         .dispersion => .{ .label = "Dispersion", .group = .transport, .off_hint = "Every material refracts every wavelength the same way." },
         .mc_indirect => .{ .label = "MC indirect light", .group = .transport, .off_hint = "MC Render's bounce ray is skipped; the ambient term stands in for it. No effect unless MC Render is on." },
         .depth_of_field => .{ .label = "Depth of field", .group = .post, .off_hint = "Pinhole camera, whatever the aperture says." },
+        .screen_shaders => .{ .label = "Screen space shaders", .group = .post, .off_hint = "The whole screen-space chain is skipped; the march goes straight to the tonemap." },
     };
 }
 

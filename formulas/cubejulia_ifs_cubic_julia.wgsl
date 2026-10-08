@@ -1,5 +1,3 @@
-// Cube Julia: Menger-style abs-fold-and-sort with a fixed Julia constant.
-
 // @param Scale min=1.5 max=3 default=2.5
 // @param JuliaX min=-2 max=2 default=0.5
 // @param JuliaY min=-2 max=2 default=0.5

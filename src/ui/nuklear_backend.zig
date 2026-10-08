@@ -11,14 +11,15 @@ const shader_src = @embedFile("shaders/ui.wgsl");
 fn growBuffer(device: wgpu.WGPUDevice, buf: *wgpu.WGPUBuffer, cap: *u64, needed: u64, usage: wgpu.WGPUBufferUsage, label: []const u8) bool {
     if (needed <= cap.*) return true;
     const new_cap = std.math.ceilPowerOfTwo(u64, needed) catch needed;
-    wgpu.wgpuBufferRelease(buf.*);
-    buf.* = wgpu.wgpuDeviceCreateBuffer(device, &wgpu.WGPUBufferDescriptor{
+    const new_buf = wgpu.wgpuDeviceCreateBuffer(device, &wgpu.WGPUBufferDescriptor{
         .nextInChain = null,
         .label = sv(label),
         .usage = usage,
         .size = new_cap,
         .mappedAtCreation = 0,
     }) orelse return false;
+    wgpu.wgpuBufferRelease(buf.*);
+    buf.* = new_buf;
     cap.* = new_cap;
     return true;
 }
@@ -246,7 +247,7 @@ pub const NuklearBackend = struct {
         }) orelse return error.NuklearPipelineCreationFailed;
 
         const initial_vcap: u64 = 256 * 1024 * @sizeOf(NkVertex);
-        const initial_icap: u64 = 64 * 1024 * @sizeOf(u16);
+        const initial_icap: u64 = 64 * 1024 * @sizeOf(u32);
         const vertex_buffer = wgpu.wgpuDeviceCreateBuffer(gpu_ctx.device, &wgpu.WGPUBufferDescriptor{
             .nextInChain = null,
             .label = sv("nuklear vertices"),
@@ -418,7 +419,8 @@ pub const NuklearBackend = struct {
         wgpu.wgpuRenderPassEncoderSetPipeline(pass, self.pipeline);
         wgpu.wgpuRenderPassEncoderSetBindGroup(pass, 0, self.bind_group, 0, null);
         wgpu.wgpuRenderPassEncoderSetVertexBuffer(pass, 0, self.vertex_buffer, 0, vbytes);
-        wgpu.wgpuRenderPassEncoderSetIndexBuffer(pass, self.index_buffer, wgpu.WGPUIndexFormat_Uint16, 0, ibytes);
+        comptime std.debug.assert(@sizeOf(nk.nk_draw_index) == 4);
+        wgpu.wgpuRenderPassEncoderSetIndexBuffer(pass, self.index_buffer, wgpu.WGPUIndexFormat_Uint32, 0, ibytes);
 
         var offset: u32 = 0;
         var cmd = nk.nk__draw_begin(&self.ctx, &self.cmds);
@@ -445,7 +447,6 @@ pub const NuklearBackend = struct {
 };
 
 fn orthoProjection(width: f32, height: f32) [16]f32 {
-    //maps screenspace to wgpus clip space
     const l: f32 = 0;
     const r: f32 = width;
     const t: f32 = 0;

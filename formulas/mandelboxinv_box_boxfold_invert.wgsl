@@ -1,5 +1,3 @@
-// Mandelbox Inv: the Mandelbox fold with an extra sphere inversion.
-
 // @param InvRadius min=0.1 max=2 default=0.7
 // @param Scale min=-3 max=3 default=2
 // @param MinRadius min=0.05 max=1 default=0.5

@@ -1,5 +1,3 @@
-// Bulb Box: Mandelbulb power step alternated with a Mandelbox fold.
-
 // @param Power min=2 max=16 default=6
 // @param Scale min=-3 max=3 default=1.5
 // @param MinRadius min=0.05 max=1 default=0.5

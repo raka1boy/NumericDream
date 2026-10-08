@@ -5,7 +5,6 @@ const webgpu_context = @import("webgpu_context.zig");
 const Context = webgpu_context.Context;
 const sv = webgpu_context.sv;
 
-//must match template.wgsl's MAX_CASCADES
 pub const max_cascades = 8;
 
 pub const min_resolution: u32 = 16;

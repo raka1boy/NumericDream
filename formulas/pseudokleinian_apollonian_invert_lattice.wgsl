@@ -1,5 +1,3 @@
-// Pseudo Kleinian: lattice-wrapped off-centre sphere inversion.
-
 // @param CenterX min=-2 max=2 default=1
 // @param CenterY min=-2 max=2 default=1
 // @param CenterZ min=-2 max=2 default=1
