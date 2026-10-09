@@ -84,18 +84,25 @@ fn world_pos(uv: vec2f) -> vec3f {
     return pp.camera_pos + view_ray(uv) * scene_depth(uv);
 }
 
+const POST_LUMA_WEIGHTS = vec3f(0.2126, 0.7152, 0.0722);
+const POST_HASH_SCALE = 0.1031;
+const POST_HASH_OFFSET = 33.33;
+const POST_NOISE_TIME_RATE = 61.7;
+const POST_NOISE_SLOT_RATE = 13.1;
+const POST_NOISE_FRAME_RATE = 0.618;
+
 fn luminance(c: vec3f) -> f32 {
-    return dot(c, vec3f(0.2126, 0.7152, 0.0722));
+    return dot(c, POST_LUMA_WEIGHTS);
 }
 
 fn hash12(p: vec2f) -> f32 {
-    var p3 = fract(vec3f(p.xyx) * 0.1031);
-    p3 += dot(p3, p3.yzx + 33.33);
+    var p3 = fract(vec3f(p.xyx) * POST_HASH_SCALE);
+    p3 += dot(p3, p3.yzx + POST_HASH_OFFSET);
     return fract((p3.x + p3.y) * p3.z);
 }
 
 fn pixel_noise(uv: vec2f) -> f32 {
-    return hash12(uv * pp.resolution + vec2f(pp.time * 61.7 + pp.slot * 13.1, pp.frame * 0.618));
+    return hash12(uv * pp.resolution + vec2f(pp.time * POST_NOISE_TIME_RATE + pp.slot * POST_NOISE_SLOT_RATE, pp.frame * POST_NOISE_FRAME_RATE));
 }
 
 @@EFFECT@@

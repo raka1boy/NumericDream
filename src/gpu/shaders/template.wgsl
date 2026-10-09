@@ -37,10 +37,55 @@ const PD_MAX_CELLS: u32 = 524288u;
 const PD_MAX_DIM: u32 = 128u;
 const PD_INSERTS_PER_PARTICLE: u32 = 8u;
 const PD_RECORDS: u32 = 32u;
-const PD_CELLS: u32 = PD_RECORDS + 2u * PD_MAX_PARTICLES * PD_RECORD_WORDS;
-const PD_INDEX: u32 = PD_CELLS + 2u * PD_MAX_CELLS * 2u;
+const PD_CELLS: u32 = PD_RECORDS + MAX_PARTICLE_SYSTEMS * PD_MAX_PARTICLES * PD_RECORD_WORDS;
+const PD_INDEX: u32 = PD_CELLS + MAX_PARTICLE_SYSTEMS * PD_MAX_CELLS * PD_CELL_WORDS;
 const PD_DIST_CAP: u32 = 10u;
 const PD_CELL_CAP: u32 = 32u;
+const PD_HEADER_CELL: u32 = 3u;
+const PD_HEADER_DIMS: u32 = 4u;
+const PD_HEADER_VALID: u32 = 7u;
+const PD_RECORD_RADIUS: u32 = 3u;
+const PD_RECORD_STRIP: u32 = 4u;
+const PD_RECORD_ALIVE: u32 = 5u;
+const PD_CELL_WORDS: u32 = 2u;
+const PD_CELL_COUNT_WORD: u32 = 1u;
+const PD_CELL_COUNT_MASK: u32 = 0xffffu;
+const PD_CELL_SKIP_SHIFT: u32 = 16u;
+const PD_SKIP_MIN_DIST: u32 = 2u;
+
+const PI = 3.14159265;
+const TAU = 6.28318530718;
+const SQRT3 = 1.7320508;
+const HALF_SQRT3 = 0.8660254;
+const GOLDEN_RATIO_FRACT = 0.61803399;
+const INFINITE_DISTANCE = 1e30;
+const NO_SURFACE_DE = 1e6;
+const EPSILON = 1e-4;
+const EPSILON_FINE = 1e-6;
+const EPSILON_TINY = 1e-12;
+const UNORM8_MAX = 255.0;
+const LUMA_WEIGHTS = vec3f(0.2126, 0.7152, 0.0722);
+const CUBE_CORNERS = 8;
+
+const U32_MAX = 0xffffffffu;
+const U32_SIGN_BIT = 0x80000000u;
+const U32_RANGE = 4294967296.0;
+const INV_U32_RANGE = 2.3283064365386963e-10;
+const PCG_MULTIPLIER = 747796405u;
+const PCG_INCREMENT = 2891336453u;
+const PCG_OUTPUT_MULTIPLIER = 277803737u;
+const LCG_MULTIPLIER = 1664525u;
+const LCG_INCREMENT = 1013904223u;
+const KNUTH_MULTIPLIER = 2654435761u;
+const GOLDEN_RATIO_U32 = 0x9e3779b9u;
+const GOLDEN_RATIO_U16 = 40503u;
+const SPATIAL_PRIME_X = 73856093u;
+const SPATIAL_PRIME_Y = 19349663u;
+const SPATIAL_PRIME_Z = 83492791u;
+
+const VOXEL_WORKGROUP_SIZE = 4;
+const FFT_LINE_WORKGROUP_SIZE = 8;
+const LINEAR_WORKGROUP_SIZE = 64;
 
 struct IterCarry {
     z: vec3f,
@@ -218,6 +263,32 @@ struct Uniforms {
     _pad_carve2: f32,
     carves: array<vec4f, MAX_CARVES>,
     particle_systems: array<ParticleSystem, MAX_PARTICLE_SYSTEMS>,
+    approx_flags: f32,
+    approx_caustic_strength: f32,
+    approx_caustic_scale: f32,
+    approx_bounce: f32,
+    approx_tint: f32,
+    approx_lod_start: f32,
+    approx_lod_strength: f32,
+    _pad_approx0: f32,
+    adapt_enabled: f32,
+    adapt_threshold: f32,
+    adapt_min_samples: f32,
+    adapt_row_width: f32,
+}
+
+const APPROX_SIMPLE_FOG: u32 = 1u << 0u;
+const APPROX_FAKE_CAUSTICS: u32 = 1u << 1u;
+const APPROX_FAKE_BOUNCE: u32 = 1u << 2u;
+const APPROX_SKY_AMBIENT: u32 = 1u << 3u;
+const APPROX_THIN_GLASS: u32 = 1u << 4u;
+const APPROX_TINT: u32 = 1u << 5u;
+const APPROX_CHEAP_DISPERSION: u32 = 1u << 6u;
+const APPROX_COARSE_SECONDARY: u32 = 1u << 7u;
+const APPROX_DISTANCE_LOD: u32 = 1u << 8u;
+
+fn approx_on(flag: u32) -> bool {
+    return (u32(u.approx_flags) & flag) != 0u;
 }
 
 const PART_COLOR_STRIPS: u32 = 1u << 0u;
@@ -325,32 +396,45 @@ const PHOTON_GRID_VOLUME: u32 = 1u;
 const PHOTON_GRID_HAZE: u32 = 2u;
 const PHOTON_GRID_BOUNCE: u32 = 3u;
 const PHOTON_HAZE_SCALE = 4.0;
+const PHOTON_MIN_CELL = 1e-6;
+const PHOTON_HASH_KIND_PRIME = 2971215073u;
+const XXH_PRIME32_1 = 2654435761u;
+const XXH_PRIME32_2 = 2246822519u;
+const XXH_PRIME32_3 = 3266489917u;
+const PHOTON_TAG_KIND_PRIME = 1900403167u;
+const PHOTON_TAG_OCCUPIED_BIT = 4u;
+const PHOTON_TAG_HASH_MASK = 0xfffffffcu;
+const PHOTON_TAG_KIND_MASK = 3u;
+const PHOTON_SURFACE_GRID_COUNT = 2u;
+const PHOTON_GATHER_RADIUS_CELLS = 0.5;
+const PHOTON_NORMAL_MIN_COS = 0.7;
+const PHOTON_CONE_FILTER_NORM = 3.0;
 
 fn photon_kind_is_surface(kind: u32) -> bool {
     return kind == PHOTON_GRID_SURFACE || kind == PHOTON_GRID_BOUNCE;
 }
 
 fn photon_volume_cell() -> f32 {
-    return max(u.photon_cell * max(u.photon_volume_scale, 1.0), 1e-6);
+    return max(u.photon_cell * max(u.photon_volume_scale, 1.0), PHOTON_MIN_CELL);
 }
 
 fn photon_grid_edge(kind: u32) -> f32 {
     if (kind == PHOTON_GRID_SURFACE) {
-        return max(u.photon_cell, 1e-6);
+        return max(u.photon_cell, PHOTON_MIN_CELL);
     }
     if (kind == PHOTON_GRID_BOUNCE) {
-        return max(u.photon_cell * max(u.photon_bounce_scale, 1.0), 1e-6);
+        return max(u.photon_cell * max(u.photon_bounce_scale, 1.0), PHOTON_MIN_CELL);
     }
     return photon_volume_cell() * select(1.0, PHOTON_HAZE_SCALE, kind == PHOTON_GRID_HAZE);
 }
 
 fn photon_lattice_offset() -> vec3f {
-    var h = u32(max(u.photon_hash_salt, 0.0)) * 747796405u + 2891336453u;
+    var h = u32(max(u.photon_hash_salt, 0.0)) * PCG_MULTIPLIER + PCG_INCREMENT;
     var o = vec3f(0.0);
     for (var i = 0; i < 3; i++) {
-        h = h * 747796405u + 2891336453u;
-        let word = ((h >> ((h >> 28u) + 4u)) ^ h) * 277803737u;
-        o[i] = f32((word >> 22u) ^ word) * 2.3283064365386963e-10;
+        h = h * PCG_MULTIPLIER + PCG_INCREMENT;
+        let word = ((h >> ((h >> 28u) + 4u)) ^ h) * PCG_OUTPUT_MULTIPLIER;
+        o[i] = f32((word >> 22u) ^ word) * INV_U32_RANGE;
     }
     return o;
 }
@@ -361,19 +445,19 @@ fn photon_grid_cell(p: vec3f, kind: u32) -> vec3i {
 }
 
 fn photon_hash(c: vec3i, kind: u32) -> u32 {
-    let h = (u32(c.x) * 73856093u) ^ (u32(c.y) * 19349663u) ^
-            (u32(c.z) * 83492791u) ^ (kind * 2971215073u) ^
-            (u32(max(u.photon_hash_salt, 0.0)) * 2654435761u);
+    let h = (u32(c.x) * SPATIAL_PRIME_X) ^ (u32(c.y) * SPATIAL_PRIME_Y) ^
+            (u32(c.z) * SPATIAL_PRIME_Z) ^ (kind * PHOTON_HASH_KIND_PRIME) ^
+            (u32(max(u.photon_hash_salt, 0.0)) * KNUTH_MULTIPLIER);
     return h & (u32(u.photon_table) - 1u);
 }
 
 fn photon_cell_tag(c: vec3i, kind: u32) -> u32 {
-    var h = (u32(c.x) * 2654435761u) ^ (u32(c.y) * 2246822519u) ^
-            (u32(c.z) * 3266489917u) ^ (kind * 1900403167u);
+    var h = (u32(c.x) * XXH_PRIME32_1) ^ (u32(c.y) * XXH_PRIME32_2) ^
+            (u32(c.z) * XXH_PRIME32_3) ^ (kind * PHOTON_TAG_KIND_PRIME);
     h ^= h >> 15u;
-    h *= 2246822519u;
+    h *= XXH_PRIME32_2;
     h ^= h >> 13u;
-    return ((h | 4u) & 0xfffffffcu) | (kind & 3u);
+    return ((h | PHOTON_TAG_OCCUPIED_BIT) & PHOTON_TAG_HASH_MASK) | (kind & PHOTON_TAG_KIND_MASK);
 }
 
 fn photon_cap_surface() -> u32 {
@@ -406,9 +490,12 @@ fn photon_gather_surface(pos: vec3f, normal: vec3f) -> vec3f {
         return vec3f(0.0);
     }
     var total = vec3f(0.0);
-    for (var g = 0u; g < 2u; g++) {
+    for (var g = 0u; g < PHOTON_SURFACE_GRID_COUNT; g++) {
         let kind = select(PHOTON_GRID_SURFACE, PHOTON_GRID_BOUNCE, g == 1u);
-        let r = 0.5 * photon_grid_edge(kind);
+        if (approx_on(select(APPROX_FAKE_CAUSTICS, APPROX_FAKE_BOUNCE, g == 1u))) {
+            continue;
+        }
+        let r = PHOTON_GATHER_RADIUS_CELLS * photon_grid_edge(kind);
         let r2 = r * r;
         let lo = photon_grid_cell(pos - vec3f(r), kind);
         let hi = photon_grid_cell(pos + vec3f(r), kind);
@@ -434,7 +521,7 @@ fn photon_gather_surface(pos: vec3f, normal: vec3f) -> vec3f {
                         if (dot(d, d) > r2) {
                             continue;
                         }
-                        if (dot(ph.normal, normal) < 0.7) {
+                        if (dot(ph.normal, normal) < PHOTON_NORMAL_MIN_COS) {
                             continue;
                         }
                         let w = 1.0 - sqrt(dot(d, d)) / r;
@@ -445,7 +532,7 @@ fn photon_gather_surface(pos: vec3f, normal: vec3f) -> vec3f {
         }
         total += sum / r2;
     }
-    return gamut_fit(total) * u.photon_intensity * 3.0 / 3.14159265;
+    return gamut_fit(total) * u.photon_intensity * PHOTON_CONE_FILTER_NORM / PI;
 }
 
 const SPECTRAL_COUNT = 8.0;
@@ -464,6 +551,50 @@ const SPECTRAL_GREEN_GAIN = 2.49;
 const SPECTRAL_FOLD_R = vec3f( 0.99575300, -0.00656071,  0.01080772);
 const SPECTRAL_FOLD_G = vec3f(-0.00755455,  1.00830220, -0.00074766);
 const SPECTRAL_FOLD_B = vec3f( 0.02732810, -0.00674214,  0.97941404);
+const SPECTRAL_STRATA_LO = vec4f(0.0, 0.125, 0.25, 0.375);
+const SPECTRAL_STRATA_HI = vec4f(0.5, 0.625, 0.75, 0.875);
+const SPEC_LANES = 4;
+const SPEC_LAST_LANE = 3;
+const NM_TO_UM = 0.001;
+
+const CIE_X1_GAIN = 1.056;
+const CIE_X1_PEAK = 599.8;
+const CIE_X1_SIGMA_LO = 37.9;
+const CIE_X1_SIGMA_HI = 31.0;
+const CIE_X2_GAIN = 0.362;
+const CIE_X2_PEAK = 442.0;
+const CIE_X2_SIGMA_LO = 16.0;
+const CIE_X2_SIGMA_HI = 26.7;
+const CIE_X3_GAIN = 0.065;
+const CIE_X3_PEAK = 501.1;
+const CIE_X3_SIGMA_LO = 20.4;
+const CIE_X3_SIGMA_HI = 26.2;
+const CIE_Y1_GAIN = 0.821;
+const CIE_Y1_PEAK = 568.8;
+const CIE_Y1_SIGMA_LO = 46.9;
+const CIE_Y1_SIGMA_HI = 40.5;
+const CIE_Y2_GAIN = 0.286;
+const CIE_Y2_PEAK = 530.9;
+const CIE_Y2_SIGMA_LO = 16.3;
+const CIE_Y2_SIGMA_HI = 31.1;
+const CIE_Z1_GAIN = 1.217;
+const CIE_Z1_PEAK = 437.0;
+const CIE_Z1_SIGMA_LO = 11.8;
+const CIE_Z1_SIGMA_HI = 36.0;
+const CIE_Z2_GAIN = 0.681;
+const CIE_Z2_PEAK = 459.0;
+const CIE_Z2_SIGMA_LO = 26.0;
+const CIE_Z2_SIGMA_HI = 13.8;
+
+const XYZ_TO_R_X = 3.2404542;
+const XYZ_TO_R_Y = -1.5371385;
+const XYZ_TO_R_Z = -0.4985314;
+const XYZ_TO_G_X = -0.9692660;
+const XYZ_TO_G_Y = 1.8760108;
+const XYZ_TO_G_Z = 0.0415560;
+const XYZ_TO_B_X = 0.0556434;
+const XYZ_TO_B_Y = -0.2040259;
+const XYZ_TO_B_Z = 1.0572252;
 
 struct Spec {
     lo: vec4f,
@@ -501,21 +632,21 @@ fn spectral_lobe(l: vec4f, mu: f32, s_lo: f32, s_hi: f32) -> vec4f {
 }
 
 fn spectral_cie(l: vec4f) -> Band4 {
-    let x = 1.056 * spectral_lobe(l, 599.8, 37.9, 31.0)
-          + 0.362 * spectral_lobe(l, 442.0, 16.0, 26.7)
-          - 0.065 * spectral_lobe(l, 501.1, 20.4, 26.2);
-    let y = 0.821 * spectral_lobe(l, 568.8, 46.9, 40.5)
-          + 0.286 * spectral_lobe(l, 530.9, 16.3, 31.1);
-    let z = 1.217 * spectral_lobe(l, 437.0, 11.8, 36.0)
-          + 0.681 * spectral_lobe(l, 459.0, 26.0, 13.8);
+    let x = CIE_X1_GAIN * spectral_lobe(l, CIE_X1_PEAK, CIE_X1_SIGMA_LO, CIE_X1_SIGMA_HI)
+          + CIE_X2_GAIN * spectral_lobe(l, CIE_X2_PEAK, CIE_X2_SIGMA_LO, CIE_X2_SIGMA_HI)
+          - CIE_X3_GAIN * spectral_lobe(l, CIE_X3_PEAK, CIE_X3_SIGMA_LO, CIE_X3_SIGMA_HI);
+    let y = CIE_Y1_GAIN * spectral_lobe(l, CIE_Y1_PEAK, CIE_Y1_SIGMA_LO, CIE_Y1_SIGMA_HI)
+          + CIE_Y2_GAIN * spectral_lobe(l, CIE_Y2_PEAK, CIE_Y2_SIGMA_LO, CIE_Y2_SIGMA_HI);
+    let z = CIE_Z1_GAIN * spectral_lobe(l, CIE_Z1_PEAK, CIE_Z1_SIGMA_LO, CIE_Z1_SIGMA_HI)
+          + CIE_Z2_GAIN * spectral_lobe(l, CIE_Z2_PEAK, CIE_Z2_SIGMA_LO, CIE_Z2_SIGMA_HI);
     return Band4(x, y, z);
 }
 
 fn spectral_setup(hero: f32) {
     let span = SPECTRAL_BAND_HI - SPECTRAL_BAND_LO;
     let base = fract(hero);
-    spec_lambda_lo = SPECTRAL_BAND_LO + span * fract(base + vec4f(0.0, 0.125, 0.25, 0.375));
-    spec_lambda_hi = SPECTRAL_BAND_LO + span * fract(base + vec4f(0.5, 0.625, 0.75, 0.875));
+    spec_lambda_lo = SPECTRAL_BAND_LO + span * fract(base + SPECTRAL_STRATA_LO);
+    spec_lambda_hi = SPECTRAL_BAND_LO + span * fract(base + SPECTRAL_STRATA_HI);
 
     let pb_lo = spectral_prebasis(spec_lambda_lo);
     let pb_hi = spectral_prebasis(spec_lambda_hi);
@@ -528,12 +659,12 @@ fn spectral_setup(hero: f32) {
 
     let xyz_lo = spectral_cie(spec_lambda_lo);
     let xyz_hi = spectral_cie(spec_lambda_hi);
-    var wr = Spec( 3.2404542 * xyz_lo.a - 1.5371385 * xyz_lo.b - 0.4985314 * xyz_lo.c,
-                   3.2404542 * xyz_hi.a - 1.5371385 * xyz_hi.b - 0.4985314 * xyz_hi.c);
-    var wg = Spec(-0.9692660 * xyz_lo.a + 1.8760108 * xyz_lo.b + 0.0415560 * xyz_lo.c,
-                  -0.9692660 * xyz_hi.a + 1.8760108 * xyz_hi.b + 0.0415560 * xyz_hi.c);
-    var wb = Spec( 0.0556434 * xyz_lo.a - 0.2040259 * xyz_lo.b + 1.0572252 * xyz_lo.c,
-                   0.0556434 * xyz_hi.a - 0.2040259 * xyz_hi.b + 1.0572252 * xyz_hi.c);
+    var wr = Spec(XYZ_TO_R_X * xyz_lo.a + XYZ_TO_R_Y * xyz_lo.b + XYZ_TO_R_Z * xyz_lo.c,
+                  XYZ_TO_R_X * xyz_hi.a + XYZ_TO_R_Y * xyz_hi.b + XYZ_TO_R_Z * xyz_hi.c);
+    var wg = Spec(XYZ_TO_G_X * xyz_lo.a + XYZ_TO_G_Y * xyz_lo.b + XYZ_TO_G_Z * xyz_lo.c,
+                  XYZ_TO_G_X * xyz_hi.a + XYZ_TO_G_Y * xyz_hi.b + XYZ_TO_G_Z * xyz_hi.c);
+    var wb = Spec(XYZ_TO_B_X * xyz_lo.a + XYZ_TO_B_Y * xyz_lo.b + XYZ_TO_B_Z * xyz_lo.c,
+                  XYZ_TO_B_X * xyz_hi.a + XYZ_TO_B_Y * xyz_hi.b + XYZ_TO_B_Z * xyz_hi.c);
 
     let sum_r = dot(wr.lo, vec4f(1.0)) + dot(wr.hi, vec4f(1.0));
     let sum_g = dot(wg.lo, vec4f(1.0)) + dot(wg.hi, vec4f(1.0));
@@ -577,20 +708,20 @@ fn spec_to_rgb(s: Spec) -> vec3f {
 }
 
 fn spec_lambda_um(k: i32) -> f32 {
-    let a = spec_lambda_lo[clamp(k, 0, 3)];
-    let b = spec_lambda_hi[clamp(k - 4, 0, 3)];
-    return select(a, b, k >= 4) * 0.001;
+    let a = spec_lambda_lo[clamp(k, 0, SPEC_LAST_LANE)];
+    let b = spec_lambda_hi[clamp(k - SPEC_LANES, 0, SPEC_LAST_LANE)];
+    return select(a, b, k >= SPEC_LANES) * NM_TO_UM;
 }
 
 fn spec_collapse_mask(k: i32) -> Spec {
     let idx = vec4i(0, 1, 2, 3);
     return Spec(select(vec4f(0.0), vec4f(SPECTRAL_COUNT), idx == vec4i(k)),
-                select(vec4f(0.0), vec4f(SPECTRAL_COUNT), idx == vec4i(k - 4)));
+                select(vec4f(0.0), vec4f(SPECTRAL_COUNT), idx == vec4i(k - SPEC_LANES)));
 }
 
 
 fn gamut_fit(c: vec3f) -> vec3f {
-    let y = dot(c, vec3f(0.2126, 0.7152, 0.0722));
+    let y = dot(c, LUMA_WEIGHTS);
     if (y <= 0.0) {
         return vec3f(0.0);
     }
@@ -654,7 +785,7 @@ fn sphere_fold(z: vec3f, dr: f32, min_radius2: f32, fixed_radius2: f32) -> vec4f
 
 fn sphere_invert_offset(z: vec3f, dr: f32, center: vec3f, radius2: f32) -> vec4f {
     let d = z - center;
-    let r2 = max(dot(d, d), 1e-6);
+    let r2 = max(dot(d, d), EPSILON_FINE);
     if (r2 < radius2) {
         let t = radius2 / r2;
         return vec4f(center + d * t, dr * t);
@@ -676,13 +807,15 @@ fn de_finalize_plain(carry: IterCarry) -> f32 {
 
 fn bulb_log_escape(carry: IterCarry) -> f32 {
     let r = length(carry.z);
-    let log_est = 0.5 * log(max(r, 1e-6)) * r / max(carry.dr, 1e-6);
+    let log_est = 0.5 * log(max(r, EPSILON_FINE)) * r / max(carry.dr, EPSILON_FINE);
     return min(log_est, r);
 }
 
+const BULB_BAILOUT = 2.0;
+
 fn bulb_power_step(carry: IterCarry, add: vec3f, power: f32) -> IterCarry {
     let r = length(carry.z);
-    if (r > 2.0) {
+    if (r > BULB_BAILOUT) {
         return carry;
     }
     let theta = acos(clamp(carry.z.z / r, -1.0, 1.0)) * power;
@@ -743,8 +876,8 @@ fn primitive_de_iterations() -> i32 {
 }
 
 fn primitive_de_step(carry: IterCarry, size: f32) -> IterCarry {
-    let unit_dr = 1.0 / max(size, 1e-4);
-    let f = unit_dr / max(abs(carry.dr), 1e-6);
+    let unit_dr = 1.0 / max(size, EPSILON);
+    let f = unit_dr / max(abs(carry.dr), EPSILON_FINE);
     return IterCarry(carry.z * f, unit_dr);
 }
 
@@ -757,6 +890,10 @@ const TRAP_MAX = 1;
 const TRAP_AVERAGE = 2;
 const TRAP_LAST = 3;
 const TRAP_ITERATION = 4;
+const TRAP_STRIP_REPEAT = 1;
+const TRAP_STRIP_MIRROR = 2;
+const TRAP_INITIAL_DISTANCE = 1e6;
+const TRAP_MIN_SPAN = 1e-4;
 
 struct OrbitTrap {
     center: vec3f,
@@ -804,7 +941,7 @@ fn orbit_trap_distance(t: OrbitTrap, z: vec3f) -> f32 {
 
 fn orbit_trap_begin(t: OrbitTrap) -> vec4f {
     let starts_high = t.mode != TRAP_MAX && t.mode != TRAP_AVERAGE;
-    return vec4f(select(0.0, 1e6, starts_high), 0.0, 0.0, 1e6);
+    return vec4f(select(0.0, TRAP_INITIAL_DISTANCE, starts_high), 0.0, 0.0, TRAP_INITIAL_DISTANCE);
 }
 
 fn orbit_trap_update(acc: vec4f, t: OrbitTrap, z: vec3f, z_prev: vec3f, it: i32) -> vec4f {
@@ -840,6 +977,30 @@ fn orbit_trap_finish(acc: vec4f, t: OrbitTrap, iters: i32) -> f32 {
         return (acc.z + 1.0) / f32(max(iters, 1));
     }
     return acc.x;
+}
+
+const LOD_MIN_FRACTION = 0.25;
+const LOD_MIN_START = 1e-3;
+
+var<private> g_lod_dist: f32 = 0.0;
+
+fn lod_iterations(n: i32) -> vec2f {
+    if (!approx_on(APPROX_DISTANCE_LOD) || n <= 1) {
+        return vec2f(f32(n), 1.0);
+    }
+    let start = max(u.approx_lod_start, LOD_MIN_START);
+    let drop = max(u.approx_lod_strength, 0.0) * log2(max(g_lod_dist / start, 1.0));
+    let lowest = max(1.0, ceil(f32(n) * LOD_MIN_FRACTION));
+    let keep = clamp(f32(n) - drop, lowest, f32(n));
+    let hi = ceil(keep);
+    return vec2f(hi, 1.0 - (hi - keep));
+}
+
+fn lod_blend(lo: IterCarry, hi: IterCarry, frac: f32) -> IterCarry {
+    if (frac >= 1.0) {
+        return hi;
+    }
+    return IterCarry(mix(lo.z, hi.z, frac), mix(lo.dr, hi.dr, frac));
 }
 
 @@FORMULA_0@@
@@ -887,8 +1048,11 @@ fn eval_mixed(pos: vec3f, base_slot: i32, mixin_slot0: i32) -> vec2f {
     }
     cycle_len = max(cycle_len, 1);
 
-    let total = max(i32(u.instances[base_slot].hybrid_total_iters), 0);
+    let lod = lod_iterations(max(i32(u.instances[base_slot].hybrid_total_iters), 0));
+    let total = i32(lod.x);
+    var carry_lo = carry;
     for (var it = 0; it < total; it++) {
+        carry_lo = carry;
         var pos_in_cycle = it % cycle_len;
 
         var slot = base_slot;
@@ -916,7 +1080,7 @@ fn eval_mixed(pos: vec3f, base_slot: i32, mixin_slot0: i32) -> vec2f {
         trap = orbit_trap_update(trap, trap_spec, carry.z, z_prev, it);
     }
 
-    return vec2f(eval_finalize(base_slot, carry), orbit_trap_finish(trap, trap_spec, total));
+    return vec2f(eval_finalize(base_slot, lod_blend(carry_lo, carry, lod.y)), orbit_trap_finish(trap, trap_spec, total));
 }
 
 fn rot_x(a: f32) -> mat3x3f {
@@ -944,27 +1108,43 @@ fn warp_frame(w: Warp) -> mat3x3f {
     return rot_z(w.rotation.z) * rot_y(w.rotation.y) * rot_x(w.rotation.x);
 }
 
+const WARP_REGION_SPHERE = 0;
+const WARP_REGION_BOX = 1;
+const WARP_REGION_GLOBAL = 2;
+const WARP_TWIST = 0;
+const WARP_BEND = 1;
+const WARP_ROTATE = 2;
+const WARP_SCALE = 3;
+const WARP_SPHERE_INVERSION = 4;
+const WARP_REPEAT = 5;
+const WARP_GLOBAL_DEPTH = 1e20;
+const WARP_MIN_EXTENT = 1e-4;
+const WARP_MIN_FALLOFF = 1e-4;
+const WARP_MIN_SCALE = 1e-3;
+const WARP_MIN_INVERSION_RADIUS = 1e-3;
+const WARP_MIN_REPEAT_CELL = 1e-4;
+
 fn warp_region_de(w: Warp, p: vec3f) -> f32 {
     let rk = i32(w.region_kind + 0.5);
-    if (rk == 2) {
-        return -1e20;
+    if (rk == WARP_REGION_GLOBAL) {
+        return -WARP_GLOBAL_DEPTH;
     }
     let q = transpose(warp_frame(w)) * (p - w.center);
-    if (rk == 0) {
-        return length(q) - max(w.extent.x, 1e-4);
+    if (rk == WARP_REGION_SPHERE) {
+        return length(q) - max(w.extent.x, WARP_MIN_EXTENT);
     }
-    let e = max(w.extent, vec3f(1e-4));
+    let e = max(w.extent, vec3f(WARP_MIN_EXTENT));
     let d = abs(q) - e;
     return length(max(d, vec3f(0.0))) + min(max(d.x, max(d.y, d.z)), 0.0);
 }
 
 fn warp_influence(w: Warp, p: vec3f) -> f32 {
     let rk = i32(w.region_kind + 0.5);
-    if (rk == 2) {
+    if (rk == WARP_REGION_GLOBAL) {
         return w.strength;
     }
     let de = warp_region_de(w, p);
-    if (w.falloff <= 1e-4) {
+    if (w.falloff <= WARP_MIN_FALLOFF) {
         return select(0.0, w.strength, de <= 0.0);
     }
     return w.strength * (1.0 - smoothstep(-w.falloff, 0.0, de));
@@ -974,33 +1154,33 @@ fn coord_warp_raw(w: Warp, p: vec3f) -> vec3f {
     let frame = warp_frame(w);
     var q = transpose(frame) * (p - w.center);
     let sk = i32(w.sub_kind + 0.5);
-    if (sk == 0) {
+    if (sk == WARP_TWIST) {
         let a = w.params0.x * q.y;
         let c = cos(a);
         let s = sin(a);
         q = vec3f(c * q.x - s * q.z, q.y, s * q.x + c * q.z);
-    } else if (sk == 1) {
+    } else if (sk == WARP_BEND) {
         let a = w.params0.x * q.x;
         let c = cos(a);
         let s = sin(a);
         q = vec3f(c * q.x - s * q.y, s * q.x + c * q.y, q.z);
-    } else if (sk == 2) {
+    } else if (sk == WARP_ROTATE) {
         let a = w.params0.x;
         let c = cos(a);
         let s = sin(a);
         q = vec3f(c * q.x - s * q.z, q.y, s * q.x + c * q.z);
-    } else if (sk == 3) {
-        q = q / max(abs(w.params0.xyz), vec3f(1e-3));
-    } else if (sk == 4) {
-        let r_min = max(w.params0.y, 1e-3);
+    } else if (sk == WARP_SCALE) {
+        q = q / max(abs(w.params0.xyz), vec3f(WARP_MIN_SCALE));
+    } else if (sk == WARP_SPHERE_INVERSION) {
+        let r_min = max(w.params0.y, WARP_MIN_INVERSION_RADIUS);
         let r2 = max(dot(q, q), r_min * r_min);
         q = q * (w.params0.x * w.params0.x / r2);
-    } else if (sk == 5) {
+    } else if (sk == WARP_REPEAT) {
         let c = w.params0.xyz;
         var f = q;
-        if (c.x > 1e-4) { f.x = q.x - c.x * round(q.x / c.x); }
-        if (c.y > 1e-4) { f.y = q.y - c.y * round(q.y / c.y); }
-        if (c.z > 1e-4) { f.z = q.z - c.z * round(q.z / c.z); }
+        if (c.x > WARP_MIN_REPEAT_CELL) { f.x = q.x - c.x * round(q.x / c.x); }
+        if (c.y > WARP_MIN_REPEAT_CELL) { f.y = q.y - c.y * round(q.y / c.y); }
+        if (c.z > WARP_MIN_REPEAT_CELL) { f.z = q.z - c.z * round(q.z / c.z); }
         q = f;
     } else {
         let a = w.params0.x;
@@ -1016,6 +1196,10 @@ struct Warped {
 
 @@WARPS@@
 
+const PARTICLE_MODE_OFF = 0u;
+const PARTICLE_MODE_SPHERES = 1u;
+const PARTICLE_MODE_DOTS = 2u;
+
 struct ParticleGrid {
     origin: vec3f,
     cell: f32,
@@ -1027,9 +1211,9 @@ fn particle_grid(s: u32) -> ParticleGrid {
     let h = s * PD_HEADER_WORDS;
     var g: ParticleGrid;
     g.origin = vec3f(bitcast<f32>(particle_data[h]), bitcast<f32>(particle_data[h + 1u]), bitcast<f32>(particle_data[h + 2u]));
-    g.cell = bitcast<f32>(particle_data[h + 3u]);
-    g.dims = vec3i(i32(particle_data[h + 4u]), i32(particle_data[h + 5u]), i32(particle_data[h + 6u]));
-    g.valid = particle_data[h + 7u] != 0u && u32(u.particle_systems[s].mode + 0.5) != 0u;
+    g.cell = bitcast<f32>(particle_data[h + PD_HEADER_CELL]);
+    g.dims = vec3i(i32(particle_data[h + PD_HEADER_DIMS]), i32(particle_data[h + PD_HEADER_DIMS + 1u]), i32(particle_data[h + PD_HEADER_DIMS + 2u]));
+    g.valid = particle_data[h + PD_HEADER_VALID] != 0u && u32(u.particle_systems[s].mode + 0.5) != PARTICLE_MODE_OFF;
     return g;
 }
 
@@ -1038,9 +1222,9 @@ fn particle_in_grid(g: ParticleGrid, c: vec3i) -> bool {
 }
 
 fn particle_cell(s: u32, g: ParticleGrid, c: vec3i) -> vec3u {
-    let a = PD_CELLS + (s * PD_MAX_CELLS + u32(c.x + g.dims.x * (c.y + g.dims.y * c.z))) * 2u;
-    let w1 = particle_data[a + 1u];
-    return vec3u(particle_data[a], w1 & 0xffffu, w1 >> 16u);
+    let a = PD_CELLS + (s * PD_MAX_CELLS + u32(c.x + g.dims.x * (c.y + g.dims.y * c.z))) * PD_CELL_WORDS;
+    let w1 = particle_data[a + PD_CELL_COUNT_WORD];
+    return vec3u(particle_data[a], w1 & PD_CELL_COUNT_MASK, w1 >> PD_CELL_SKIP_SHIFT);
 }
 
 fn particle_entry(s: u32, slot: u32) -> u32 {
@@ -1053,12 +1237,12 @@ fn particle_sphere(s: u32, i: u32) -> vec4f {
         bitcast<f32>(particle_data[a]),
         bitcast<f32>(particle_data[a + 1u]),
         bitcast<f32>(particle_data[a + 2u]),
-        bitcast<f32>(particle_data[a + 3u]),
+        bitcast<f32>(particle_data[a + PD_RECORD_RADIUS]),
     );
 }
 
 fn particle_strip(s: u32, i: u32) -> f32 {
-    return bitcast<f32>(particle_data[PD_RECORDS + (s * PD_MAX_PARTICLES + i) * PD_RECORD_WORDS + 4u]);
+    return bitcast<f32>(particle_data[PD_RECORDS + (s * PD_MAX_PARTICLES + i) * PD_RECORD_WORDS + PD_RECORD_STRIP]);
 }
 
 fn particle_gradient(s: u32, t: f32) -> ColorStop {
@@ -1076,7 +1260,7 @@ fn particle_gradient(s: u32, t: f32) -> ColorStop {
         let a = u.particle_systems[s].colors[i];
         let b = u.particle_systems[s].colors[i + 1];
         if (t >= a.position && t <= b.position) {
-            let f = (t - a.position) / max(b.position - a.position, 0.0001);
+            let f = (t - a.position) / max(b.position - a.position, GRADIENT_MIN_SPAN);
             return mix_material(a, b, 1.0 - f);
         }
     }
@@ -1100,6 +1284,9 @@ struct DotsHit {
 @@PARTICLES@@
 
 
+const MIN_INSTANCE_SCALE = 0.001;
+const MIN_STEP_SAFETY = 0.001;
+
 fn instance_local_de(local: vec3f, slot: i32) -> vec2f {
     if (u.instances[slot].mixin_count > 0.5) {
         return eval_mixed(local, slot, MAX_INSTANCES + slot * MAX_MIXINS);
@@ -1108,25 +1295,35 @@ fn instance_local_de(local: vec3f, slot: i32) -> vec2f {
 }
 
 fn instance_de_trap(pos: vec3f, slot: i32) -> vec2f {
-    let s = max(u.instances[slot].scale, vec3f(0.001));
+    g_lod_dist = distance(pos, u.camera_pos);
+    let s = max(u.instances[slot].scale, vec3f(MIN_INSTANCE_SCALE));
     let rot = instance_rotation(slot);
     let unrotated = transpose(rot) * (pos - u.instances[slot].offset);
     let local = unrotated / s;
     let result = instance_local_de(local, slot);
     let scale_factor = min(s.x, min(s.y, s.z));
-    let safety = clamp(u.instances[slot].step_safety, 0.001, 1.0);
+    let safety = clamp(u.instances[slot].step_safety, MIN_STEP_SAFETY, 1.0);
     return vec2f(result.x * scale_factor * safety, result.y);
 }
 
 fn instance_de_trap_ft(pos: vec3f, slot: i32) -> vec2f {
     if (u.fft_active > 0.5 && slot == i32(u.fft_target_slot + 0.5)) {
-        return vec2f(1e6, 0.0);
+        return vec2f(NO_SURFACE_DE, 0.0);
     }
     return instance_de_trap(pos, slot);
 }
 
+const SMOOTH_K_MIN = 0.0001;
+const COMBINE_UNION = 0;
+const COMBINE_SMOOTH_MIN = 1;
+const COMBINE_SMOOTH_MAX = 2;
+const COMBINE_SMOOTH_INV_MAX = 3;
+const COMBINE_SMOOTH_MIN_LIN = 4;
+const COMBINE_SMOOTH_MIN_NLIN = 5;
+const COMBINE_SMOOTH_MIX = 6;
+
 fn smin(a: f32, b: f32, k: f32) -> f32 {
-    if (k <= 0.0001) {
+    if (k <= SMOOTH_K_MIN) {
         return min(a, b);
     }
     let h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
@@ -1134,7 +1331,7 @@ fn smin(a: f32, b: f32, k: f32) -> f32 {
 }
 
 fn smax(a: f32, b: f32, k: f32) -> f32 {
-    if (k <= 0.0001) {
+    if (k <= SMOOTH_K_MIN) {
         return max(a, b);
     }
     let h = clamp(0.5 - 0.5 * (b - a) / k, 0.0, 1.0);
@@ -1142,7 +1339,7 @@ fn smax(a: f32, b: f32, k: f32) -> f32 {
 }
 
 fn ssub(cut: f32, base: f32, k: f32) -> f32 {
-    if (k <= 0.0001) {
+    if (k <= SMOOTH_K_MIN) {
         return max(-cut, base);
     }
     let h = clamp(0.5 - 0.5 * (base + cut) / k, 0.0, 1.0);
@@ -1150,14 +1347,14 @@ fn ssub(cut: f32, base: f32, k: f32) -> f32 {
 }
 
 fn smin_lin(a: f32, b: f32, k: f32) -> f32 {
-    if (k <= 0.0001) {
+    if (k <= SMOOTH_K_MIN) {
         return min(a, b);
     }
     return min(b - max(k - a, 0.0), a - max(k - b, 0.0));
 }
 
 fn smin_nlin(a: f32, b: f32, k: f32) -> f32 {
-    if (k <= 0.0001) {
+    if (k <= SMOOTH_K_MIN) {
         return min(a, b);
     }
     let ra = max(k - a, 0.0);
@@ -1166,7 +1363,7 @@ fn smin_nlin(a: f32, b: f32, k: f32) -> f32 {
 }
 
 fn smix(a: f32, b: f32, k: f32) -> f32 {
-    if (k <= 0.0001) {
+    if (k <= SMOOTH_K_MIN) {
         return min(a, b);
     }
     let h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
@@ -1174,24 +1371,24 @@ fn smix(a: f32, b: f32, k: f32) -> f32 {
 }
 
 fn combine_de(mode: i32, d: f32, di: f32, k: f32) -> vec2f {
-    let hard = k <= 0.0001;
+    let hard = k <= SMOOTH_K_MIN;
     let closer = select(1.0, 0.0, di < d);
-    if (mode == 0) {
+    if (mode == COMBINE_UNION) {
         return vec2f(min(d, di), closer);
     }
-    if (mode == 1 || mode == 6) {
+    if (mode == COMBINE_SMOOTH_MIN || mode == COMBINE_SMOOTH_MIX) {
         let h = select(clamp(0.5 + 0.5 * (di - d) / k, 0.0, 1.0), closer, hard);
-        return vec2f(select(smin(d, di, k), smix(d, di, k), mode == 6), h);
+        return vec2f(select(smin(d, di, k), smix(d, di, k), mode == COMBINE_SMOOTH_MIX), h);
     }
-    if (mode == 2) {
+    if (mode == COMBINE_SMOOTH_MAX) {
         let h = select(clamp(0.5 - 0.5 * (di - d) / k, 0.0, 1.0), select(1.0, 0.0, di > d), hard);
         return vec2f(smax(d, di, k), h);
     }
-    if (mode == 3) {
+    if (mode == COMBINE_SMOOTH_INV_MAX) {
         let h = select(1.0 - clamp(0.5 - 0.5 * (d + di) / k, 0.0, 1.0), select(1.0, 0.0, -di > d), hard);
         return vec2f(ssub(di, d, k), h);
     }
-    if (mode == 4) {
+    if (mode == COMBINE_SMOOTH_MIN_LIN) {
         return vec2f(smin_lin(d, di, k), closer);
     }
     return vec2f(smin_nlin(d, di, k), closer);
@@ -1245,10 +1442,12 @@ fn scene_de(pos: vec3f) -> f32 {
     return apply_carves(pos, pd.x);
 }
 
+const TETRAHEDRAL_TAPS = 4;
+
 fn estimate_normal(pos: vec3f, t: f32) -> vec3f {
     let e = march_epsilon(t);
     var grad = vec3f(0.0);
-    for (var i = 0; i < 4; i++) {
+    for (var i = 0; i < TETRAHEDRAL_TAPS; i++) {
         var k = vec3f(1.0, -1.0, -1.0);
         if (i == 1) {
             k = vec3f(-1.0, -1.0, 1.0);
@@ -1272,30 +1471,46 @@ fn march_epsilon(t: f32) -> f32 {
     return u.epsilon_coefficient * t + u.epsilon_floor;
 }
 
+const AO_RADIUS_PER_DIST = 0.04;
+const AO_MIN_RADIUS = 0.003;
+const AO_MAX_RADIUS = 0.25;
+const AO_SAMPLES = 5;
+const AO_STEP_FRACTION = 0.2;
+const AO_WEIGHT_DECAY = 0.6;
+const AO_STRENGTH = 2.0;
+
 fn calc_ao(pos: vec3f, normal: vec3f, t: f32) -> f32 {
     if (!part_on(PART_AMBIENT_OCCLUSION)) {
         return 1.0;
     }
-    let radius = clamp(t * 0.04, 0.003, 0.25);
+    let radius = clamp(t * AO_RADIUS_PER_DIST, AO_MIN_RADIUS, AO_MAX_RADIUS);
     var occlusion = 0.0;
     var weight = 1.0;
-    for (var i = 0; i < 5; i++) {
-        let step_dist = radius * (0.2 + 0.2 * f32(i));
+    for (var i = 0; i < AO_SAMPLES; i++) {
+        let step_dist = radius * (AO_STEP_FRACTION + AO_STEP_FRACTION * f32(i));
         let d = scene_de(pos + normal * step_dist);
         occlusion += max(step_dist - d, 0.0) * weight;
-        weight *= 0.6;
+        weight *= AO_WEIGHT_DECAY;
     }
-    return clamp(1.0 - 2.0 * occlusion / radius, 0.0, 1.0);
+    return clamp(1.0 - AO_STRENGTH * occlusion / radius, 0.0, 1.0);
 }
 
 fn march(origin: vec3f, dir: vec3f) -> MarchResult {
     return march_to(origin, dir, u.max_dist);
 }
 
+const COARSE_EPS_SCALE = 4.0;
+const COARSE_MIN_STEPS = 16;
+const COARSE_STEP_DIVISOR = 2;
+
+var<private> g_coarse_march: bool = false;
+
 fn march_to(origin: vec3f, dir: vec3f, max_t: f32) -> MarchResult {
-    let max_steps = i32(u.max_steps);
-    let hq = u.high_quality > 0.5;
-    let refine_budget = max(select(i32(u.refine_fast), i32(u.refine_hq), hq), 0);
+    let coarse = g_coarse_march;
+    let max_steps = select(i32(u.max_steps), max(i32(u.max_steps) / COARSE_STEP_DIVISOR, COARSE_MIN_STEPS), coarse);
+    let hq = u.high_quality > 0.5 && !coarse;
+    let eps_scale = select(1.0, COARSE_EPS_SCALE, coarse);
+    let refine_budget = select(max(select(i32(u.refine_fast), i32(u.refine_hq), hq), 0), 0, coarse);
     let footprint_per_unit_t = u.hq_footprint_budget_px * 2.0 / max(u.resolution.y, 1.0);
 
     var t = 0.0;
@@ -1309,9 +1524,9 @@ fn march_to(origin: vec3f, dir: vec3f, max_t: f32) -> MarchResult {
     let max_samples = max_steps * (1 + refine_budget);
     for (var n = 0; n < max_samples; n++) {
         let sample_t = select(0.5 * (lo + hi), t, probing);
-        let eps = march_epsilon(sample_t);
+        let eps = march_epsilon(sample_t) * eps_scale;
 
-        var step_lim = 1e30;
+        var step_lim = INFINITE_DISTANCE;
         if (probing) {
             step_lim = warp_step_limit(origin + dir * sample_t);
         }
@@ -1363,8 +1578,18 @@ fn march_to(origin: vec3f, dir: vec3f, max_t: f32) -> MarchResult {
     return MarchResult(false, t, f32(max_steps));
 }
 
+const DEFAULT_ALBEDO = vec3f(0.8, 0.8, 0.85);
+const DEFAULT_GLOSSINESS = 0.3;
+const DEFAULT_IOR = 1.5;
+const DEFAULT_INNER_STEPS = 64.0;
+const DEFAULT_FILM_THICKNESS_NM = 400.0;
+const DEFAULT_FILM_IOR = 1.8;
+const DEFAULT_FILM_ANGLE_SCALE = 1.0;
+const DEFAULT_FILM_PERTURB_SCALE = 0.2;
+const GRADIENT_MIN_SPAN = 0.0001;
+
 fn default_material() -> ColorStop {
-    return ColorStop(vec3f(0.8, 0.8, 0.85), 0.0, 0.3, 0.0, 0.0, 1.5, 0.0, 0.0, 64.0, 0.0, 400.0, 1.8, 0.0, 1.0, 0.0, 0.2, 0.0, 0.0);
+    return ColorStop(DEFAULT_ALBEDO, 0.0, DEFAULT_GLOSSINESS, 0.0, 0.0, DEFAULT_IOR, 0.0, 0.0, DEFAULT_INNER_STEPS, 0.0, DEFAULT_FILM_THICKNESS_NM, DEFAULT_FILM_IOR, 0.0, DEFAULT_FILM_ANGLE_SCALE, 0.0, DEFAULT_FILM_PERTURB_SCALE, 0.0, 0.0);
 }
 
 fn mix_material(a: ColorStop, b: ColorStop, h: f32) -> ColorStop {
@@ -1405,7 +1630,7 @@ fn sample_gradient(slot: i32, t: f32) -> ColorStop {
         let a = u.instances[slot].colors[i];
         let b = u.instances[slot].colors[i + 1];
         if (t >= a.position && t <= b.position) {
-            let f = (t - a.position) / max(b.position - a.position, 0.0001);
+            let f = (t - a.position) / max(b.position - a.position, GRADIENT_MIN_SPAN);
             return mix_material(a, b, 1.0 - f);
         }
     }
@@ -1413,12 +1638,12 @@ fn sample_gradient(slot: i32, t: f32) -> ColorStop {
 }
 
 fn orbit_trap_to_strip(slot: i32, v: f32) -> f32 {
-    let x = v / max(u.instances[slot].trap_span, 1e-4) + u.instances[slot].trap_offset;
+    let x = v / max(u.instances[slot].trap_span, TRAP_MIN_SPAN) + u.instances[slot].trap_offset;
     let rep = i32(u.instances[slot].trap_repeat + 0.5);
-    if (rep == 1) {
+    if (rep == TRAP_STRIP_REPEAT) {
         return fract(x);
     }
-    if (rep == 2) {
+    if (rep == TRAP_STRIP_MIRROR) {
         return 1.0 - abs(fract(x * 0.5) * 2.0 - 1.0);
     }
     return clamp(x, 0.0, 1.0);
@@ -1431,6 +1656,11 @@ fn orbit_trap_to_strip(slot: i32, v: f32) -> f32 {
 
 const SKY_INV_TWO_PI = 0.15915494309189535;
 const SKY_INV_PI = 0.3183098861837907;
+const SKY_IMAGE = 1;
+const SKY_MIN_FALLOFF = 0.01;
+const SKY_NO_SUN_COS = -1.0;
+const SKY_SUN_EDGE = 0.15;
+const SKY_SUN_MEAN_EDGE = 0.075;
 
 fn sky_rotate(dir: vec3f) -> vec3f {
     let c = cos(u.sky.yaw);
@@ -1438,18 +1668,19 @@ fn sky_rotate(dir: vec3f) -> vec3f {
     return vec3f(c * dir.x - s * dir.z, dir.y, s * dir.x + c * dir.z);
 }
 
-fn sky_procedural(dir: vec3f) -> vec3f {
-    var base: vec3f;
+fn sky_gradient(dir: vec3f) -> vec3f {
     if (dir.y >= 0.0) {
-        let t = pow(clamp(dir.y, 0.0, 1.0), 1.0 / max(u.sky.falloff, 0.01));
-        base = mix(u.sky.horizon, u.sky.zenith, t);
-    } else {
-        base = mix(u.sky.horizon, u.sky.ground, clamp(-dir.y, 0.0, 1.0));
+        let t = pow(clamp(dir.y, 0.0, 1.0), 1.0 / max(u.sky.falloff, SKY_MIN_FALLOFF));
+        return mix(u.sky.horizon, u.sky.zenith, t);
     }
+    return mix(u.sky.horizon, u.sky.ground, clamp(-dir.y, 0.0, 1.0));
+}
 
-    if (u.sky.sun_cos > -1.0) {
+fn sky_procedural(dir: vec3f) -> vec3f {
+    var base = sky_gradient(dir);
+    if (u.sky.sun_cos > SKY_NO_SUN_COS) {
         let d = dot(dir, normalize(u.sky.sun_dir));
-        let inner = mix(u.sky.sun_cos, 1.0, 0.15);
+        let inner = mix(u.sky.sun_cos, 1.0, SKY_SUN_EDGE);
         base += u.sky.sun_color * u.sky.sun_intensity * smoothstep(u.sky.sun_cos, inner, d);
     }
     return base;
@@ -1469,12 +1700,39 @@ fn sky_color(dir: vec3f) -> vec3f {
     }
     let d = sky_rotate(dir);
     var c: vec3f;
-    if (u.sky.mode > 0.5) {
+    if (i32(u.sky.mode + 0.5) == SKY_IMAGE) {
         c = sky_image(d);
     } else {
         c = sky_procedural(d);
     }
     return max(c * u.sky.intensity, vec3f(0.0));
+}
+
+fn sky_ambient(normal: vec3f) -> vec3f {
+    if (!part_on(PART_SKY)) {
+        return vec3f(0.0);
+    }
+    let d = sky_rotate(normal);
+    var c: vec3f;
+    if (i32(u.sky.mode + 0.5) == SKY_IMAGE) {
+        c = sky_image(d);
+    } else {
+        c = sky_gradient(d);
+        if (u.sky.sun_cos > SKY_NO_SUN_COS) {
+            let solid = 2.0 * (1.0 - mix(u.sky.sun_cos, 1.0, SKY_SUN_MEAN_EDGE));
+            c += u.sky.sun_color * u.sky.sun_intensity * solid * max(dot(d, normalize(u.sky.sun_dir)), 0.0);
+        }
+    }
+    return max(c * u.sky.intensity, vec3f(0.0));
+}
+
+const STEP_AO_REFERENCE = 128.0;
+
+fn step_ao(steps: f32) -> f32 {
+    if (!part_on(PART_AMBIENT_OCCLUSION)) {
+        return 1.0;
+    }
+    return clamp(1.0 - steps / STEP_AO_REFERENCE, 0.0, 1.0);
 }
 
 struct SurfacePoint {
@@ -1515,30 +1773,37 @@ struct LightSample {
 }
 const BEAM_WAIST = 0.05;
 
+const LIGHT_POINT = 0;
+const LIGHT_GLOBAL = 1;
+const LIGHT_RAY = 2;
+const LIGHT_MIN_DIST_SQ = 0.01;
+const RAY_LIGHT_MAX_SPREAD = 1.5;
+const ERF_WINITZKI_A = 0.147;
+
 fn erf_approx(x: f32) -> f32 {
-    let a = 0.147;
+    let a = ERF_WINITZKI_A;
     let x2 = x * x;
-    let inner = x2 * (4.0 / 3.14159265 + a * x2) / (1.0 + a * x2);
+    let inner = x2 * (4.0 / PI + a * x2) / (1.0 + a * x2);
     return sign(x) * sqrt(max(1.0 - exp(-inner), 0.0));
 }
 
 fn light_sample_ex(light: Light, surf_pos: vec3f, seg_dir: vec3f, seg_len: f32) -> LightSample {
     var s: LightSample;
-    if (light.light_type < 0.5) {
+    if (i32(light.light_type + 0.5) == LIGHT_POINT) {
         let to_light = light.position_or_direction - surf_pos;
         let dist = length(to_light);
-        s.dir = to_light / max(dist, 1e-4);
-        s.color = light.color * light.brightness / max(dist * dist, 0.01);
+        s.dir = to_light / max(dist, EPSILON);
+        s.color = light.color * light.brightness / max(dist * dist, LIGHT_MIN_DIST_SQ);
         s.dist = dist;
-    } else if (light.light_type < 1.5) {
+    } else if (i32(light.light_type + 0.5) == LIGHT_GLOBAL) {
         s.dir = normalize(light.position_or_direction);
         s.color = light.color * light.brightness;
         s.dist = u.max_dist * 2.0;
     } else {
-        let axis = light.ray_direction / max(length(light.ray_direction), 1e-6);
+        let axis = light.ray_direction / max(length(light.ray_direction), EPSILON_FINE);
         let to_light = light.position_or_direction - surf_pos;
         let dist = length(to_light);
-        s.dir = to_light / max(dist, 1e-4);
+        s.dir = to_light / max(dist, EPSILON);
         s.dist = dist;
 
         let u0 = -to_light;
@@ -1547,12 +1812,12 @@ fn light_sample_ex(light: Light, surf_pos: vec3f, seg_dir: vec3f, seg_len: f32) 
 
         let d_perp = seg_dir - axis * dot(seg_dir, axis);
         let a_quad = dot(d_perp, d_perp);
-        let crossing = seg_len > 1e-6 && a_quad > 1e-12;
+        let crossing = seg_len > EPSILON_FINE && a_quad > EPSILON_TINY;
 
-        let s_star = select(0.0, -dot(perp0, d_perp) / max(a_quad, 1e-12), crossing);
+        let s_star = select(0.0, -dot(perp0, d_perp) / max(a_quad, EPSILON_TINY), crossing);
         let s_eval = clamp(s_star, -0.5 * seg_len, 0.5 * seg_len);
         let t_eval = t0 + dot(seg_dir, axis) * s_eval;
-        let w = light.waist + max(t_eval, 0.0) * tan(clamp(light.spread, 0.0, 1.5));
+        let w = light.waist + max(t_eval, 0.0) * tan(clamp(light.spread, 0.0, RAY_LIGHT_MAX_SPREAD));
         let perp_star = perp0 + d_perp * s_star;
 
         var profile: f32;
@@ -1560,7 +1825,7 @@ fn light_sample_ex(light: Light, surf_pos: vec3f, seg_dir: vec3f, seg_len: f32) 
             let k = sqrt(a_quad) / w;
             let hi = erf_approx(k * (0.5 * seg_len - s_star));
             let lo = erf_approx(k * (-0.5 * seg_len - s_star));
-            let integral = (w / sqrt(a_quad)) * 0.5 * sqrt(3.14159265) * (hi - lo);
+            let integral = (w / sqrt(a_quad)) * 0.5 * sqrt(PI) * (hi - lo);
             profile = exp(-dot(perp_star, perp_star) / (w * w)) * integral / seg_len;
         } else {
             profile = exp(-dot(perp0, perp0) / (w * w));
@@ -1596,9 +1861,31 @@ struct VisParams {
     min_step: f32,
     tint_cut: f32,
     steps: i32,
+    caustics: bool,
 }
+
+const CAUSTIC_MIN_SCALE = 1e-3;
+const CAUSTIC_OCTAVE_GAIN = 0.5;
+const CAUSTIC_OCTAVE_SCALE = 2.03;
+const CAUSTIC_OCTAVE_OFFSET = vec3f(17.1, 3.7, 9.2);
+const CAUSTIC_RIDGE_SCALE = 0.75;
+const CAUSTIC_FLOOR = 0.35;
+const CAUSTIC_LINE_GAIN = 3.0;
+const CAUSTIC_LINE_SHARPNESS = 8.0;
+const SHADOW_OPAQUE_ALPHA = 0.01;
+
+fn fake_caustic(p: vec3f) -> f32 {
+    let q = p / max(u.approx_caustic_scale, CAUSTIC_MIN_SCALE);
+    let n = film_noise(q) + CAUSTIC_OCTAVE_GAIN * film_noise(q * CAUSTIC_OCTAVE_SCALE + CAUSTIC_OCTAVE_OFFSET);
+    let ridge = 1.0 - clamp(abs(n.x + n.y) * CAUSTIC_RIDGE_SCALE, 0.0, 1.0);
+    let lines = CAUSTIC_FLOOR + CAUSTIC_LINE_GAIN * pow(ridge, CAUSTIC_LINE_SHARPNESS);
+    return max(mix(1.0, lines, max(u.approx_caustic_strength, 0.0)), 0.0);
+}
+
 fn visibility_march(origin: vec3f, light_dir: vec3f, light_dist: f32, vp: VisParams) -> Spec {
-    let opaque_only = !scene_has_transparency || photons_on();
+    let fake_caustics = approx_on(APPROX_FAKE_CAUSTICS);
+    let opaque_only = !scene_has_transparency || (photons_on() && !fake_caustics);
+    var caustic_pending = vp.caustics && fake_caustics;
     var t = vp.t0;
     var res = 1.0;
     var tint = spec_splat(1.0);
@@ -1635,10 +1922,14 @@ fn visibility_march(origin: vec3f, light_dir: vec3f, light_dist: f32, vp: VisPar
             }
             let mat = hit_material(p).mat;
             let a = clamp(mat.transparency, 0.0, 1.0);
-            if (a < 0.01) {
+            if (a < SHADOW_OPAQUE_ALPHA) {
                 return spec_splat(0.0);
             }
             tint = spec_mul(tint, spec_scale(spec_from_rgb(mix(vec3f(1.0), mat.color, a)), a));
+            if (caustic_pending) {
+                tint = spec_scale(tint, fake_caustic(p));
+                caustic_pending = false;
+            }
             if (spec_max(tint) < vp.tint_cut) {
                 return spec_splat(0.0);
             }
@@ -1653,52 +1944,76 @@ fn visibility_march(origin: vec3f, light_dir: vec3f, light_dist: f32, vp: VisPar
     return spec_scale(tint, clamp(res, 0.0, 1.0));
 }
 
+const SHADOW_BIAS = 0.004;
+const SHADOW_HARD_K = 512.0;
+const SHADOW_HIT_EPS = 0.0005;
+const SHADOW_EXIT_SLOPE = 0.001;
+const SHADOW_EXIT_BIAS = 0.0005;
+const SHADOW_STEP_FLOOR = 0.004;
+const SHADOW_FLOOR_GROWTH = 1.15;
+const SHADOW_MIN_STEP = 0.001;
+const SHADOW_TINT_CUT = 0.004;
+const SHADOW_MAX_STEPS = 40;
+
+const FOG_VIS_K = 12.0;
+const FOG_VIS_T0 = 0.03;
+const FOG_VIS_HIT_EPS = 0.001;
+const FOG_VIS_EXIT_SLOPE = 0.002;
+const FOG_VIS_EXIT_BIAS = 0.001;
+const FOG_VIS_STEP_FLOOR = 0.02;
+const FOG_VIS_FLOOR_GROWTH = 1.3;
+const FOG_VIS_MIN_STEP = 0.08;
+const FOG_VIS_TINT_CUT = 0.01;
+
 fn shadow_factor(surf_pos: vec3f, normal: vec3f, light: Light, light_dir: vec3f, light_dist: f32) -> Spec {
     if (light.cast_shadows < 0.5) {
         return spec_splat(1.0);
     }
-    let bias = 0.004;
-    let vp = VisParams(mix(light.shadow_softness, 512.0, light.hard_shadows), bias, 0.0005, 0.001, 0.0005, 0.004, 1.15, 0.001, 0.004, min(i32(u.max_steps), 40));
+    let bias = SHADOW_BIAS;
+    let vp = VisParams(mix(light.shadow_softness, SHADOW_HARD_K, light.hard_shadows), bias, SHADOW_HIT_EPS, SHADOW_EXIT_SLOPE, SHADOW_EXIT_BIAS, SHADOW_STEP_FLOOR, SHADOW_FLOOR_GROWTH, SHADOW_MIN_STEP, SHADOW_TINT_CUT, min(i32(u.max_steps), SHADOW_MAX_STEPS), true);
     return visibility_march(surf_pos + normal * bias, light_dir, light_dist, vp);
 }
 
 fn fog_light_visibility(pos: vec3f, light_dir: vec3f, light_dist: f32, steps: i32) -> Spec {
-    let vp = VisParams(12.0, 0.03, 0.001, 0.002, 0.001, 0.02, 1.3, 0.08, 0.01, steps);
+    let vp = VisParams(FOG_VIS_K, FOG_VIS_T0, FOG_VIS_HIT_EPS, FOG_VIS_EXIT_SLOPE, FOG_VIS_EXIT_BIAS, FOG_VIS_STEP_FLOOR, FOG_VIS_FLOOR_GROWTH, FOG_VIS_MIN_STEP, FOG_VIS_TINT_CUT, steps, false);
     return visibility_march(pos, light_dir, light_dist, vp);
 }
 
 
+const IGN_SCALE = 52.9829189;
+const IGN_WEIGHTS = vec2f(0.06711056, 0.00583715);
+
 fn hash12(p: vec2f) -> f32 {
-    return fract(52.9829189 * fract(dot(p, vec2f(0.06711056, 0.00583715))));
+    return fract(IGN_SCALE * fract(dot(p, IGN_WEIGHTS)));
 }
 
 fn hash12w(p: vec2f) -> f32 {
     var v = vec2u(bitcast<u32>(p.x), bitcast<u32>(p.y));
-    v = v * 1664525u + 1013904223u;
-    v.x += v.y * 1664525u;
-    v.y += v.x * 1664525u;
+    v = v * LCG_MULTIPLIER + LCG_INCREMENT;
+    v.x += v.y * LCG_MULTIPLIER;
+    v.y += v.x * LCG_MULTIPLIER;
     v ^= v >> vec2u(16u);
-    v.x += v.y * 1664525u;
-    v.y += v.x * 1664525u;
+    v.x += v.y * LCG_MULTIPLIER;
+    v.y += v.x * LCG_MULTIPLIER;
     v ^= v >> vec2u(16u);
-    return f32(v.x ^ v.y) * 2.3283064365386963e-10;
+    return f32(v.x ^ v.y) * INV_U32_RANGE;
 }
 
 fn phase_hg(cos_theta: f32, g: f32) -> f32 {
     let g2 = g * g;
     let denom = 1.0 + g2 - 2.0 * g * cos_theta;
-    return (1.0 - g2) / (4.0 * 3.14159265 * pow(max(denom, 1e-4), 1.5));
+    return (1.0 - g2) / (4.0 * PI * pow(max(denom, EPSILON), 1.5));
 }
 
 const PHOTON_VOLUME_WORDS: u32 = 12u;
 
 fn fixed64_to_f32(lo: u32, hi: u32) -> f32 {
-    if ((hi & 0x80000000u) == 0u) {
-        return f32(hi) * 4294967296.0 + f32(lo);
+    if ((hi & U32_SIGN_BIT) == 0u) {
+        return f32(hi) * U32_RANGE + f32(lo);
     }
     let mag_lo = ~lo + 1u;
     let mag_hi = ~hi + select(0u, 1u, mag_lo == 0u);
-    return -(f32(mag_hi) * 4294967296.0 + f32(mag_lo));
+    return -(f32(mag_hi) * U32_RANGE + f32(mag_lo));
 }
 
 fn photon_volume_read(h: u32) -> mat2x3f {
@@ -1713,6 +2028,9 @@ fn photon_volume_read(h: u32) -> mat2x3f {
               fixed64_to_f32(photon_volume[base + 10u], photon_volume[base + 11u])) * unit);
 }
 
+const PHOTON_MIN_CORNER_WEIGHT = 1e-4;
+const PHOTON_BEAM_ALIGNMENT = 0.5;
+
 fn photon_volume_sample(pos: vec3f, kind: u32) -> mat2x3f {
     let edge = photon_grid_edge(kind);
     let q = pos / edge - photon_lattice_offset() - vec3f(0.5);
@@ -1722,11 +2040,11 @@ fn photon_volume_sample(pos: vec3f, kind: u32) -> mat2x3f {
 
     var flux = vec3f(0.0);
     var vector = vec3f(0.0);
-    for (var i = 0; i < 8; i++) {
+    for (var i = 0; i < CUBE_CORNERS; i++) {
         let corner = vec3i(i & 1, (i >> 1) & 1, (i >> 2) & 1);
         let wv = mix(vec3f(1.0) - f, f, vec3f(corner));
         let w = wv.x * wv.y * wv.z;
-        if (w < 1e-4) {
+        if (w < PHOTON_MIN_CORNER_WEIGHT) {
             continue;
         }
         let h = photon_bucket_find(cell0 + corner, kind);
@@ -1748,9 +2066,9 @@ fn photon_gather_volume_at(pos: vec3f, view_dir: vec3f, anisotropy: f32) -> vec3
     var beam = photon_volume_sample(pos, PHOTON_GRID_VOLUME);
     let haze = photon_volume_sample(pos, PHOTON_GRID_HAZE);
 
-    let beam_lum = dot(beam[0], vec3f(0.2126, 0.7152, 0.0722));
+    let beam_lum = dot(beam[0], LUMA_WEIGHTS);
     let beam_vlen = length(beam[1]);
-    if (beam_lum > 0.0 && beam_vlen > 0.5 * beam_lum) {
+    if (beam_lum > 0.0 && beam_vlen > PHOTON_BEAM_ALIGNMENT * beam_lum) {
         let along = beam[1] / beam_vlen * photon_grid_edge(PHOTON_GRID_VOLUME);
         let fwd = photon_volume_sample(pos + along, PHOTON_GRID_VOLUME);
         let back = photon_volume_sample(pos - along, PHOTON_GRID_VOLUME);
@@ -1760,13 +2078,13 @@ fn photon_gather_volume_at(pos: vec3f, view_dir: vec3f, anisotropy: f32) -> vec3
     let flux = beam[0] + haze[0];
     let vector = beam[1] + haze[1];
 
-    let lum = dot(flux, vec3f(0.2126, 0.7152, 0.0722));
+    let lum = dot(flux, LUMA_WEIGHTS);
     if (lum <= 0.0) {
         return vec3f(0.0);
     }
     let vlen = length(vector);
     let align = clamp(vlen / lum, 0.0, 1.0);
-    let mean_dir = select(view_dir, vector / max(vlen, 1e-12), vlen > 1e-12);
+    let mean_dir = select(view_dir, vector / max(vlen, EPSILON_TINY), vlen > EPSILON_TINY);
     let phase = phase_hg(dot(view_dir, mean_dir), anisotropy * align);
     return gamut_fit(flux) * (phase * u.photon_intensity);
 }
@@ -1793,6 +2111,16 @@ struct FogSample {
     anisotropy: f32,
 }
 
+const FOG_MIN_SOFTNESS = 0.001;
+const FOG_MIN_DENSITY = 0.0001;
+const VOLUME_MIN_TRANSMITTANCE = 0.003;
+const VOLUME_MIN_EXTINCTION = 0.0005;
+const VOLUME_MIN_SIGMA = 1e-5;
+const FOG_LIGHT_CUTOFF = 1e-6;
+const FOG_SEED_STRIDE_X = 13.37;
+const FOG_SEED_STRIDE_Y = 71.13;
+const FOG_ANALYTIC_SOFT_SHRINK = 0.5;
+
 fn sample_fog(pos: vec3f) -> FogSample {
     var total = 0.0;
     var color_accum = vec3f(0.0);
@@ -1804,7 +2132,7 @@ fn sample_fog(pos: vec3f) -> FogSample {
         if (dist >= fog.radius) {
             continue;
         }
-        let edge = clamp(fog.softness, 0.001, 1.0);
+        let edge = clamp(fog.softness, FOG_MIN_SOFTNESS, 1.0);
         let inner = fog.radius * (1.0 - edge);
         let falloff = 1.0 - smoothstep(inner, fog.radius, dist);
         let d = falloff * max(fog.density, 0.0);
@@ -1814,8 +2142,8 @@ fn sample_fog(pos: vec3f) -> FogSample {
     }
     var result: FogSample;
     result.extinction = total;
-    result.color = select(vec3f(1.0), color_accum / total, total > 0.0001);
-    result.anisotropy = select(0.0, g_accum / total, total > 0.0001);
+    result.color = select(vec3f(1.0), color_accum / total, total > FOG_MIN_DENSITY);
+    result.anisotropy = select(0.0, g_accum / total, total > FOG_MIN_DENSITY);
     return result;
 }
 
@@ -1839,12 +2167,12 @@ fn march_fog_once(origin: vec3f, dir: vec3f, max_t: f32, jitter: f32, steps: i32
 
     let light_count = total_light_count();
     for (var i = 0; i < steps; i++) {
-        if (t >= max_t || result.transmittance < 0.003) {
+        if (t >= max_t || result.transmittance < VOLUME_MIN_TRANSMITTANCE) {
             break;
         }
         let pos = origin + dir * t;
         let fog = sample_fog(pos);
-        if (fog.extinction > 0.0005) {
+        if (fog.extinction > VOLUME_MIN_EXTINCTION) {
             let sigma_t = fog.extinction;
             let step_transmittance = exp(-sigma_t * step_size);
 
@@ -1852,7 +2180,7 @@ fn march_fog_once(origin: vec3f, dir: vec3f, max_t: f32, jitter: f32, steps: i32
             for (var li = 0; li < light_count; li++) {
                 let light = u.lights[li];
                 let ls = light_sample_ex(light, pos, dir, step_size);
-                if (max(ls.color.r, max(ls.color.g, ls.color.b)) < 1e-6) {
+                if (max(ls.color.r, max(ls.color.g, ls.color.b)) < FOG_LIGHT_CUTOFF) {
                     continue;
                 }
                 var vis = spec_splat(1.0);
@@ -1864,7 +2192,7 @@ fn march_fog_once(origin: vec3f, dir: vec3f, max_t: f32, jitter: f32, steps: i32
                 inscatter = spec_add(inscatter, spec_scale(spec_mul(spec_from_rgb(ls.color), vis), phase));
             }
 
-            let integ = (1.0 - step_transmittance) / max(sigma_t, 1e-5);
+            let integ = (1.0 - step_transmittance) / max(sigma_t, VOLUME_MIN_SIGMA);
             result.color = spec_add(result.color,
                 spec_scale(spec_mul(spec_from_rgb(fog.color), inscatter),
                            result.transmittance * sigma_t * integ));
@@ -1901,6 +2229,41 @@ fn fog_ray_span(origin: vec3f, dir: vec3f, max_t: f32) -> vec2f {
     return vec2f(lo, hi);
 }
 
+fn march_fog_analytic(origin: vec3f, dir: vec3f, max_t: f32) -> VolumeResult {
+    var result: VolumeResult;
+    result.color = spec_splat(0.0);
+    result.transmittance = 1.0;
+    let count = min(i32(u.fog_count), MAX_FOG_EMITTERS);
+    let light_count = total_light_count();
+    for (var i = 0; i < count; i++) {
+        let fog = u.fog_emitters[i];
+        let r = fog.radius * (1.0 - FOG_ANALYTIC_SOFT_SHRINK * clamp(fog.softness, 0.0, 1.0));
+        let oc = origin - fog.position;
+        let b = dot(oc, dir);
+        let disc = b * b - (dot(oc, oc) - r * r);
+        if (disc <= 0.0) {
+            continue;
+        }
+        let sq = sqrt(disc);
+        let t0 = max(-b - sq, 0.0);
+        let t1 = min(-b + sq, max_t);
+        if (t1 <= t0) {
+            continue;
+        }
+        let chord = t1 - t0;
+        let seg_t = exp(-max(fog.density, 0.0) * chord);
+        let mid = origin + dir * (0.5 * (t0 + t1));
+        var inscatter = vec3f(0.0);
+        for (var li = 0; li < light_count; li++) {
+            let ls = light_sample_ex(u.lights[li], mid, dir, chord);
+            inscatter += ls.color * phase_hg(dot(dir, ls.dir), fog.anisotropy);
+        }
+        result.color = spec_add(result.color, spec_from_rgb(fog.color * inscatter * (result.transmittance * (1.0 - seg_t))));
+        result.transmittance *= seg_t;
+    }
+    return result;
+}
+
 fn march_fog(origin: vec3f, dir: vec3f, max_t: f32, screen_pos: vec2f) -> VolumeResult {
     var result: VolumeResult;
     result.color = spec_splat(0.0);
@@ -1909,6 +2272,9 @@ fn march_fog(origin: vec3f, dir: vec3f, max_t: f32, screen_pos: vec2f) -> Volume
     let count = min(i32(u.fog_count), MAX_FOG_EMITTERS);
     if (count == 0 || max_t <= 0.0 || !part_on(PART_FOG)) {
         return result;
+    }
+    if (approx_on(APPROX_SIMPLE_FOG)) {
+        return march_fog_analytic(origin, dir, min(max_t, u.max_dist));
     }
 
     let hq = u.high_quality > 0.5;
@@ -1924,7 +2290,7 @@ fn march_fog(origin: vec3f, dir: vec3f, max_t: f32, screen_pos: vec2f) -> Volume
     var accum_color = spec_splat(0.0);
     var accum_transmittance = 0.0;
     for (var s = 0; s < samples; s++) {
-        let seed = screen_pos + vec2f(f32(s) * 13.37, f32(s) * 71.13);
+        let seed = screen_pos + vec2f(f32(s) * FOG_SEED_STRIDE_X, f32(s) * FOG_SEED_STRIDE_Y);
         let one = march_fog_once(span_origin, dir, span.y - span.x, hash12(seed), steps, shadow_steps);
         accum_color = spec_add(accum_color, one.color);
         accum_transmittance += one.transmittance;
@@ -1933,6 +2299,12 @@ fn march_fog(origin: vec3f, dir: vec3f, max_t: f32, screen_pos: vec2f) -> Volume
     result.transmittance = accum_transmittance / f32(samples);
     return result;
 }
+
+const FFT_MIN_BOX_RADIUS = 0.05;
+const FFT_JITTER_SEED_OFFSET = vec2f(83.71, 21.19);
+const FFT_VOXEL_SIGMA_CELLS = 1.5;
+const FFT_MIN_SIGMA = 1e-5;
+const FFT_AXIS_Y = 1;
 
 fn fft_sphere_intersect(origin: vec3f, dir: vec3f, center: vec3f, radius: f32) -> vec2f {
     let oc = origin - center;
@@ -1952,7 +2324,7 @@ fn fft_magnitude_load(coord: vec3i) -> f32 {
 }
 
 fn sample_fft_magnitude(local: vec3f, box_radius: f32) -> f32 {
-    let b = max(box_radius, 0.05);
+    let b = max(box_radius, FFT_MIN_BOX_RADIUS);
     let cell = (2.0 * b) / f32(FFT_N);
     let g = (local + vec3f(b)) / cell - vec3f(0.5);
     let g0 = floor(g);
@@ -1983,9 +2355,9 @@ fn march_fft_cloud(origin: vec3f, dir: vec3f, max_t: f32, screen_pos: vec2f) -> 
 
     let slot = i32(u.fft_target_slot + 0.5);
     let offset = u.instances[slot].offset;
-    let box_radius = max(u.fft_box_radius, 0.05);
-    let s = max(u.instances[slot].scale, vec3f(0.001));
-    let sphere_r = box_radius * max(s.x, max(s.y, s.z)) * 1.7320508;
+    let box_radius = max(u.fft_box_radius, FFT_MIN_BOX_RADIUS);
+    let s = max(u.instances[slot].scale, vec3f(MIN_INSTANCE_SCALE));
+    let sphere_r = box_radius * max(s.x, max(s.y, s.z)) * SQRT3;
 
     let hit = fft_sphere_intersect(origin, dir, offset, sphere_r);
     let t0 = max(hit.x, 0.0);
@@ -1999,11 +2371,11 @@ fn march_fft_cloud(origin: vec3f, dir: vec3f, max_t: f32, screen_pos: vec2f) -> 
     let density_scale = max(u.fft_cloud_density, 0.0);
 
     let step_size = (t1 - t0) / f32(FFT_CLOUD_STEPS);
-    let jitter = hash12(screen_pos + vec2f(83.71, 21.19));
+    let jitter = hash12(screen_pos + FFT_JITTER_SEED_OFFSET);
     var t = t0 + step_size * jitter;
 
     for (var i = 0; i < FFT_CLOUD_STEPS; i++) {
-        if (t >= t1 || result.transmittance < 0.003) {
+        if (t >= t1 || result.transmittance < VOLUME_MIN_TRANSMITTANCE) {
             break;
         }
         let pos = origin + dir * t;
@@ -2011,9 +2383,9 @@ fn march_fft_cloud(origin: vec3f, dir: vec3f, max_t: f32, screen_pos: vec2f) -> 
         if (all(abs(local) <= vec3f(box_radius))) {
             let mag = sample_fft_magnitude(local, box_radius);
             let sigma_t = mag * density_scale;
-            if (sigma_t > 0.0005) {
+            if (sigma_t > VOLUME_MIN_EXTINCTION) {
                 let step_transmittance = exp(-sigma_t * step_size);
-                let integ = (1.0 - step_transmittance) / max(sigma_t, 1e-5);
+                let integ = (1.0 - step_transmittance) / max(sigma_t, VOLUME_MIN_SIGMA);
                 result.color = spec_add(result.color, spec_scale(tint, result.transmittance * sigma_t * integ));
                 result.transmittance *= step_transmittance;
             }
@@ -2032,16 +2404,21 @@ struct InsideMarch {
 }
 
 const INSIDE_STEP_GROWTH = 6.0;
+const INSIDE_MIN_STEP = 0.0005;
+const INSIDE_WARMUP_STEPS = 1;
+const INSIDE_EXIT_SLOPE = 0.0005;
+const INSIDE_EXIT_BIAS = 0.00005;
+const INSIDE_STEP_BASE = 0.004;
 
 fn march_inside(origin: vec3f, dir: vec3f, max_inner_steps: i32, step_base: f32) -> InsideMarch {
     var t = 0.0;
     let steps = max(max_inner_steps, 1);
     let growth = 1.0 + INSIDE_STEP_GROWTH / f32(steps);
-    var step_floor = max(step_base, 0.0005);
+    var step_floor = max(step_base, INSIDE_MIN_STEP);
     for (var i = 0; i < steps; i++) {
         let pos = origin + dir * t;
         let d = scene_de(pos);
-        if (i > 1 && d > 0.0005 * t + 0.00005) {
+        if (i > INSIDE_WARMUP_STEPS && d > INSIDE_EXIT_SLOPE * t + INSIDE_EXIT_BIAS) {
             return InsideMarch(true, t);
         }
         t += max(abs(d), step_floor);
@@ -2058,22 +2435,29 @@ const SSS_POWER = 4.0;
 const SSS_WRAP = 0.6;
 const SSS_ABSORB_THIN = 14.0;
 const SSS_ABSORB_THICK = 2.0;
+const SSS_PROBE_OFFSET = 0.003;
+const SSS_PROBE_STEP = 0.003;
+const SSS_MAX_STEPS = 64;
+const SPEC_POWER_MIN = 4.0;
+const SPEC_POWER_MAX = 128.0;
+const MATERIAL_EPSILON = 0.001;
+const SURFACE_LIGHT_CUTOFF = 1e-5;
 
 fn shade_local(pos: vec3f, dir: vec3f, normal: vec3f, mat: ColorStop, ambient_light: Spec, use_shadows: bool) -> Spec {
     let view_dir = -dir;
-    let spec_power = mix(4.0, 128.0, clamp(mat.glossiness, 0.0, 1.0));
+    let spec_power = mix(SPEC_POWER_MIN, SPEC_POWER_MAX, clamp(mat.glossiness, 0.0, 1.0));
     var albedo = spec_from_rgb(mat.color);
 
     var film = spec_splat(1.0);
-    if (mat.film_strength > 0.001) {
+    if (mat.film_strength > MATERIAL_EPSILON) {
         film = thin_film_tint(dot(view_dir, film_normal(normal, pos, mat)), mat);
         albedo = spec_mul(albedo, film);
     }
 
     let sss = clamp(mat.subsurface, 0.0, 1.0);
     var translucency = 0.0;
-    if (sss > 0.001) {
-        let inside = march_inside(pos - normal * 0.003, -normal, min(i32(u.max_steps), 64), 0.003);
+    if (sss > MATERIAL_EPSILON) {
+        let inside = march_inside(pos - normal * SSS_PROBE_OFFSET, -normal, min(i32(u.max_steps), SSS_MAX_STEPS), SSS_PROBE_STEP);
         if (inside.exited) {
             translucency = sss * exp(-inside.dist * mix(SSS_ABSORB_THIN, SSS_ABSORB_THICK, sss));
         }
@@ -2082,14 +2466,20 @@ fn shade_local(pos: vec3f, dir: vec3f, normal: vec3f, mat: ColorStop, ambient_li
     var diffuse_accum = spec_from_rgb(photon_gather_surface(pos, normal));
     var specular_accum = spec_splat(0.0);
     var sss_accum = spec_splat(0.0);
+    let fake_bounce = approx_on(APPROX_FAKE_BOUNCE);
     let light_count = total_light_count();
     for (var i = 0; i < light_count; i++) {
         let light = u.lights[i];
         let ls = light_sample(light, pos);
-        if (max(ls.color.r, max(ls.color.g, ls.color.b)) < 1e-5) {
+        if (max(ls.color.r, max(ls.color.g, ls.color.b)) < SURFACE_LIGHT_CUTOFF) {
             continue;
         }
         let light_spec = spec_from_rgb(ls.color);
+
+        if (fake_bounce) {
+            let facing_away = 0.5 - 0.5 * dot(normal, ls.dir);
+            diffuse_accum = spec_add(diffuse_accum, spec_mul(albedo, spec_scale(light_spec, u.approx_bounce * facing_away)));
+        }
 
         if (translucency > 0.0) {
             let back_dir = normalize(ls.dir + normal * SSS_DISTORTION);
@@ -2120,16 +2510,20 @@ fn shade_local(pos: vec3f, dir: vec3f, normal: vec3f, mat: ColorStop, ambient_li
                     spec_mul(specular_accum, film));
 }
 
+const HEMISPHERE_SEED_OFFSET = vec2f(91.73, 31.13);
+const BASIS_POLE_COS = 0.99;
+const INDIRECT_RAY_BIAS = 0.004;
+
 fn cosine_hemisphere_sample(normal: vec3f, seed: vec2f) -> vec3f {
-    return cosine_hemisphere_from(normal, hash12w(seed), hash12w(seed + vec2f(91.73, 31.13)));
+    return cosine_hemisphere_from(normal, hash12w(seed), hash12w(seed + HEMISPHERE_SEED_OFFSET));
 }
 
 fn cosine_hemisphere_from(normal: vec3f, u1: f32, u2: f32) -> vec3f {
     let r = sqrt(u1);
-    let phi = u2 * 6.28318530718;
+    let phi = u2 * TAU;
     let local = vec3f(r * cos(phi), r * sin(phi), sqrt(max(1.0 - u1, 0.0)));
 
-    let up = select(vec3f(0.0, 0.0, 1.0), vec3f(1.0, 0.0, 0.0), abs(normal.z) > 0.99);
+    let up = select(vec3f(0.0, 0.0, 1.0), vec3f(1.0, 0.0, 0.0), abs(normal.z) > BASIS_POLE_COS);
     let tangent = normalize(cross(up, normal));
     let bitangent = cross(normal, tangent);
     return normalize(tangent * local.x + bitangent * local.y + normal * local.z);
@@ -2137,8 +2531,11 @@ fn cosine_hemisphere_from(normal: vec3f, u1: f32, u2: f32) -> vec3f {
 
 fn indirect_light(pos: vec3f, normal: vec3f, seed: vec2f) -> Spec {
     let dir = cosine_hemisphere_sample(normal, seed);
-    let origin = pos + normal * 0.004;
+    let origin = pos + normal * INDIRECT_RAY_BIAS;
+    let coarse_before = g_coarse_march;
+    g_coarse_march = approx_on(APPROX_COARSE_SECONDARY);
     let bounce = march(origin, dir);
+    g_coarse_march = coarse_before;
     if (!bounce.hit) {
         return spec_from_rgb(sky_color(dir));
     }
@@ -2157,26 +2554,30 @@ struct Refraction {
     tir: bool,
 }
 
+const REFRACT_TIR_EPSILON = 0.0001;
+const MIN_ROUGHNESS = 0.0001;
+
 fn refract_safe(dir: vec3f, raw_normal: vec3f, eta: f32) -> Refraction {
     let n = select(raw_normal, -raw_normal, dot(dir, raw_normal) > 0.0);
     let r = refract(dir, n, eta);
-    if (dot(r, r) > 0.0001) {
+    if (dot(r, r) > REFRACT_TIR_EPSILON) {
         return Refraction(r, false);
     }
     return Refraction(reflect(dir, n), true);
 }
 
 fn perturb_normal(n: vec3f, alpha: f32, seed: vec2f) -> vec3f {
-    if (alpha <= 0.0001) {
+    if (alpha <= MIN_ROUGHNESS) {
         return n;
     }
     return normalize(mix(n, cosine_hemisphere_sample(n, seed), alpha));
 }
 
 const DISPERSION_INV_LAMBDA_D2 = 2.89626;
+const DISPERSION_INV_LAMBDA_F2_MINUS_C2 = 1.9099;
 
 fn cauchy_ior(ior_d: f32, abbe: f32, lambda: f32) -> f32 {
-    let b = (ior_d - 1.0) / (max(abbe, 1.0) * 1.9099);
+    let b = (ior_d - 1.0) / (max(abbe, 1.0) * DISPERSION_INV_LAMBDA_F2_MINUS_C2);
     return ior_d + b * (1.0 / (lambda * lambda) - DISPERSION_INV_LAMBDA_D2);
 }
 
@@ -2202,10 +2603,12 @@ fn fresnel_schlick(cos_theta: f32, ior: f32) -> f32 {
 }
 
 const FILM_PI = 3.14159265358979;
+const FILM_MAX_ANGLE = 1.5607;
+const FILM_MIN_PEAK = 1e-5;
 
 fn hash33(p: vec3f) -> vec3f {
     var v = bitcast<vec3u>(vec3i(p));
-    v = v * 1664525u + 1013904223u;
+    v = v * LCG_MULTIPLIER + LCG_INCREMENT;
     v.x += v.y * v.z;
     v.y += v.z * v.x;
     v.z += v.x * v.y;
@@ -2213,7 +2616,7 @@ fn hash33(p: vec3f) -> vec3f {
     v.x += v.y * v.z;
     v.y += v.z * v.x;
     v.z += v.x * v.y;
-    return vec3f(v) * 2.3283064365386963e-10;
+    return vec3f(v) * INV_U32_RANGE;
 }
 
 fn film_noise(p: vec3f) -> vec3f {
@@ -2231,10 +2634,10 @@ fn film_noise(p: vec3f) -> vec3f {
 
 fn film_normal(n: vec3f, pos: vec3f, mat: ColorStop) -> vec3f {
     let amount = clamp(mat.film_perturb, 0.0, 1.0);
-    if (amount <= 0.001) {
+    if (amount <= MATERIAL_EPSILON) {
         return n;
     }
-    let bend = film_noise(pos / max(mat.film_perturb_scale, 1e-4));
+    let bend = film_noise(pos / max(mat.film_perturb_scale, EPSILON));
     return normalize(n + bend * amount);
 }
 
@@ -2251,7 +2654,7 @@ fn thin_film_tint(cos_view: f32, mat: ColorStop) -> Spec {
     let strength = clamp(mat.film_strength, 0.0, 1.0);
 
     let theta = acos(clamp(cos_view, 0.0, 1.0)) * max(mat.film_angle_scale, 0.0);
-    let c1 = cos(min(theta, 1.5607));
+    let c1 = cos(min(theta, FILM_MAX_ANGLE));
     let s1 = sqrt(max(1.0 - c1 * c1, 0.0));
 
     let n2 = max(mat.film_ior, 1.0);
@@ -2267,7 +2670,7 @@ fn thin_film_tint(cos_view: f32, mat: ColorStop) -> Spec {
     let r23p = (n3 * c2 - n2 * c3) / (n3 * c2 + n2 * c3);
 
     let peak = 0.5 * (airy_peak(r12s, r23s) + airy_peak(r12p, r23p));
-    if (peak < 1e-5) {
+    if (peak < FILM_MIN_PEAK) {
         return spec_splat(1.0);
     }
 
@@ -2290,40 +2693,44 @@ fn dispersion_angles2(in_dir: vec3f, n: vec3f, mat: ColorStop, inside: bool, her
         let eta_k = select(1.0 / ior_k, ior_k, inside);
         let d_k = refract_safe(in_dir, n, eta_k).dir;
         let a = 2.0 * (1.0 - clamp(dot(hero_dir, d_k), -1.0, 1.0));
-        if (k < 4) {
+        if (k < SPEC_LANES) {
             a_lo[k] = a;
         } else {
-            a_hi[k - 4] = a;
+            a_hi[k - SPEC_LANES] = a;
         }
     }
     return Spec(a_lo, a_hi);
 }
 
 fn dispersion_weights(dist2: Spec, sigma: f32) -> Spec {
-    let k = -0.5 / max(sigma * sigma, 1e-12);
+    let k = -0.5 / max(sigma * sigma, EPSILON_TINY);
     let g_lo = exp(dist2.lo * k);
     let g_hi = exp(dist2.hi * k);
     let total = dot(g_lo, vec4f(1.0)) + dot(g_hi, vec4f(1.0));
-    let scale = SPECTRAL_COUNT / max(total, 1e-6);
+    let scale = SPECTRAL_COUNT / max(total, EPSILON_FINE);
     return Spec(g_lo * scale, g_hi * scale);
 }
+
+const MIN_ABBE = 0.5;
+const ROUGHNESS_SEED_OFFSET = vec2f(5.19, 12.73);
+const DIFFUSE_SEED_OFFSET = vec2f(61.7, 17.3);
 
 fn scatter_at(pos: vec3f, in_dir: vec3f, raw_normal: vec3f, mat: ColorStop, inside: bool, lambda: f32, seed: vec2f, allow_diffuse: bool, dispersion_soft: f32) -> Scatter {
     let n = select(raw_normal, -raw_normal, dot(in_dir, raw_normal) > 0.0);
 
     var ior = max(mat.ior, 1.0);
-    if (lambda > 0.0 && mat.abbe > 0.5) {
+    if (lambda > 0.0 && mat.abbe > MIN_ABBE) {
         ior = max(cauchy_ior(ior, mat.abbe, lambda), 1.0);
     }
     let eta = select(1.0 / ior, ior, inside);
 
     let rough = clamp(mat.roughness, 0.0, 1.0);
-    let n_rough = perturb_normal(n, rough * rough, seed + vec2f(5.19, 12.73));
+    let n_rough = perturb_normal(n, rough * rough, seed + ROUGHNESS_SEED_OFFSET);
 
     let f = fresnel_schlick(dot(in_dir, n_rough), ior);
 
     var film = spec_splat(1.0);
-    if (!inside && mat.film_strength > 0.001) {
+    if (!inside && mat.film_strength > MATERIAL_EPSILON) {
         film = thin_film_tint(dot(-in_dir, film_normal(n_rough, pos, mat)), mat);
     }
     let transparency = clamp(mat.transparency, 0.0, 1.0);
@@ -2353,7 +2760,7 @@ fn scatter_at(pos: vec3f, in_dir: vec3f, raw_normal: vec3f, mat: ColorStop, insi
     if (r < p_reflect + p_transmit) {
         let refr = refract_safe(in_dir, n_rough, eta);
         s.dir = refr.dir;
-        if (dispersion_soft > 0.0 && lambda > 0.0 && mat.abbe > 0.5) {
+        if (dispersion_soft > 0.0 && lambda > 0.0 && mat.abbe > MIN_ABBE) {
             s.disp_ang2 = dispersion_angles2(in_dir, n_rough, mat, inside, s.dir);
         }
         s.weight = spec_scale(spec_from_rgb(mat.color), scale);
@@ -2361,8 +2768,8 @@ fn scatter_at(pos: vec3f, in_dir: vec3f, raw_normal: vec3f, mat: ColorStop, insi
         return s;
     }
 
-    if (allow_diffuse && p_diffuse > 0.001) {
-        s.dir = cosine_hemisphere_sample(n, seed + vec2f(61.7, 17.3));
+    if (allow_diffuse && p_diffuse > MATERIAL_EPSILON) {
+        s.dir = cosine_hemisphere_sample(n, seed + DIFFUSE_SEED_OFFSET);
         s.weight = spec_mul(spec_from_rgb(mat.color), film);
         s.kind = SCATTER_DIFFUSE;
         return s;
@@ -2378,9 +2785,62 @@ fn detect_scene_transparency() {
     scene_has_transparency = u.has_transparency > 0.5 && part_on(PART_REFRACTION);
 }
 
+struct DispersionRecord {
+    valid: bool,
+    in_dir: vec3f,
+    normal: vec3f,
+    ior: f32,
+    abbe: f32,
+    inside: bool,
+}
+
+const RGB_WAVELENGTHS_UM = vec3f(0.61, 0.55, 0.465);
+
+fn escape_sky(dir: vec3f, rec: DispersionRecord) -> vec3f {
+    if (!rec.valid) {
+        return sky_color(dir);
+    }
+    let lambdas = RGB_WAVELENGTHS_UM;
+    var c = vec3f(0.0);
+    for (var k = 0; k < 3; k++) {
+        let ior_k = max(cauchy_ior(rec.ior, rec.abbe, lambdas[k]), 1.0);
+        let r = refract_safe(rec.in_dir, rec.normal, select(1.0 / ior_k, ior_k, rec.inside));
+        c[k] = sky_color(r.dir)[k];
+    }
+    return c;
+}
+
+const TINT_PROBES = 12;
+const TINT_EXIT_BIAS = 0.003;
+const TINT_MIN_TRANSMISSION = 0.01;
+
+fn tint_beer(color: vec3f, thickness: f32) -> Spec {
+    let sigma = -log(clamp(color, vec3f(TINT_MIN_TRANSMISSION), vec3f(1.0))) * max(u.approx_tint, 0.0);
+    return spec_from_rgb(exp(-sigma * thickness));
+}
+
 const PATH_MAX_VERTICES = 16;
 const PATH_TRANSPARENCY_FLOOR = 8;
 const PATH_RR_START = 4;
+const PATH_DEFAULT_INNER_STEPS = 64;
+const MIN_INNER_STEPS = 4;
+const MAX_INNER_STEPS = 512;
+const PATH_MIN_THROUGHPUT = 0.002;
+const SURFACE_EXIT_BIAS = 0.003;
+const PHOTON_EXIT_BIAS = 0.004;
+const EXIT_BIAS_EPS_SCALE = 2.0;
+const RR_MIN_SURVIVAL = 0.05;
+const MIN_LOCAL_SHARE = 0.001;
+const HERO_WAVELENGTH_SEED_OFFSET = vec2f(19.31, 47.11);
+const PATH_SEED_RATE_X = 27.31;
+const PATH_SEED_RATE_Y = 45.17;
+const PATH_DEPTH_SEED_STRIDE_X = 17.77;
+const PATH_DEPTH_SEED_OFFSET_X = 3.1;
+const PATH_DEPTH_SEED_STRIDE_Y = 41.13;
+const PATH_DEPTH_SEED_OFFSET_Y = 7.7;
+const DISPERSION_PICK_SEED_OFFSET = vec2f(3.71, 8.13);
+const INDIRECT_SEED_OFFSET = vec2f(13.13, 71.71);
+const RR_SEED_OFFSET = vec2f(59.3, 23.9);
 
 var<private> g_primary_dist: f32 = 0.0;
 var<private> g_primary_normal: vec3f = vec3f(0.0);
@@ -2400,34 +2860,42 @@ fn frag_out(color: vec4f, dist: f32, normal: vec3f) -> FragOut {
 }
 
 fn trace_path(ray_origin: vec3f, ray_dir: vec3f, screen_pos: vec2f) -> vec3f {
-    spectral_setup(hash12w(screen_pos + vec2f(19.31, 47.11)) + u.mc_sample * 0.61803399);
+    spectral_setup(hash12w(screen_pos + HERO_WAVELENGTH_SEED_OFFSET) + u.mc_sample * GOLDEN_RATIO_FRACT);
 
     var radiance = spec_splat(0.0);
     var throughput = spec_splat(1.0);
     var pos = ray_origin;
     var dir = ray_dir;
 
-    var in_solid = false; 
-    var inner_steps = 64;
+    var in_solid = false;
+    var inner_steps = PATH_DEFAULT_INNER_STEPS;
     var lambda = 0.0;
     var reflected = false;
+    var disp = DispersionRecord(false, vec3f(0.0), vec3f(0.0), 1.0, 0.0, false);
+    var slab = false;
+    var slab_sky = false;
+    var slab_dir = vec3f(0.0);
+    var slab_color = vec3f(1.0);
 
-    let base_seed = screen_pos + vec2f(u.mc_sample * 27.31, u.mc_sample * 45.17);
+    let base_seed = screen_pos + vec2f(u.mc_sample * PATH_SEED_RATE_X, u.mc_sample * PATH_SEED_RATE_Y);
     let max_depth = clamp(i32(u.max_reflection_bounces) + PATH_TRANSPARENCY_FLOOR, 1, PATH_MAX_VERTICES);
 
     for (var depth = 0; depth < max_depth; depth++) {
-        let seed = base_seed + vec2f(f32(depth) * 17.77 + 3.1, f32(depth) * 41.13 + 7.7);
+        let seed = base_seed + vec2f(f32(depth) * PATH_DEPTH_SEED_STRIDE_X + PATH_DEPTH_SEED_OFFSET_X, f32(depth) * PATH_DEPTH_SEED_STRIDE_Y + PATH_DEPTH_SEED_OFFSET_Y);
 
         var hit_t = 0.0;
         var hit_ok = false;
+        var seg_steps = 0.0;
+        g_coarse_march = depth > 0 && approx_on(APPROX_COARSE_SECONDARY);
         if (in_solid) {
-            let ins = march_inside(pos, dir, inner_steps, 0.004);
+            let ins = march_inside(pos, dir, inner_steps, INSIDE_STEP_BASE);
             hit_t = ins.dist;
             hit_ok = ins.exited;
         } else {
             let m = march(pos, dir);
             hit_t = m.dist;
             hit_ok = m.hit;
+            seg_steps = m.steps;
         }
         var seg_len = select(min(u.max_dist, max(hit_t, 0.0)), hit_t, hit_ok);
 
@@ -2457,11 +2925,28 @@ fn trace_path(ray_origin: vec3f, ray_dir: vec3f, screen_pos: vec2f) -> vec3f {
             break;
         }
 
+        if (slab) {
+            slab = false;
+            in_solid = false;
+            if (!hit_ok) {
+                break;
+            }
+            throughput = spec_mul(throughput, tint_beer(slab_color, hit_t));
+            if (slab_sky) {
+                radiance = spec_add(radiance, spec_mul(throughput, spec_from_rgb(escape_sky(dir, disp))));
+                break;
+            }
+            disp.valid = false;
+            pos = pos + dir * hit_t + slab_dir * TINT_EXIT_BIAS;
+            dir = slab_dir;
+            continue;
+        }
+
         if (!hit_ok) {
-            radiance = spec_add(radiance, spec_mul(throughput, spec_from_rgb(sky_color(dir))));
+            radiance = spec_add(radiance, spec_mul(throughput, spec_from_rgb(escape_sky(dir, disp))));
             break;
         }
-        if (spec_max(throughput) < 0.002) {
+        if (spec_max(throughput) < PATH_MIN_THROUGHPUT) {
             break;
         }
 
@@ -2475,8 +2960,9 @@ fn trace_path(ray_origin: vec3f, ray_dir: vec3f, screen_pos: vec2f) -> vec3f {
 
         let soft = radians(0.5 * u.photon_dispersion_soft);
         var disp_weight = spec_splat(1.0);
-        if (lambda == 0.0 && mat.abbe > 0.5) {
-            let pick = min(i32(hash12w(seed + vec2f(3.71, 8.13)) * SPECTRAL_COUNT), i32(SPECTRAL_COUNT) - 1);
+        let cheap_disp = approx_on(APPROX_CHEAP_DISPERSION);
+        if (lambda == 0.0 && mat.abbe > MIN_ABBE && !cheap_disp) {
+            let pick = min(i32(hash12w(seed + DISPERSION_PICK_SEED_OFFSET) * SPECTRAL_COUNT), i32(SPECTRAL_COUNT) - 1);
             lambda = spec_lambda_um(pick);
             if (soft <= 0.0) {
                 disp_weight = spec_collapse_mask(pick);
@@ -2485,10 +2971,12 @@ fn trace_path(ray_origin: vec3f, ray_dir: vec3f, screen_pos: vec2f) -> vec3f {
 
         let sc = scatter_at(hit_pos, dir, normal, mat, in_solid, lambda, seed, false, soft);
 
-        if (sc.local_share > 0.001) {
+        if (sc.local_share > MIN_LOCAL_SHARE) {
             var ambient_light = spec_splat(AMBIENT_INTENSITY);
-            if (depth == 0 && u.mc_enabled > 0.5 && part_on(PART_MC_INDIRECT)) {
-                ambient_light = indirect_light(hit_pos, normal, seed + vec2f(13.13, 71.71));
+            if (approx_on(APPROX_SKY_AMBIENT)) {
+                ambient_light = spec_from_rgb(sky_ambient(normal) * step_ao(seg_steps));
+            } else if (depth == 0 && u.mc_enabled > 0.5 && part_on(PART_MC_INDIRECT)) {
+                ambient_light = indirect_light(hit_pos, normal, seed + INDIRECT_SEED_OFFSET);
             } else if (!reflected) {
                 ambient_light = spec_scale(ambient_light, calc_ao(hit_pos, normal, hit_t));
             }
@@ -2506,23 +2994,49 @@ fn trace_path(ray_origin: vec3f, ray_dir: vec3f, screen_pos: vec2f) -> vec3f {
         if (spec_max(sc.disp_ang2) > 0.0) {
             disp_weight = dispersion_weights(sc.disp_ang2, soft);
         }
+
+        disp.valid = sc.kind == SCATTER_TRANSMIT && cheap_disp && mat.abbe > MIN_ABBE;
+        if (disp.valid) {
+            disp = DispersionRecord(true, dir, normal, max(mat.ior, 1.0), mat.abbe, in_solid);
+        }
+
+        let thin_glass = approx_on(APPROX_THIN_GLASS);
+        let tint_approx = approx_on(APPROX_TINT);
+        if (sc.kind == SCATTER_TRANSMIT && !in_solid && (thin_glass || tint_approx)) {
+            if (!tint_approx) {
+                throughput = spec_mul(throughput, spec_mul(disp_weight, sc.weight));
+                radiance = spec_add(radiance, spec_mul(throughput, spec_from_rgb(escape_sky(sc.dir, disp))));
+                break;
+            }
+            throughput = spec_mul(throughput, disp_weight);
+            slab = true;
+            slab_sky = thin_glass;
+            slab_dir = dir;
+            slab_color = mat.color;
+            in_solid = true;
+            inner_steps = TINT_PROBES;
+            pos = hit_pos + sc.dir * max(SURFACE_EXIT_BIAS, EXIT_BIAS_EPS_SCALE * march_epsilon(hit_t));
+            dir = sc.dir;
+            continue;
+        }
+
         throughput = spec_mul(throughput, spec_mul(disp_weight, sc.weight));
         reflected = reflected || sc.kind == SCATTER_REFLECT;
 
         if (sc.kind == SCATTER_TRANSMIT) {
             in_solid = !in_solid;
             if (in_solid) {
-                inner_steps = clamp(i32(mat.inner_max_steps), 4, 512);
+                inner_steps = clamp(i32(mat.inner_max_steps), MIN_INNER_STEPS, MAX_INNER_STEPS);
             }
         }
 
-        let bias = max(0.003, 2.0 * march_epsilon(hit_t));
+        let bias = max(SURFACE_EXIT_BIAS, EXIT_BIAS_EPS_SCALE * march_epsilon(hit_t));
         pos = hit_pos + sc.dir * bias;
         dir = sc.dir;
 
         if (depth >= PATH_RR_START) {
-            let survive = clamp(spec_max(throughput), 0.05, 1.0);
-            if (hash12w(seed + vec2f(59.3, 23.9)) > survive) {
+            let survive = clamp(spec_max(throughput), RR_MIN_SURVIVAL, 1.0);
+            if (hash12w(seed + RR_SEED_OFFSET) > survive) {
                 break;
             }
             throughput = spec_scale(throughput, 1.0 / survive);
@@ -2537,11 +3051,11 @@ const SLICE_HALO_STRENGTH = 0.35;
 
 fn undo_tonemap(color: vec3f) -> vec3f {
     let c = clamp(color, vec3f(0.0), vec3f(1.0));
-    return c / max(vec3f(1.0) - c, vec3f(1.0 / 255.0));
+    return c / max(vec3f(1.0) - c, vec3f(1.0 / UNORM8_MAX));
 }
 
 fn slice_color(plane_pos: vec3f, pixel_world: f32) -> vec3f {
-    let px = max(pixel_world, 1e-12);
+    let px = max(pixel_world, EPSILON_TINY);
     let sp = hit_material(plane_pos);
     let inside = 1.0 - smoothstep(0.0, px, sp.de);
     let halo = exp(-max(sp.de, 0.0) / (px * SLICE_HALO_PIXELS));
@@ -2562,10 +3076,12 @@ const SIMPLE_ALBEDO = vec3f(0.72, 0.72, 0.73);
 const SIMPLE_AMBIENT = 0.18;
 const SIMPLE_BACKGROUND = vec3f(0.10, 0.11, 0.13);
 const SIMPLE_DEPTH_CUE = 0.55;
+const SIMPLE_KEY_UP = 0.45;
+const SIMPLE_KEY_LEFT = 0.35;
 
 fn shade_lite(hit_pos: vec3f, dir: vec3f, normal: vec3f, t: f32) -> vec3f {
     let mat = apply_part_mask(hit_material(hit_pos).mat);
-    let spec_power = mix(4.0, 128.0, clamp(mat.glossiness, 0.0, 1.0));
+    let spec_power = mix(SPEC_POWER_MIN, SPEC_POWER_MAX, clamp(mat.glossiness, 0.0, 1.0));
     let fresnel = fresnel_schlick(dot(dir, normal), max(mat.ior, 1.0));
     var diffuse = vec3f(AMBIENT_INTENSITY * calc_ao(hit_pos, normal, t));
     var specular = vec3f(0.0);
@@ -2617,11 +3133,11 @@ fn fs_simple(in: VertexOut) -> FragOut {
     let hit_pos = u.camera_pos + dir * m.dist;
     let normal = estimate_normal(hit_pos, m.dist);
 
-    let key_dir = normalize(-dir + u.camera_up * 0.45 - u.camera_right * 0.35);
+    let key_dir = normalize(-dir + u.camera_up * SIMPLE_KEY_UP - u.camera_right * SIMPLE_KEY_LEFT);
     let lambert = max(dot(normal, key_dir), 0.0);
     let shade = SIMPLE_AMBIENT + (1.0 - SIMPLE_AMBIENT) * lambert;
 
-    let depth = clamp(m.dist / max(u.max_dist, 1e-4), 0.0, 1.0);
+    let depth = clamp(m.dist / max(u.max_dist, EPSILON), 0.0, 1.0);
     let color = mix(SIMPLE_ALBEDO * shade, SIMPLE_BACKGROUND, depth * SIMPLE_DEPTH_CUE);
 
     return frag_out(vec4f(undo_tonemap(color), 0.0), m.dist, normal);
@@ -2636,9 +3152,10 @@ const SELECT_ID_PARTICLES = 41;
 
 const SELECT_HANDLE_PX = 10.0;
 const SELECT_GLOBAL_LIGHT_REACH = 2.4;
+const SELECT_MIN_RAY_COMPONENT = 1e-8;
 
 fn select_handle_radius(depth: f32) -> f32 {
-    return max(depth, 1e-4) * SELECT_HANDLE_PX * 2.0 / max(u.resolution.y, 1.0);
+    return max(depth, EPSILON) * SELECT_HANDLE_PX * 2.0 / max(u.resolution.y, 1.0);
 }
 
 fn select_handle_hit(origin: vec3f, dir: vec3f, centre: vec3f) -> f32 {
@@ -2676,8 +3193,8 @@ fn select_box_entry(origin: vec3f, dir: vec3f, w: Warp) -> f32 {
     let inv_frame = transpose(warp_frame(w));
     let o = inv_frame * (origin - w.center);
     let d = inv_frame * dir;
-    let e = max(w.extent, vec3f(1e-4));
-    let inv_d = 1.0 / select(d, vec3f(1e-8), abs(d) < vec3f(1e-8));
+    let e = max(w.extent, vec3f(WARP_MIN_EXTENT));
+    let inv_d = 1.0 / select(d, vec3f(SELECT_MIN_RAY_COMPONENT), abs(d) < vec3f(SELECT_MIN_RAY_COMPONENT));
     let ta = (-e - o) * inv_d;
     let tb = (e - o) * inv_d;
     let t0 = min(ta, tb);
@@ -2699,7 +3216,7 @@ fn fs_select(in: VertexOut) -> @location(0) vec4f {
     let dir = normalize(u.camera_forward + uv.x * u.camera_right + uv.y * u.camera_up);
     let origin = u.camera_pos;
 
-    var best_t = 1e30;
+    var best_t = INFINITE_DISTANCE;
     var best_id = SELECT_ID_NONE;
 
     let depth_last = vec2i(textureDimensions(select_depth)) - vec2i(1);
@@ -2713,7 +3230,7 @@ fn fs_select(in: VertexOut) -> @location(0) vec4f {
     }
     if (hit) {
         let wp = warp_domain(origin + dir * hit_t);
-        var nearest_de = 1e30;
+        var nearest_de = INFINITE_DISTANCE;
         var nearest_i = 0;
         let count = max(i32(u.instance_count), 1);
         for (var i = 0; i < count; i++) {
@@ -2740,7 +3257,7 @@ fn fs_select(in: VertexOut) -> @location(0) vec4f {
         best_id = SELECT_ID_PARTICLES + i32(dots.hit_sys);
     }
     for (var s = 0; s < MAX_PARTICLE_SYSTEMS; s++) {
-        if (u32(u.particle_systems[s].mode + 0.5) == 0u) {
+        if (u32(u.particle_systems[s].mode + 0.5) == PARTICLE_MODE_OFF) {
             continue;
         }
         let t = select_handle_hit(origin, dir, u.particle_systems[s].center);
@@ -2753,10 +3270,10 @@ fn fs_select(in: VertexOut) -> @location(0) vec4f {
     for (var i = 0; i < i32(u.light_count); i++) {
         let light = u.lights[i];
         var centre = light.position_or_direction;
-        if (i32(light.light_type + 0.5) == 1) {
+        if (i32(light.light_type + 0.5) == LIGHT_GLOBAL) {
             let aim = light.position_or_direction;
             let len = length(aim);
-            centre = select(vec3f(0.0, -1.0, 0.0), aim / len, len > 1e-6) * SELECT_GLOBAL_LIGHT_REACH;
+            centre = select(vec3f(0.0, -1.0, 0.0), aim / len, len > EPSILON_FINE) * SELECT_GLOBAL_LIGHT_REACH;
         }
         let t = select_handle_hit(origin, dir, centre);
         if (t >= 0.0 && t < best_t) {
@@ -2768,7 +3285,7 @@ fn fs_select(in: VertexOut) -> @location(0) vec4f {
     if (best_id == SELECT_ID_NONE) {
         for (var i = 0; i < i32(u.fog_count); i++) {
             let fog = u.fog_emitters[i];
-            let t = select_sphere_entry(origin, dir, fog.position, max(fog.radius, 1e-4));
+            let t = select_sphere_entry(origin, dir, fog.position, max(fog.radius, EPSILON));
             if (t >= 0.0 && t < best_t) {
                 best_t = t;
                 best_id = SELECT_ID_FOG + i;
@@ -2778,9 +3295,9 @@ fn fs_select(in: VertexOut) -> @location(0) vec4f {
             let w = u.warps[i];
             let rk = i32(w.region_kind + 0.5);
             var t = -1.0;
-            if (rk == 0) {
-                t = select_sphere_entry(origin, dir, w.center, max(w.extent.x, 1e-4));
-            } else if (rk == 1) {
+            if (rk == WARP_REGION_SPHERE) {
+                t = select_sphere_entry(origin, dir, w.center, max(w.extent.x, WARP_MIN_EXTENT));
+            } else if (rk == WARP_REGION_BOX) {
                 t = select_box_entry(origin, dir, w);
             } else {
                 t = select_handle_hit(origin, dir, w.center);
@@ -2792,28 +3309,53 @@ fn fs_select(in: VertexOut) -> @location(0) vec4f {
         }
     }
 
-    return vec4f(f32(best_id) / 255.0, 0.0, 0.0, 1.0);
+    return vec4f(f32(best_id) / UNORM8_MAX, 0.0, 0.0, 1.0);
 }
 
 fn sample_unit_disk(seed: vec2f) -> vec2f {
     let r = sqrt(hash12(seed));
-    let theta = hash12w(seed + vec2f(17.17, 71.71)) * 6.28318530718;
+    let theta = hash12w(seed + DISK_ANGLE_SEED_OFFSET) * TAU;
     return vec2f(r * cos(theta), r * sin(theta));
 }
 
 const DOF_SAMPLES_FAST = 8;
 const DOF_SAMPLES_HQ = 32;
+const DOF_FALLOFF_PER_APERTURE = 4.0;
+const DOF_MIN_FALLOFF = 0.05;
+const DOF_MIN_APERTURE = 0.0001;
+const MC_SEED_RATE_X = 91.73;
+const MC_SEED_RATE_Y = 57.31;
+const DOF_LENS_SEED_STRIDE_X = 91.37;
+const DOF_LENS_SEED_STRIDE_Y = 51.91;
+const DISK_ANGLE_SEED_OFFSET = vec2f(17.17, 71.71);
 
 fn dof_aperture(hit_t: f32, focus_t: f32) -> f32 {
     let half_range = max(u.focus_range, 0.0) * 0.5;
-    let falloff = max(u.aperture * 4.0, 0.05);
+    let falloff = max(u.aperture * DOF_FALLOFF_PER_APERTURE, DOF_MIN_FALLOFF);
     return u.aperture * smoothstep(half_range, half_range + falloff, abs(hit_t - focus_t));
 }
 
 fn dof_coc_px(eff_aperture: f32, hit_t: f32, focus_t: f32) -> f32 {
-    let world_radius = eff_aperture * abs(hit_t - focus_t) / max(focus_t, 0.0001);
-    let px_per_world_unit = u.resolution.y / (2.0 * length(u.camera_up) * max(hit_t, 0.0001));
+    let world_radius = eff_aperture * abs(hit_t - focus_t) / max(focus_t, EPSILON);
+    let px_per_world_unit = u.resolution.y / (2.0 * length(u.camera_up) * max(hit_t, EPSILON));
     return world_radius * px_per_world_unit;
+}
+
+@group(5) @binding(1) var<storage, read_write> adapt_stats: array<vec4f>;
+
+const ADAPT_DARK_FLOOR = 0.05;
+const ADAPT_MIN_VARIANCE_SAMPLES = 2.0;
+
+fn adapt_update(stats_in: vec4f, color: vec3f) -> vec4f {
+    let l = dot(color / (color + vec3f(1.0)), LUMA_WEIGHTS);
+    var stats = stats_in + vec4f(l, l * l, 1.0, 0.0);
+    if (stats.z >= max(u.adapt_min_samples, ADAPT_MIN_VARIANCE_SAMPLES)) {
+        let mean = stats.x / stats.z;
+        let variance = max(stats.y / stats.z - mean * mean, 0.0);
+        let err = sqrt(variance / stats.z);
+        stats.w = select(0.0, 1.0, err <= u.adapt_threshold * (mean + ADAPT_DARK_FLOOR));
+    }
+    return stats;
 }
 
 @fragment
@@ -2821,6 +3363,17 @@ fn fs_main(in: VertexOut) -> FragOut {
     let aspect = u.resolution.x / u.resolution.y;
     let uv = vec2f(in.uv.x * aspect, in.uv.y);
     let dir = normalize(u.camera_forward + uv.x * u.camera_right + uv.y * u.camera_up);
+
+    let adapt_idx = u32(in.clip_pos.y) * u32(max(u.adapt_row_width, 0.0)) + u32(in.clip_pos.x);
+    let adapt = u.adapt_enabled > 0.5 && u.mc_enabled > 0.5 && u32(in.clip_pos.x) < u32(max(u.adapt_row_width, 0.0)) &&
+        adapt_idx < arrayLength(&adapt_stats);
+    var stats = vec4f(0.0);
+    if (adapt && u.mc_sample > 0.5) {
+        stats = adapt_stats[adapt_idx];
+        if (stats.w > 0.5) {
+            discard;
+        }
+    }
 
     detect_scene_transparency();
 
@@ -2832,9 +3385,9 @@ fn fs_main(in: VertexOut) -> FragOut {
     var coc_px = 0.0;
     var post_blur = false;
 
-    if (u.dof_enabled > 0.5 && u.aperture > 0.0001 && part_on(PART_DEPTH_OF_FIELD)) {
+    if (u.dof_enabled > 0.5 && u.aperture > DOF_MIN_APERTURE && part_on(PART_DEPTH_OF_FIELD)) {
         let hq = u.high_quality > 0.5;
-        focus_t = u.focus_distance / max(dot(dir, u.camera_forward), 0.0001);
+        focus_t = u.focus_distance / max(dot(dir, u.camera_forward), EPSILON);
         focus_point = u.camera_pos + dir * focus_t;
 
         if (u.mc_enabled < 0.5 && !hq) {
@@ -2842,21 +3395,21 @@ fn fs_main(in: VertexOut) -> FragOut {
         } else {
             let probe = march(u.camera_pos, dir);
             eff_aperture = dof_aperture(select(u.max_dist, probe.dist, probe.hit), focus_t);
-            if (eff_aperture > 0.0001) {
+            if (eff_aperture > DOF_MIN_APERTURE) {
                 samples = select(DOF_SAMPLES_FAST, DOF_SAMPLES_HQ, hq);
             }
         }
     }
 
-    let base_seed = in.clip_pos.xy + vec2f(u.mc_sample * 91.73, u.mc_sample * 57.31);
+    let base_seed = in.clip_pos.xy + vec2f(u.mc_sample * MC_SEED_RATE_X, u.mc_sample * MC_SEED_RATE_Y);
 
     var accum = vec3f(0.0);
     for (var s = 0; s < samples; s++) {
         var sample_origin = u.camera_pos;
         var sample_dir = dir;
         var seed = base_seed;
-        if (eff_aperture > 0.0001 && coc_px <= 0.0) {
-            seed = base_seed + vec2f(f32(s) * 91.37, f32(s) * 51.91);
+        if (eff_aperture > DOF_MIN_APERTURE && coc_px <= 0.0) {
+            seed = base_seed + vec2f(f32(s) * DOF_LENS_SEED_STRIDE_X, f32(s) * DOF_LENS_SEED_STRIDE_Y);
             let disk = sample_unit_disk(seed) * eff_aperture;
             sample_origin = u.camera_pos + u.camera_right * disk.x + u.camera_up * disk.y;
             sample_dir = normalize(focus_point - sample_origin);
@@ -2868,9 +3421,13 @@ fn fs_main(in: VertexOut) -> FragOut {
     if (post_blur) {
         let hit_t = select(u.max_dist, g_primary_dist, g_primary_dist > 0.0);
         let blur_aperture = dof_aperture(hit_t, focus_t);
-        if (blur_aperture > 0.0001) {
+        if (blur_aperture > DOF_MIN_APERTURE) {
             coc_px = dof_coc_px(blur_aperture, hit_t, focus_t);
         }
+    }
+
+    if (adapt) {
+        adapt_stats[adapt_idx] = adapt_update(stats, color);
     }
 
     return frag_out(vec4f(color, coc_px), g_primary_dist, g_primary_normal);
@@ -2895,12 +3452,12 @@ fn fs_aov(in: VertexOut) -> AovOut {
     var origin = u.camera_pos;
     var ray = dir;
     let lens_sampled = u.mc_enabled > 0.5 || u.high_quality > 0.5;
-    if (lens_sampled && u.dof_enabled > 0.5 && u.aperture > 0.0001 && part_on(PART_DEPTH_OF_FIELD)) {
-        let focus_t = u.focus_distance / max(dot(dir, u.camera_forward), 0.0001);
+    if (lens_sampled && u.dof_enabled > 0.5 && u.aperture > DOF_MIN_APERTURE && part_on(PART_DEPTH_OF_FIELD)) {
+        let focus_t = u.focus_distance / max(dot(dir, u.camera_forward), EPSILON);
         let probe = march(u.camera_pos, dir);
         let eff_aperture = dof_aperture(select(u.max_dist, probe.dist, probe.hit), focus_t);
-        if (eff_aperture > 0.0001) {
-            let seed = in.clip_pos.xy + vec2f(u.mc_sample * 91.73, u.mc_sample * 57.31);
+        if (eff_aperture > DOF_MIN_APERTURE) {
+            let seed = in.clip_pos.xy + vec2f(u.mc_sample * MC_SEED_RATE_X, u.mc_sample * MC_SEED_RATE_Y);
             let disk = sample_unit_disk(seed) * eff_aperture;
             origin = u.camera_pos + u.camera_right * disk.x + u.camera_up * disk.y;
             ray = normalize(u.camera_pos + dir * focus_t - origin);
@@ -2923,7 +3480,7 @@ fn fs_aov(in: VertexOut) -> AovOut {
 
 @group(1) @binding(1) var accel_out: texture_storage_3d<r32float, write>;
 
-@compute @workgroup_size(4, 4, 4)
+@compute @workgroup_size(VOXEL_WORKGROUP_SIZE, VOXEL_WORKGROUP_SIZE, VOXEL_WORKGROUP_SIZE)
 fn cs_build_accel(@builtin(global_invocation_id) gid: vec3u) {
     let res = u32(u.accel_res);
     let levels = u32(min(u.accel_levels, f32(MAX_CASCADES)));
@@ -2940,7 +3497,7 @@ fn cs_build_accel(@builtin(global_invocation_id) gid: vec3u) {
     let centre = prm.xyz + (vec3f(f32(gid.x), f32(gid.y), f32(cz)) + 0.5) * cell;
 
     let d = scene_de(centre);
-    let safe = max(d - 0.8660254 * cell, 0.0) * u.accel_safety;
+    let safe = max(d - HALF_SQRT3 * cell, 0.0) * u.accel_safety;
 
     textureStore(accel_out, vec3i(i32(gid.x), i32(gid.y), i32(gz)), vec4f(safe, 0.0, 0.0, 0.0));
 }
@@ -2968,7 +3525,7 @@ fn fft_bit_reverse6(v_in: u32) -> u32 {
     return r;
 }
 
-fn fft_1d(data: ptr<function, array<vec2f, 64>>) {
+fn fft_1d(data: ptr<function, array<vec2f, FFT_N>>) {
     for (var i: u32 = 0u; i < FFT_N; i++) {
         let j = fft_bit_reverse6(i);
         if (j > i) {
@@ -2996,13 +3553,13 @@ fn fft_1d(data: ptr<function, array<vec2f, 64>>) {
     }
 }
 
-@compute @workgroup_size(4, 4, 4)
+@compute @workgroup_size(VOXEL_WORKGROUP_SIZE, VOXEL_WORKGROUP_SIZE, VOXEL_WORKGROUP_SIZE)
 fn cs_fft_voxelize(@builtin(global_invocation_id) gid: vec3u) {
     if (gid.x >= FFT_N || gid.y >= FFT_N || gid.z >= FFT_N) {
         return;
     }
     let slot = i32(u.fft_target_slot + 0.5);
-    let b = max(u.fft_box_radius, 0.05);
+    let b = max(u.fft_box_radius, FFT_MIN_BOX_RADIUS);
     let cell = (2.0 * b) / f32(FFT_N);
     let local = vec3f(
         -b + (f32(gid.x) + 0.5) * cell,
@@ -3010,7 +3567,7 @@ fn cs_fft_voxelize(@builtin(global_invocation_id) gid: vec3u) {
         -b + (f32(gid.z) + 0.5) * cell,
     );
     let d = instance_local_de(local, slot).x;
-    let sigma = max(1.5 * cell, 1e-5);
+    let sigma = max(FFT_VOXEL_SIGMA_CELLS * cell, FFT_MIN_SIGMA);
     let density = exp(-(d * d) / (2.0 * sigma * sigma));
     fft_density[fft_idx(gid.x, gid.y, gid.z)] = density;
     if (all(gid == vec3u(0u))) {
@@ -3018,14 +3575,14 @@ fn cs_fft_voxelize(@builtin(global_invocation_id) gid: vec3u) {
     }
 }
 
-@compute @workgroup_size(8, 8, 1)
+@compute @workgroup_size(FFT_LINE_WORKGROUP_SIZE, FFT_LINE_WORKGROUP_SIZE, 1)
 fn cs_fft_axis_seed(@builtin(global_invocation_id) gid: vec3u) {
     if (gid.x >= FFT_N || gid.y >= FFT_N) {
         return;
     }
     let y = gid.x;
     let z = gid.y;
-    var line: array<vec2f, 64>;
+    var line: array<vec2f, FFT_N>;
     for (var x: u32 = 0u; x < FFT_N; x++) {
         line[x] = vec2f(fft_density[fft_idx(x, y, z)], 0.0);
     }
@@ -3035,13 +3592,13 @@ fn cs_fft_axis_seed(@builtin(global_invocation_id) gid: vec3u) {
     }
 }
 
-@compute @workgroup_size(8, 8, 1)
+@compute @workgroup_size(FFT_LINE_WORKGROUP_SIZE, FFT_LINE_WORKGROUP_SIZE, 1)
 fn cs_fft_axis_complex(@builtin(global_invocation_id) gid: vec3u) {
     if (gid.x >= FFT_N || gid.y >= FFT_N) {
         return;
     }
-    var line: array<vec2f, 64>;
-    if (u.fft_axis < 1.5) {
+    var line: array<vec2f, FFT_N>;
+    if (i32(u.fft_axis + 0.5) == FFT_AXIS_Y) {
         let x = gid.x;
         let z = gid.y;
         for (var y: u32 = 0u; y < FFT_N; y++) {
@@ -3068,10 +3625,10 @@ fn fft_radial_freq(gid: vec3u) -> f32 {
     let n = vec3i(i32(FFT_N));
     let k = vec3i(gid);
     let f = vec3f(select(k, k - n, k >= n / 2));
-    return length(f) / (f32(FFT_N / 2u) * 1.7320508);
+    return length(f) / (f32(FFT_N / 2u) * SQRT3);
 }
 
-@compute @workgroup_size(4, 4, 4)
+@compute @workgroup_size(VOXEL_WORKGROUP_SIZE, VOXEL_WORKGROUP_SIZE, VOXEL_WORKGROUP_SIZE)
 fn cs_fft_magnitude(@builtin(global_invocation_id) gid: vec3u) {
     if (gid.x >= FFT_N || gid.y >= FFT_N || gid.z >= FFT_N) {
         return;
@@ -3084,7 +3641,7 @@ fn cs_fft_magnitude(@builtin(global_invocation_id) gid: vec3u) {
     atomicMax(&fft_peak[0], bitcast<u32>(mag));
 }
 
-@compute @workgroup_size(4, 4, 4)
+@compute @workgroup_size(VOXEL_WORKGROUP_SIZE, VOXEL_WORKGROUP_SIZE, VOXEL_WORKGROUP_SIZE)
 fn cs_fft_finalize(@builtin(global_invocation_id) gid: vec3u) {
     if (gid.x >= FFT_N || gid.y >= FFT_N || gid.z >= FFT_N) {
         return;
@@ -3120,69 +3677,74 @@ fn photon_staging_overflowed() -> bool {
 var<private> rng_state: u32 = 1u;
 
 fn pcg_next() -> u32 {
-    rng_state = rng_state * 747796405u + 2891336453u;
-    let word = ((rng_state >> ((rng_state >> 28u) + 4u)) ^ rng_state) * 277803737u;
+    rng_state = rng_state * PCG_MULTIPLIER + PCG_INCREMENT;
+    let word = ((rng_state >> ((rng_state >> 28u) + 4u)) ^ rng_state) * PCG_OUTPUT_MULTIPLIER;
     return (word >> 22u) ^ word;
 }
 
 fn rand() -> f32 {
-    return f32(pcg_next()) * 2.3283064365386963e-10;
+    return f32(pcg_next()) * INV_U32_RANGE;
 }
 
 fn rand_from(state: ptr<function, u32>) -> f32 {
-    *state = *state * 747796405u + 2891336453u;
-    let word = ((*state >> ((*state >> 28u) + 4u)) ^ *state) * 277803737u;
-    return f32((word >> 22u) ^ word) * 2.3283064365386963e-10;
+    *state = *state * PCG_MULTIPLIER + PCG_INCREMENT;
+    let word = ((*state >> ((*state >> 28u) + 4u)) ^ *state) * PCG_OUTPUT_MULTIPLIER;
+    return f32((word >> 22u) ^ word) * INV_U32_RANGE;
 }
 
+const RAND_SEED_RANGE = 512.0;
+const MIN_UNIFORM_SAMPLE = 1e-7;
+const HG_ISOTROPIC_G = 1e-3;
+
 fn rand_seed() -> vec2f {
-    return vec2f(rand() * 512.0, rand() * 512.0);
+    return vec2f(rand() * RAND_SEED_RANGE, rand() * RAND_SEED_RANGE);
 }
 
 const R2_ALPHA = vec2u(3242174889u, 2447445414u);
 const R4_ALPHA = vec4u(3679390609u, 3152041523u, 2700274806u, 2313257605u);
 
 fn qmc_r2(n: u32, shift: vec2u) -> vec2f {
-    return vec2f(vec2u(n) * R2_ALPHA + shift) * 2.3283064365386963e-10;
+    return vec2f(vec2u(n) * R2_ALPHA + shift) * INV_U32_RANGE;
 }
 
 fn qmc_r4(n: u32, shift: vec4u) -> vec4f {
-    return vec4f(vec4u(n) * R4_ALPHA + shift) * 2.3283064365386963e-10;
+    return vec4f(vec4u(n) * R4_ALPHA + shift) * INV_U32_RANGE;
 }
 
 fn sphere_from(xi: vec2f) -> vec3f {
     let z = 1.0 - 2.0 * xi.x;
     let r = sqrt(max(1.0 - z * z, 0.0));
-    let phi = xi.y * 6.28318530718;
+    let phi = xi.y * TAU;
     return vec3f(r * cos(phi), r * sin(phi), z);
 }
 
 fn beam_offset_from(xi: vec2f) -> vec2f {
-    let r = sqrt(-log(max(xi.x, 1e-7)));
-    let phi = xi.y * 6.28318530718;
+    let r = sqrt(-log(max(xi.x, MIN_UNIFORM_SAMPLE)));
+    let phi = xi.y * TAU;
     return vec2f(r * cos(phi), r * sin(phi));
 }
 
 fn photon_basis(n: vec3f) -> mat2x3f {
-    let up = select(vec3f(0.0, 0.0, 1.0), vec3f(1.0, 0.0, 0.0), abs(n.z) > 0.99);
+    let up = select(vec3f(0.0, 0.0, 1.0), vec3f(1.0, 0.0, 0.0), abs(n.z) > BASIS_POLE_COS);
     let tx = normalize(cross(up, n));
     return mat2x3f(tx, cross(n, tx));
 }
 
 fn hg_from(dir: vec3f, g: f32, xi: vec2f) -> vec3f {
     var cos_t = 1.0 - 2.0 * xi.x;
-    if (abs(g) > 1e-3) {
+    if (abs(g) > HG_ISOTROPIC_G) {
         let sq = (1.0 - g * g) / (1.0 - g + 2.0 * g * xi.x);
         cos_t = (1.0 + g * g - sq * sq) / (2.0 * g);
     }
     cos_t = clamp(cos_t, -1.0, 1.0);
     let sin_t = sqrt(max(1.0 - cos_t * cos_t, 0.0));
-    let phi = xi.y * 6.28318530718;
+    let phi = xi.y * TAU;
     let b = photon_basis(dir);
     return normalize(b[0] * (sin_t * cos(phi)) + b[1] * (sin_t * sin(phi)) + dir * cos_t);
 }
 
 const PHOTON_FOG_TRACK_STEPS = 256;
+const PHOTON_MIN_MAJORANT = 1e-5;
 
 struct FogCollision {
     hit: bool,
@@ -3217,13 +3779,13 @@ fn photon_fog_collision(origin: vec3f, dir: vec3f, seg_len: f32) -> FogCollision
             majorant += max(fog.density, 0.0);
         }
     }
-    if (majorant < 1e-5) {
+    if (majorant < PHOTON_MIN_MAJORANT) {
         return c;
     }
 
     var t = 0.0;
     for (var i = 0; i < PHOTON_FOG_TRACK_STEPS; i++) {
-        t += -log(max(rand(), 1e-7)) / majorant;
+        t += -log(max(rand(), MIN_UNIFORM_SAMPLE)) / majorant;
         if (t >= seg_len) {
             return c;
         }
@@ -3311,7 +3873,7 @@ fn photon_place(ph: Photon, h: u32) {
     }
 }
 
-@compute @workgroup_size(64)
+@compute @workgroup_size(LINEAR_WORKGROUP_SIZE)
 fn cs_scatter_photons(@builtin(global_invocation_id) gid: vec3u) {
     if (photon_staging_overflowed() || gid.x >= atomicLoad(&photon_stats_rw[PHOTON_STAT_STAGED])) {
         return;
@@ -3322,15 +3884,19 @@ fn cs_scatter_photons(@builtin(global_invocation_id) gid: vec3u) {
     photon_place(ph, h);
 }
 
+const FIXED_POINT_LIMIT = 2147483000.0;
+const PHOTON_MIN_FIXED_UNIT = 1e-30;
+const PHOTON_MIN_DEPOSIT_WEIGHT = 1e-3;
+
 fn photon_volume_add(word: u32, value: f32, salt: u32) {
-    var h = (salt ^ (word * 0x9e3779b9u)) * 747796405u + 2891336453u;
-    h = ((h >> ((h >> 28u) + 4u)) ^ h) * 277803737u;
-    let xi = f32((h >> 22u) ^ h) * 2.3283064365386963e-10;
-    let v = i32(clamp(floor(value + xi), -2147483000.0, 2147483000.0));
+    var h = (salt ^ (word * GOLDEN_RATIO_U32)) * PCG_MULTIPLIER + PCG_INCREMENT;
+    h = ((h >> ((h >> 28u) + 4u)) ^ h) * PCG_OUTPUT_MULTIPLIER;
+    let xi = f32((h >> 22u) ^ h) * INV_U32_RANGE;
+    let v = i32(clamp(floor(value + xi), -FIXED_POINT_LIMIT, FIXED_POINT_LIMIT));
     let lo = u32(v);
-    let hi = select(0u, 0xffffffffu, v < 0);
+    let hi = select(0u, U32_MAX, v < 0);
     let old = atomicAdd(&photon_volume_rw[word], lo);
-    let carry = select(0u, 1u, old > 0xffffffffu - lo);
+    let carry = select(0u, 1u, old > U32_MAX - lo);
     let hi_add = hi + carry;
     if (hi_add != 0u) {
         atomicAdd(&photon_volume_rw[word + 1u], hi_add);
@@ -3338,9 +3904,9 @@ fn photon_volume_add(word: u32, value: f32, salt: u32) {
 }
 
 fn photon_volume_accumulate(p: vec3f, value: vec3f, dir: vec3f, kind: u32, salt: u32) {
-    let inv_unit = 1.0 / max(u.photon_fixed_unit, 1e-30);
+    let inv_unit = 1.0 / max(u.photon_fixed_unit, PHOTON_MIN_FIXED_UNIT);
     let scaled = value * inv_unit;
-    let v = dir * dot(scaled, vec3f(0.2126, 0.7152, 0.0722));
+    let v = dir * dot(scaled, LUMA_WEIGHTS);
 
     let edge = photon_grid_edge(kind);
     let q = p / edge - photon_lattice_offset() - vec3f(0.5);
@@ -3349,11 +3915,11 @@ fn photon_volume_accumulate(p: vec3f, value: vec3f, dir: vec3f, kind: u32, salt:
     let cell0 = vec3i(base);
     let own = vec3i(select(vec3i(0), vec3i(1), f >= vec3f(0.5)));
 
-    for (var i = 0; i < 8; i++) {
+    for (var i = 0; i < CUBE_CORNERS; i++) {
         let corner = vec3i(i & 1, (i >> 1) & 1, (i >> 2) & 1);
         let wv = mix(vec3f(1.0) - f, f, vec3f(corner));
         let w = wv.x * wv.y * wv.z;
-        if (w < 1e-3) {
+        if (w < PHOTON_MIN_DEPOSIT_WEIGHT) {
             continue;
         }
         let h = photon_bucket_claim(cell0 + corner, kind);
@@ -3374,7 +3940,7 @@ fn photon_volume_accumulate(p: vec3f, value: vec3f, dir: vec3f, kind: u32, salt:
     }
 }
 
-@compute @workgroup_size(64)
+@compute @workgroup_size(LINEAR_WORKGROUP_SIZE)
 fn cs_alloc_photons(@builtin(global_invocation_id) gid: vec3u) {
     let b = gid.x;
     if (b >= u32(u.photon_table)) {
@@ -3384,7 +3950,7 @@ fn cs_alloc_photons(@builtin(global_invocation_id) gid: vec3u) {
     if (stored == 0u) {
         return;
     }
-    let kind = atomicLoad(&photon_keys_rw[b]) & 3u;
+    let kind = atomicLoad(&photon_keys_rw[b]) & PHOTON_TAG_KIND_MASK;
     if (!photon_kind_is_surface(kind)) {
         atomicAdd(&photon_stats_rw[PHOTON_STAT_CELLS_VOLUME], 1u);
         return;
@@ -3403,12 +3969,13 @@ fn cs_alloc_photons(@builtin(global_invocation_id) gid: vec3u) {
 
 const PHOTON_MAX_DEPOSITS = 96;
 const PHOTON_MAX_WALK = 1024;
+const PHOTON_MIN_DIR_COMPONENT = 1e-9;
 
 fn photon_deposit_volume(origin: vec3f, dir: vec3f, seg_len: f32, power: vec3f, kind: u32) {
     if (u.fog_count < 0.5 || seg_len <= 0.0 || u.photon_pass > 0.5) {
         return;
     }
-    var walk_rng = rng_state ^ (bitcast<u32>(seg_len) * 0x9e3779b9u);
+    var walk_rng = rng_state ^ (bitcast<u32>(seg_len) * GOLDEN_RATIO_U32);
     let edge = photon_grid_edge(kind);
     let crossings = 1.0 + seg_len * (abs(dir.x) + abs(dir.y) + abs(dir.z)) / edge;
     let stride = max(i32(ceil(crossings / f32(PHOTON_MAX_DEPOSITS))), 1);
@@ -3416,23 +3983,23 @@ fn photon_deposit_volume(origin: vec3f, dir: vec3f, seg_len: f32, power: vec3f, 
     let stored_power = power * f32(stride);
 
     let forward = dir >= vec3f(0.0);
-    let moving = abs(dir) > vec3f(1e-9);
+    let moving = abs(dir) > vec3f(PHOTON_MIN_DIR_COMPONENT);
     let origin_l = origin - photon_lattice_offset() * edge;
     var cell = vec3i(floor(origin_l / edge));
     let step = select(vec3i(-1), vec3i(1), forward);
     let safe_dir = select(vec3f(1.0), dir, moving);
-    let t_delta = select(vec3f(1e30), edge / abs(safe_dir), moving);
+    let t_delta = select(vec3f(INFINITE_DISTANCE), edge / abs(safe_dir), moving);
     let next_face = (vec3f(cell) + select(vec3f(0.0), vec3f(1.0), forward)) * edge;
-    var t_next = select(vec3f(1e30), (next_face - origin_l) / safe_dir, moving);
+    var t_next = select(vec3f(INFINITE_DISTANCE), (next_face - origin_l) / safe_dir, moving);
 
     var t = 0.0;
     for (var walk = 0; walk < PHOTON_MAX_WALK; walk++) {
         let t_exit = min(min(min(t_next.x, t_next.y), t_next.z), seg_len);
         let len = t_exit - t;
-        if (len > 1e-6 && (walk + phase) % stride == 0) {
+        if (len > EPSILON_FINE && (walk + phase) % stride == 0) {
             let along = rand_from(&walk_rng);
             let at = origin + dir * (t + along * len);
-            if (sample_fog(at).extinction >= 0.0005) {
+            if (sample_fog(at).extinction >= VOLUME_MIN_EXTINCTION) {
                 photon_volume_accumulate(at, stored_power * len, dir, kind, walk_rng);
             }
         }
@@ -3462,6 +4029,8 @@ struct PhotonEmission {
 const PHOTON_AIM_RES: u32 = 128u;
 const PHOTON_AIM_CELLS: u32 = PHOTON_AIM_RES * PHOTON_AIM_RES;
 const PHOTON_AIM_SPECULAR_BOOST = 15.0;
+const PHOTON_AIM_SUBSAMPLES = 4u;
+const PHOTON_MIN_SKY_RADIUS = 1e-3;
 
 struct AimEntry {
     prob: f32,
@@ -3479,7 +4048,7 @@ struct PhotonRay {
 }
 
 fn photon_light_ray(light: Light, uv: vec2f) -> PhotonRay {
-    if (light.light_type < 0.5) {
+    if (i32(light.light_type + 0.5) == LIGHT_POINT) {
         return PhotonRay(light.position_or_direction, sphere_from(uv));
     }
     let axis = -normalize(light.position_or_direction);
@@ -3489,7 +4058,7 @@ fn photon_light_ray(light: Light, uv: vec2f) -> PhotonRay {
 }
 
 fn photon_light_area(light: Light) -> f32 {
-    return select(4.0 * u.photon_extent * u.photon_extent, 4.0 * 3.14159265, light.light_type < 0.5);
+    return select(4.0 * u.photon_extent * u.photon_extent, 4.0 * PI, i32(light.light_type + 0.5) == LIGHT_POINT);
 }
 
 fn photon_aim_pick(li: u32, x: f32, jitter: vec2f) -> vec3f {
@@ -3500,7 +4069,7 @@ fn photon_aim_pick(li: u32, x: f32, jitter: vec2f) -> vec3f {
     let c = select(entry.other, j, fract(fx) < entry.prob);
     let ratio = photon_aim_table[base + c].ratio;
     let cell = vec2f(f32(c % PHOTON_AIM_RES), f32(c / PHOTON_AIM_RES));
-    return vec3f((cell + jitter) / f32(PHOTON_AIM_RES), 1.0 / max(ratio, 1e-6));
+    return vec3f((cell + jitter) / f32(PHOTON_AIM_RES), 1.0 / max(ratio, EPSILON_FINE));
 }
 
 fn photon_emit(light: Light, li: u32, paths: f32, xi: vec4f) -> PhotonEmission {
@@ -3508,7 +4077,7 @@ fn photon_emit(light: Light, li: u32, paths: f32, xi: vec4f) -> PhotonEmission {
     let intensity = light.color * light.brightness;
     let inv_paths = 1.0 / max(paths, 1.0);
 
-    if (light.light_type < 1.5) {
+    if (i32(light.light_type + 0.5) != LIGHT_RAY) {
         var uv = xi.xy;
         var scale = 1.0;
         if (u.photon_aim > 0.5) {
@@ -3523,24 +4092,24 @@ fn photon_emit(light: Light, li: u32, paths: f32, xi: vec4f) -> PhotonEmission {
         return e;
     }
 
-    let axis = light.ray_direction / max(length(light.ray_direction), 1e-6);
+    let axis = light.ray_direction / max(length(light.ray_direction), EPSILON_FINE);
     let b = photon_basis(axis);
     let g = beam_offset_from(xi.xy);
     let perp = b[0] * g.x + b[1] * g.y;
     e.origin = light.position_or_direction + perp * light.waist;
-    e.dir = normalize(axis + perp * tan(clamp(light.spread, 0.0, 1.5)));
-    e.power = intensity * (3.14159265 * inv_paths);
+    e.dir = normalize(axis + perp * tan(clamp(light.spread, 0.0, RAY_LIGHT_MAX_SPREAD)));
+    e.power = intensity * (PI * inv_paths);
     return e;
 }
 
 fn photon_emit_sky(paths: f32, xi: vec4f) -> PhotonEmission {
     var e: PhotonEmission;
-    let r = max(u.photon_extent, 1e-3);
+    let r = max(u.photon_extent, PHOTON_MIN_SKY_RADIUS);
     let n = sphere_from(xi.xy);
     e.origin = u.photon_centre + n * r;
     e.dir = cosine_hemisphere_from(-n, xi.z, xi.w);
-    let area = 4.0 * 3.14159265 * r * r;
-    e.power = sky_color(-e.dir) * (3.14159265 * area / max(paths, 1.0));
+    let area = 4.0 * PI * r * r;
+    e.power = sky_color(-e.dir) * (PI * area / max(paths, 1.0));
     return e;
 }
 
@@ -3551,7 +4120,7 @@ fn photon_deposit_rgb(power: Spec, lambda: f32, off: Spec, scale: f32) -> vec3f 
     return spec_to_rgb(spec_mul(power, dispersion_weights(spec_mul(off, off), scale)));
 }
 
-@compute @workgroup_size(64)
+@compute @workgroup_size(LINEAR_WORKGROUP_SIZE)
 fn cs_photon_aim(@builtin(global_invocation_id) gid: vec3u) {
     let light_count = u32(min(u.light_count, f32(MAX_LIGHTS)));
     let li = gid.x / PHOTON_AIM_CELLS;
@@ -3560,12 +4129,12 @@ fn cs_photon_aim(@builtin(global_invocation_id) gid: vec3u) {
     }
     let light = u.lights[li];
     var w = 0.0;
-    if (light.light_type < 1.5) {
+    if (i32(light.light_type + 0.5) != LIGHT_RAY) {
         let c = gid.x % PHOTON_AIM_CELLS;
         let cell = vec2f(f32(c % PHOTON_AIM_RES), f32(c / PHOTON_AIM_RES));
         let reach = u.max_dist + max(u.photon_extent, 0.0);
         let fog_count = min(i32(u.fog_count), MAX_FOG_EMITTERS);
-        for (var s = 0u; s < 4u; s++) {
+        for (var s = 0u; s < PHOTON_AIM_SUBSAMPLES; s++) {
             let sub = vec2f(f32(s & 1u), f32(s >> 1u)) * 0.5 + 0.25;
             let ray = photon_light_ray(light, (cell + sub) / f32(PHOTON_AIM_RES));
             let m = march_to(ray.origin, ray.dir, reach);
@@ -3585,7 +4154,7 @@ fn cs_photon_aim(@builtin(global_invocation_id) gid: vec3u) {
     photon_aim_weights_rw[gid.x] = w;
 }
 
-@compute @workgroup_size(64)
+@compute @workgroup_size(LINEAR_WORKGROUP_SIZE)
 fn cs_clear_photons(@builtin(global_invocation_id) gid: vec3u) {
     if (gid.x == 0u) {
         atomicStore(&photon_stats_rw[PHOTON_STAT_POOL], 0u);
@@ -3608,7 +4177,14 @@ fn cs_clear_photons(@builtin(global_invocation_id) gid: vec3u) {
     }
 }
 
-@compute @workgroup_size(64)
+const PHOTON_SHIFT_WORDS = 6u;
+const R4_DIMS = 4u;
+const PHOTON_MIN_EMIT_POWER = 1e-9;
+const PHOTON_MAX_BOUNCES = 16;
+const PHOTON_MIN_SURVIVAL = 1e-4;
+const PHOTON_MIN_POWER = 1e-6;
+
+@compute @workgroup_size(LINEAR_WORKGROUP_SIZE)
 fn cs_trace_photons(@builtin(global_invocation_id) gid: vec3u) {
     if (u.photon_pass > 0.5 && !photon_staging_overflowed()) {
         return;
@@ -3626,23 +4202,23 @@ fn cs_trace_photons(@builtin(global_invocation_id) gid: vec3u) {
     }
 
     rng_state = pcg_next() ^ index;
-    rng_state = pcg_next() ^ (u32(max(u.photon_seed, 0.0)) * 2654435761u);
+    rng_state = pcg_next() ^ (u32(max(u.photon_seed, 0.0)) * KNUTH_MULTIPLIER);
     rng_state = pcg_next();
 
     let li = index % emitter_count;
     let paths = f32((total - li + emitter_count - 1u) / emitter_count);
 
     let seq = index / emitter_count;
-    var shift_state = (u32(max(u.photon_seed, 0.0)) * 2654435761u) ^ (li * 40503u + 0x9e3779b9u);
+    var shift_state = (u32(max(u.photon_seed, 0.0)) * KNUTH_MULTIPLIER) ^ (li * GOLDEN_RATIO_U16 + GOLDEN_RATIO_U32);
     var shift = vec4u(0u);
     var shift2 = vec2u(0u);
-    for (var d = 0u; d < 6u; d++) {
-        shift_state = shift_state * 747796405u + 2891336453u;
-        let word = ((shift_state >> ((shift_state >> 28u) + 4u)) ^ shift_state) * 277803737u;
-        if (d < 4u) {
+    for (var d = 0u; d < PHOTON_SHIFT_WORDS; d++) {
+        shift_state = shift_state * PCG_MULTIPLIER + PCG_INCREMENT;
+        let word = ((shift_state >> ((shift_state >> 28u) + 4u)) ^ shift_state) * PCG_OUTPUT_MULTIPLIER;
+        if (d < R4_DIMS) {
             shift[d] = (word >> 22u) ^ word;
         } else {
-            shift2[d - 4u] = (word >> 22u) ^ word;
+            shift2[d - R4_DIMS] = (word >> 22u) ^ word;
         }
     }
 
@@ -3658,19 +4234,19 @@ fn cs_trace_photons(@builtin(global_invocation_id) gid: vec3u) {
     }
     var origin = emission.origin;
     var dir = emission.dir;
-    if (max(emission.power.r, max(emission.power.g, emission.power.b)) < 1e-9) {
+    if (max(emission.power.r, max(emission.power.g, emission.power.b)) < PHOTON_MIN_EMIT_POWER) {
         return;
     }
     spectral_setup(xi_spectrum.x);
     let dispersion_pick = min(i32(xi_spectrum.y * SPECTRAL_COUNT), i32(SPECTRAL_COUNT) - 1);
     var power = spec_from_rgb(emission.power);
 
-    let bounces = clamp(i32(u.light_bounces), 0, 16);
+    let bounces = clamp(i32(u.light_bounces), 0, PHOTON_MAX_BOUNCES);
     var bounces_left = bounces;
     var glass_left = PATH_TRANSPARENCY_FLOOR;
 
     var in_solid = false;
-    var inner_steps = 64;
+    var inner_steps = PATH_DEFAULT_INNER_STEPS;
     var diffuse = false;
     var lambda = 0.0;
     var scatters = 0;
@@ -3685,7 +4261,7 @@ fn cs_trace_photons(@builtin(global_invocation_id) gid: vec3u) {
         var hit_t = 0.0;
         var hit_ok = false;
         if (in_solid) {
-            let ins = march_inside(origin, dir, inner_steps, 0.004);
+            let ins = march_inside(origin, dir, inner_steps, INSIDE_STEP_BASE);
             hit_t = ins.dist;
             hit_ok = ins.exited;
         } else {
@@ -3720,11 +4296,11 @@ fn cs_trace_photons(@builtin(global_invocation_id) gid: vec3u) {
             bounces_left--;
             let albedo = clamp(collision.albedo, vec3f(0.0), vec3f(1.0));
             let survive = max(albedo.r, max(albedo.g, albedo.b));
-            if (survive < 1e-4 || rand() >= survive) {
+            if (survive < PHOTON_MIN_SURVIVAL || rand() >= survive) {
                 break;
             }
             power = spec_scale(spec_mul(power, spec_from_rgb(albedo)), 1.0 / survive);
-            if (spec_max(power) < 1e-6) {
+            if (spec_max(power) < PHOTON_MIN_POWER) {
                 break;
             }
             origin = origin + dir * collision.t;
@@ -3744,7 +4320,7 @@ fn cs_trace_photons(@builtin(global_invocation_id) gid: vec3u) {
         let mat = hit_material(hit_pos).mat;
         let seed = rand_seed();
 
-        if (lambda == 0.0 && mat.abbe > 0.5) {
+        if (lambda == 0.0 && mat.abbe > MIN_ABBE) {
             lambda = spec_lambda_um(dispersion_pick);
             if (soft <= 0.0) {
                 power = spec_mul(power, spec_collapse_mask(dispersion_pick));
@@ -3753,7 +4329,7 @@ fn cs_trace_photons(@builtin(global_invocation_id) gid: vec3u) {
 
         if (scatters >= 1 && !in_solid) {
             let kind = select(PHOTON_GRID_SURFACE, PHOTON_GRID_BOUNCE, diffuse);
-            let rgb = photon_deposit_rgb(power, lambda, disp_off, soft * 0.5 * photon_grid_edge(kind));
+            let rgb = photon_deposit_rgb(power, lambda, disp_off, soft * PHOTON_GATHER_RADIUS_CELLS * photon_grid_edge(kind));
             photon_store(Photon(hit_pos, 0.0, rgb, 0.0, normal, 0.0), photon_grid_cell(hit_pos, kind), kind);
         }
 
@@ -3773,14 +4349,14 @@ fn cs_trace_photons(@builtin(global_invocation_id) gid: vec3u) {
             bounces_left--;
         }
         power = spec_mul(power, sc.weight);
-        if (spec_max(power) < 1e-6) {
+        if (spec_max(power) < PHOTON_MIN_POWER) {
             break;
         }
 
         if (sc.kind == SCATTER_TRANSMIT) {
             in_solid = !in_solid;
             if (in_solid) {
-                inner_steps = clamp(i32(mat.inner_max_steps), 4, 512);
+                inner_steps = clamp(i32(mat.inner_max_steps), MIN_INNER_STEPS, MAX_INNER_STEPS);
             }
         }
         if (sc.kind == SCATTER_DIFFUSE) {
@@ -3791,7 +4367,7 @@ fn cs_trace_photons(@builtin(global_invocation_id) gid: vec3u) {
                             sqrt(disp_ang.hi * disp_ang.hi + sc.disp_ang2.hi));
         }
 
-        let bias = max(0.004, 2.0 * march_epsilon(hit_t));
+        let bias = max(PHOTON_EXIT_BIAS, EXIT_BIAS_EPS_SCALE * march_epsilon(hit_t));
         origin = hit_pos + sc.dir * bias;
         dir = sc.dir;
         scatters++;

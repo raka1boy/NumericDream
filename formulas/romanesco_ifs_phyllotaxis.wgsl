@@ -5,6 +5,22 @@
 // @param Lean min=-30 max=60 default=15
 // @param Sink min=0 max=0.8 default=0.2
 // @param Tip min=0 max=0.2 default=0.02
+const ROMANESCO_MAX_TIP_RATIO = 0.9;
+const ROMANESCO_MIN_MAGNITUDE = 1e-30;
+const ROMANESCO_SCALE_BIAS = 2.0;
+const ROMANESCO_SCALE_STEPS = 32.0;
+const ROMANESCO_SCALE_MAX_CODE = 1023.0;
+const ROMANESCO_PACK_MASK = 16383u;
+const ROMANESCO_LEVEL_BITS = 4u;
+const ROMANESCO_LEVEL_MASK = 15u;
+const ROMANESCO_BAILOUT_SQ = 100.0;
+const ROMANESCO_FIB_START_I = 3.0;
+const ROMANESCO_FIB_START_J = 5.0;
+const ROMANESCO_GOLDEN_ANGLE_TURNS = 0.381966;
+const ROMANESCO_ROOT_SCALE = 1.5;
+const ROMANESCO_ROOT_OFFSET = vec3f(0.0, 0.5, 0.0);
+const ROMANESCO_MIN_SLANT = 1e-5;
+
 fn de_iterations(p: array<f32, 8>) -> i32 {
     return i32(p[0]);
 }
@@ -24,14 +40,14 @@ fn romanesco_round_cone(p: vec3f, r1: f32, r2: f32, h: f32) -> f32 {
 }
 
 fn romanesco_cone(z: vec3f, s: f32, tip: f32) -> f32 {
-    let r2 = min(tip, 0.9 * s);
+    let r2 = min(tip, ROMANESCO_MAX_TIP_RATIO * s);
     return romanesco_round_cone(z, s, r2, 1.0 - r2 / s);
 }
 
 fn romanesco_pack(m: f32, world_per_local: f32, level: u32) -> f32 {
-    let safe = select(m, 1e-30, abs(m) < 1e-30);
-    let q = u32(clamp(round((2.0 - log2(world_per_local)) * 32.0), 1.0, 1023.0));
-    return bitcast<f32>((bitcast<u32>(safe) & ~16383u) | (q << 4u) | level);
+    let safe = select(m, ROMANESCO_MIN_MAGNITUDE, abs(m) < ROMANESCO_MIN_MAGNITUDE);
+    let q = u32(clamp(round((ROMANESCO_SCALE_BIAS - log2(world_per_local)) * ROMANESCO_SCALE_STEPS), 1.0, ROMANESCO_SCALE_MAX_CODE));
+    return bitcast<f32>((bitcast<u32>(safe) & ~ROMANESCO_PACK_MASK) | (q << ROMANESCO_LEVEL_BITS) | level);
 }
 
 fn romanesco_bud_frame(z: vec3f, c: vec2f, u0: f32, sc: f32, cc: f32, lean: f32, gap: f32, sink: f32) -> vec4f {
@@ -49,12 +65,12 @@ fn romanesco_bud_frame(z: vec3f, c: vec2f, u0: f32, sc: f32, cc: f32, lean: f32,
 }
 
 fn de_step(carry: IterCarry, pos: vec3f, p: array<f32, 8>) -> IterCarry {
-    let bits = bitcast<u32>(carry.dr) & 16383u;
-    if (bits != 0u && dot(carry.z, carry.z) > 100.0) {
+    let bits = bitcast<u32>(carry.dr) & ROMANESCO_PACK_MASK;
+    if (bits != 0u && dot(carry.z, carry.z) > ROMANESCO_BAILOUT_SQ) {
         return carry;
     }
-    let level = bits & 15u;
-    var wpl = exp2(2.0 - f32(bits >> 4u) / 32.0);
+    let level = bits & ROMANESCO_LEVEL_MASK;
+    var wpl = exp2(ROMANESCO_SCALE_BIAS - f32(bits >> ROMANESCO_LEVEL_BITS) / ROMANESCO_SCALE_STEPS);
     var z = carry.z;
     var m = carry.dr;
 
@@ -63,36 +79,36 @@ fn de_step(carry: IterCarry, pos: vec3f, p: array<f32, 8>) -> IterCarry {
     let lean = radians(p[4]);
     let sink = p[5];
     let tip = p[6];
-    var fi = 3.0;
-    var fj = 5.0;
+    var fi = ROMANESCO_FIB_START_I;
+    var fj = ROMANESCO_FIB_START_J;
     for (var k = 1; k < i32(p[2]); k++) {
         let next = fi + fj;
         fi = fj;
         fj = next;
     }
-    let g = 0.381966;
+    let g = ROMANESCO_GOLDEN_ANGLE_TURNS;
     let ei = fi * g - round(fi * g);
     let ej = fj * g - round(fj * g);
     let lam = sqrt((ei * ei - ej * ej) / (fj * fj - fi * fi));
     let kappa = sqrt(fi * fi * lam * lam + ei * ei);
     let t = tan(alpha) / cos(lean);
-    let ac = atan(t * sa / (3.14159265 * kappa * p[3] + t * cos(alpha)));
+    let ac = atan(t * sa / (PI * kappa * p[3] + t * cos(alpha)));
     let sc = sin(ac);
     let cc = cos(ac);
 
     if (bits == 0u) {
-        wpl = 1.5;
-        z = (z + vec3f(0.0, 0.5, 0.0)) / wpl;
+        wpl = ROMANESCO_ROOT_SCALE;
+        z = (z + ROMANESCO_ROOT_OFFSET) / wpl;
         let head = max(romanesco_cone(z, sc, tip), -z.y);
         m = head * wpl;
     }
     let last = i32(level) + 1 >= i32(p[0]);
 
-    let per = 6.2831853 * sc;
+    let per = TAU * sc;
     let va = vec2f(-fi * lam, ei) * per;
     let vb = vec2f(-fj * lam, ej) * per;
     let spacing = per * kappa;
-    let slant = max(length(z.xz) * sc - (z.y - 1.0) * cc, 1e-5);
+    let slant = max(length(z.xz) * sc - (z.y - 1.0) * cc, ROMANESCO_MIN_SLANT);
     let u0 = log(1.0 / cc) - 0.5 * spacing;
     let d = vec2f(min(log(slant), u0 + spacing) - u0, atan2(z.z, z.x) * sc);
     let det = va.x * vb.y - va.y * vb.x;
@@ -122,9 +138,9 @@ fn de_step(carry: IterCarry, pos: vec3f, p: array<f32, 8>) -> IterCarry {
 
     m = min(m, near * wpl);
     wpl = wpl * best.w;
-    return IterCarry(best.xyz, romanesco_pack(m, wpl, min(level + 1u, 15u)));
+    return IterCarry(best.xyz, romanesco_pack(m, wpl, min(level + 1u, ROMANESCO_LEVEL_MASK)));
 }
 
 fn de_finalize(carry: IterCarry) -> f32 {
-    return bitcast<f32>(bitcast<u32>(carry.dr) & ~16383u);
+    return bitcast<f32>(bitcast<u32>(carry.dr) & ~ROMANESCO_PACK_MASK);
 }

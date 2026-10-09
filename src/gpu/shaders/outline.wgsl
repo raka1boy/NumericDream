@@ -29,10 +29,13 @@ const OUTLINE_TAPS = 12;
 const OUTLINE_TAU = 6.28318530718;
 const OUTLINE_INNER_RING = 0.5;
 const OUTLINE_MID_BAND = 0.18;
+const OUTLINE_ID_SCALE = 255.0;
+const OUTLINE_MID_LUMA = 0.5;
+const OUTLINE_LUMA_WEIGHTS = vec3f(0.2126, 0.7152, 0.0722);
 
 fn mask_is_selected(texel: vec2f, dims: vec2f) -> bool {
     let c = vec2i(clamp(texel, vec2f(0.0), dims - vec2f(1.0)));
-    return abs(textureLoad(mask_tex, c, 0).r * 255.0 - ou.selected_id) < 0.5;
+    return abs(textureLoad(mask_tex, c, 0).r * OUTLINE_ID_SCALE - ou.selected_id) < 0.5;
 }
 
 @fragment
@@ -61,8 +64,8 @@ fn fs_main(in: VertexOut) -> @location(0) vec4f {
 
     let hdr = textureSampleLevel(src_tex, src_sampler, uv, 0.0).rgb;
     let base = hdr / (hdr + vec3f(1.0));
-    let luma = dot(base, vec3f(0.2126, 0.7152, 0.0722));
-    let extreme = select(vec3f(1.0), vec3f(0.0), luma > 0.5);
-    let blend = 1.0 - smoothstep(0.0, OUTLINE_MID_BAND, abs(luma - 0.5));
+    let luma = dot(base, OUTLINE_LUMA_WEIGHTS);
+    let extreme = select(vec3f(1.0), vec3f(0.0), luma > OUTLINE_MID_LUMA);
+    let blend = 1.0 - smoothstep(0.0, OUTLINE_MID_BAND, abs(luma - OUTLINE_MID_LUMA));
     return vec4f(mix(1.0 - base, extreme, blend), 1.0);
 }

@@ -5,12 +5,12 @@ fn de_iterations(p: array<f32, 8>) -> i32 {
 }
 
 fn de_step(carry: IterCarry, pos: vec3f, p: array<f32, 8>) -> IterCarry {
-    let tube = max(p[1], 1e-4);
+    let tube = max(p[1], EPSILON);
     let scaled = pos / tube;
     let q = vec2f(length(scaled.xz) - p[0] / tube, scaled.y);
     return IterCarry(vec3f(q, 0.0), 1.0 / tube);
 }
 
 fn de_finalize(carry: IterCarry) -> f32 {
-    return (length(carry.z.xy) - 1.0) / max(abs(carry.dr), 1e-6);
+    return (length(carry.z.xy) - 1.0) / max(abs(carry.dr), EPSILON_FINE);
 }

@@ -117,6 +117,9 @@ pub fn sceneHash(uniforms: anytype, settings: PhotonSettings) u64 {
     accel_state.hashLitParticles(&h, uniforms);
     h.update(std.mem.asBytes(&uniforms.max_dist));
     h.update(std.mem.asBytes(&uniforms.sky));
+    h.update(std.mem.asBytes(&uniforms.approx_flags));
+    h.update(std.mem.asBytes(&uniforms.approx_lod_start));
+    h.update(std.mem.asBytes(&uniforms.approx_lod_strength));
     h.update(std.mem.asBytes(&settings.enabled));
     h.update(std.mem.asBytes(&settings.aim));
     h.update(std.mem.asBytes(&settings.bounces));

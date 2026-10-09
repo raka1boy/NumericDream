@@ -7,6 +7,25 @@
 
 const TM_EPS = 1e-4;
 const TM_MID_GREY = 0.18;
+const TM_OP_REINHARD = 0;
+const TM_OP_REINHARD_WHITE = 1;
+const TM_OP_ACES = 2;
+const TM_OP_UNCHARTED = 3;
+const ACES_A = 2.51;
+const ACES_B = 0.03;
+const ACES_C = 2.43;
+const ACES_D = 0.59;
+const ACES_E = 0.14;
+const HABLE_SHOULDER_STRENGTH = 0.15;
+const HABLE_LINEAR_STRENGTH = 0.50;
+const HABLE_LINEAR_ANGLE = 0.10;
+const HABLE_TOE_STRENGTH = 0.20;
+const HABLE_TOE_NUMERATOR = 0.02;
+const HABLE_TOE_DENOMINATOR = 0.30;
+const HABLE_EXPOSURE_BIAS = 2.0;
+const TM_MAX_LDR = 0.9995;
+const TM_MIN_RATIO = 1e-5;
+const TM_MIN_RANGE = 1e-3;
 
 fn tm_reinhard(c: vec3f) -> vec3f {
     return c / (c + vec3f(1.0));
@@ -18,28 +37,28 @@ fn tm_reinhard_white(c: vec3f, white: f32) -> vec3f {
 }
 
 fn tm_aces(c: vec3f) -> vec3f {
-    let num = c * (2.51 * c + vec3f(0.03));
-    let den = c * (2.43 * c + vec3f(0.59)) + vec3f(0.14);
+    let num = c * (ACES_A * c + vec3f(ACES_B));
+    let den = c * (ACES_C * c + vec3f(ACES_D)) + vec3f(ACES_E);
     return num / den;
 }
 
 fn tm_hable_curve(x: vec3f) -> vec3f {
-    let a = 0.15;
-    let b = 0.50;
-    let c = 0.10;
-    let d = 0.20;
-    let e = 0.02;
-    let f = 0.30;
+    let a = HABLE_SHOULDER_STRENGTH;
+    let b = HABLE_LINEAR_STRENGTH;
+    let c = HABLE_LINEAR_ANGLE;
+    let d = HABLE_TOE_STRENGTH;
+    let e = HABLE_TOE_NUMERATOR;
+    let f = HABLE_TOE_DENOMINATOR;
     return ((x * (a * x + vec3f(c * b)) + vec3f(d * e)) / (x * (a * x + vec3f(b)) + vec3f(d * f))) - vec3f(e / f);
 }
 
 fn tm_uncharted(c: vec3f, white: f32) -> vec3f {
     let scale = tm_hable_curve(vec3f(max(white, TM_EPS)));
-    return tm_hable_curve(c * 2.0) / max(scale, vec3f(TM_EPS));
+    return tm_hable_curve(c * HABLE_EXPOSURE_BIAS) / max(scale, vec3f(TM_EPS));
 }
 
 fn tm_to_engine(ldr: vec3f) -> vec3f {
-    let y = clamp(ldr, vec3f(0.0), vec3f(0.9995));
+    let y = clamp(ldr, vec3f(0.0), vec3f(TM_MAX_LDR));
     return y / (vec3f(1.0) - y);
 }
 
@@ -49,22 +68,22 @@ fn effect(uv: vec2f, color: vec4f, p: array<f32, 8>) -> vec4f {
     let grey = luminance(c);
     c = max(mix(vec3f(grey), c, p[4]), vec3f(0.0));
 
-    c = TM_MID_GREY * pow(max(c / TM_MID_GREY, vec3f(1e-5)), vec3f(p[3]));
+    c = TM_MID_GREY * pow(max(c / TM_MID_GREY, vec3f(TM_MIN_RATIO)), vec3f(p[3]));
 
-    let op = i32(round(clamp(p[1], 0.0, 3.0)));
+    let op = i32(round(clamp(p[1], 0.0, f32(TM_OP_UNCHARTED))));
     var ldr: vec3f;
-    if (op == 0) {
+    if (op == TM_OP_REINHARD) {
         ldr = tm_reinhard(c);
-    } else if (op == 1) {
+    } else if (op == TM_OP_REINHARD_WHITE) {
         ldr = tm_reinhard_white(c, p[2]);
-    } else if (op == 2) {
+    } else if (op == TM_OP_ACES) {
         ldr = tm_aces(c);
     } else {
         ldr = tm_uncharted(c, p[2]);
     }
     ldr = clamp(ldr, vec3f(0.0), vec3f(1.0));
 
-    ldr = clamp((ldr - vec3f(p[5])) / max(1.0 - p[5], 1e-3), vec3f(0.0), vec3f(1.0));
+    ldr = clamp((ldr - vec3f(p[5])) / max(1.0 - p[5], TM_MIN_RANGE), vec3f(0.0), vec3f(1.0));
 
     return vec4f(tm_to_engine(ldr), color.a);
 }

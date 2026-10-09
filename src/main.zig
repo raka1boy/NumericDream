@@ -37,10 +37,12 @@ const post_process = @import("gpu/post_process.zig");
 const sky_mod = @import("app/sky.zig");
 const SkyState = sky_mod.SkyState;
 const editor_windows = @import("ui/editor_windows.zig");
+const main_panels = @import("ui/main_panels.zig");
 const timeline_widget = @import("ui/timeline_widget.zig");
 const formula_library = @import("app/formula_library.zig");
 const StereoState = @import("app/stereo.zig").StereoState;
 const RenderParts = @import("app/render_parts.zig").RenderParts;
+const approximations = @import("app/approximations.zig");
 const render_precision = @import("app/render_precision.zig");
 const MarchPrecision = render_precision.MarchPrecision;
 const RenderSettingsState = render_precision.RenderSettingsState;
@@ -68,10 +70,26 @@ const allocator = std.heap.page_allocator;
 const mouse_look_sensitivity: f32 = 0.005;
 const scroll_zoom_speed: f32 = 0.3;
 
-fn stampPostEffects(fractal: *FractalRenderer, parts: RenderParts, shaders: []const ScreenShaderState) void {
-    var buf: [max_screen_shaders]post_process.Effect = undefined;
-    const on = !parts.geometryOnly() and (!parts.enabled or parts.isOn(.screen_shaders));
-    fractal.setPostEffects(if (on) screen_shader_mod.buildEffects(shaders, &buf) else &.{});
+fn stampPostEffects(gpu_ctx: *const Context, fractal: *FractalRenderer, parts: RenderParts, instances: []const FractalInstanceState, shaders: []const ScreenShaderState, shaft: ?[8]f32) void {
+    fractal.approx_settings = parts.approx;
+    var buf: [max_screen_shaders + 1]post_process.Effect = undefined;
+    var n: usize = 0;
+    const fog_shown = !fastRender(parts, instances) and (!parts.enabled or parts.isOn(.fog));
+    if (shaft != null and fog_shown) {
+        if (fractal.shaftEffect(gpu_ctx, allocator, shaft.?)) |effect| {
+            buf[0] = effect;
+            n = 1;
+        }
+    }
+    if (!parts.geometryOnly() and (!parts.enabled or parts.isOn(.screen_shaders))) {
+        n += screen_shader_mod.buildEffects(shaders, buf[n..][0..max_screen_shaders]).len;
+    }
+    fractal.setPostEffects(buf[0..n]);
+}
+
+fn shaftFor(parts: RenderParts, lights: []const LightState, fog_emitters: []const FogEmitterState, sky: SkyState, camera: FreeCamera) ?[8]f32 {
+    if (camera.mode_2d) return null;
+    return approximations.shaftParams(parts.approx, lights, fog_emitters, sky, .{ camera.position.x, camera.position.y, camera.position.z });
 }
 
 fn uiHasMouse(ui: *const NuklearBackend, play: *const PlayState) bool {
@@ -95,7 +113,7 @@ fn fastRender(parts: RenderParts, instances: []const FractalInstanceState) bool 
 }
 
 fn photonsShown(parts: RenderParts, instances: []const FractalInstanceState) bool {
-    return !fastRender(parts, instances) and (!parts.enabled or parts.isOn(.photon_map));
+    return !fastRender(parts, instances) and !parts.approx.replacesPhotons() and (!parts.enabled or parts.isOn(.photon_map));
 }
 
 fn anyMovementKeyDown(keys: [*c]const bool) bool {
@@ -237,6 +255,57 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var has_last_uniforms = false;
     var drawn_generation: ?u32 = null;
     var drawn_mode: ?fractal_gpu.RenderMode = null;
+
+    const app_ui = main_panels.App{
+        .window = window,
+        .gpu_ctx = &gpu_ctx,
+        .fractal = &fractal,
+        .allocator = allocator,
+        .instances = &instances,
+        .instance_count = &instance_count,
+        .lights = &lights,
+        .light_count = &light_count,
+        .fog_emitters = &fog_emitters,
+        .fog_count = &fog_count,
+        .warps = &warps,
+        .warp_count = &warp_count,
+        .particle_systems = &particle_systems,
+        .particle_count = &particle_count,
+        .screen_shaders = &screen_shaders,
+        .screen_shader_count = &screen_shader_count,
+        .sky = &sky,
+        .camera = &camera,
+        .play = &play,
+        .selection = &selection,
+        .render_parts = &render_parts,
+        .max_steps = &max_steps,
+        .max_steps_range = &max_steps_range,
+        .max_dist = &max_dist,
+        .max_dist_range = &max_dist_range,
+        .preview_quality = &preview_quality,
+        .preview_quality_range = &preview_quality_range,
+        .max_reflection_bounces = &max_reflection_bounces,
+        .max_reflection_bounces_range = &max_reflection_bounces_range,
+        .precision = &precision,
+        .render_settings = &render_settings,
+        .photon = &photon_settings,
+        .accel_state = &accel_state,
+        .mc = &mc,
+        .mc_sample_count = &mc_sample_count,
+        .export_width = &export_width,
+        .export_height = &export_height,
+        .export_status_buf = &export_status_buf,
+        .export_status = &export_status,
+        .scene_status_buf = &scene_status_buf,
+        .scene_status = &scene_status,
+        .stereo = &stereo,
+        .progress_overlay = &progress_overlay,
+        .timeline = &timeline,
+        .anim_render = &anim_render,
+        .mesh_export = &mesh_export,
+        .library_panel = &library_panel,
+        .screen_library_panel = &screen_library_panel,
+    };
 
     const start_ticks = sdl.SDL_GetTicks();
     var last_ticks = start_ticks;
@@ -390,57 +459,12 @@ pub fn main(init: std.process.Init.Minimal) !void {
             timeline.dirty = false;
         }
 
-        stampPostEffects(&fractal, render_parts, screen_shaders[0..screen_shader_count]);
+        stampPostEffects(&gpu_ctx, &fractal, render_parts, instances[0..instance_count], screen_shaders[0..screen_shader_count], shaftFor(render_parts, lights[0..light_count], fog_emitters[0..fog_count], sky, camera));
 
         editor_windows.buildCrosshair(&ui.ctx, &play, width_f, height_f);
-        editor_windows.buildFractalsListUi(&ui.ctx, &gpu_ctx, &fractal, allocator, &instances, &instance_count, &render_parts, &max_steps, &max_steps_range, &max_dist, &max_dist_range, &preview_quality, &preview_quality_range, &max_reflection_bounces, &max_reflection_bounces_range, &photon_settings, &precision, &render_settings, &lights, &light_count, &fog_emitters, &fog_count, &warps, &warp_count, &particle_systems, &particle_count, &screen_shaders, &screen_shader_count, &sky, &camera, width_f, height_f, window, &export_width, &export_height, &export_status_buf, &export_status, &scene_status_buf, &scene_status, &stereo, &mc, mc_sample_count, &progress_overlay, &timeline, &anim_render, &mesh_export, &accel_state, &selection, &play);
+        main_panels.build(&ui.ctx, &app_ui, width_f, height_f);
         play.syncCapture(window);
         if (export_image.quit_requested) running = false;
-        editor_windows.buildStereoSettingsWindow(&ui.ctx, &stereo);
-        editor_windows.buildRenderPartsWindow(&ui.ctx, &render_parts, fractal.parts.compiling());
-        editor_windows.buildRenderSettingsWindow(&ui.ctx, &render_settings);
-        editor_windows.buildAnimRenderWindow(&ui.ctx, window, &gpu_ctx, &fractal, allocator, &timeline, &anim_render, instances[0..instance_count], instance_count, lights[0..light_count], light_count, fog_emitters[0..fog_count], fog_count, warps[0..warp_count], warp_count, screen_shaders[0..screen_shader_count], particle_systems[0..particle_count], camera, render_settings, photon_settings, stereo, mc, &progress_overlay);
-        editor_windows.buildMeshExportWindow(&ui.ctx, window, &gpu_ctx, &fractal, allocator, &mesh_export, .{ .instances = instances[0..instance_count], .warps = warps[0..warp_count], .camera = camera }, &progress_overlay);
-        for (0..instance_count) |i| {
-            if (instances[i].window_open) {
-                editor_windows.buildFractalEditorWindow(&ui.ctx, window, &gpu_ctx, &fractal, allocator, &instances[i], i, instances[0..instance_count], instance_count, &library_panel);
-            }
-            for (0..instances[i].mixin_count) |j| {
-                if (instances[i].mixins[j].window_open) {
-                    editor_windows.buildMixinEditorWindow(&ui.ctx, window, &gpu_ctx, &fractal, allocator, &instances[i].mixins[j], i, j, instances[0..instance_count], instance_count, &library_panel);
-                }
-            }
-        }
-        for (0..light_count) |i| {
-            if (lights[i].window_open) {
-                editor_windows.buildLightEditorWindow(&ui.ctx, &lights[i], i);
-            }
-        }
-        for (0..fog_count) |i| {
-            if (fog_emitters[i].window_open) {
-                editor_windows.buildFogEmitterEditorWindow(&ui.ctx, &fog_emitters[i], i);
-            }
-        }
-        for (0..warp_count) |i| {
-            if (warps[i].window_open) {
-                editor_windows.buildWarpEditorWindow(&ui.ctx, &warps[i], i);
-            }
-        }
-        for (0..particle_count) |i| {
-            if (particle_systems[i].window_open) {
-                editor_windows.buildParticleSystemEditorWindow(&ui.ctx, &particle_systems[i], i, fractal.particles.runtime[i].steps);
-            }
-        }
-        for (0..screen_shader_count) |i| {
-            if (screen_shaders[i].window_open) {
-                editor_windows.buildScreenShaderEditorWindow(&ui.ctx, window, &gpu_ctx, &fractal, allocator, &screen_shaders[i], i, &screen_library_panel);
-            }
-        }
-        if (sky.window_open) {
-            editor_windows.buildSkyEditorWindow(&ui.ctx, window, &gpu_ctx, &fractal, allocator, &sky);
-        }
-        editor_windows.buildFormulaLibraryWindow(&ui.ctx, &gpu_ctx, &fractal, allocator, &library_panel, instances[0..instance_count], instance_count, "Formula Library");
-        editor_windows.buildFormulaLibraryWindow(&ui.ctx, &gpu_ctx, &fractal, allocator, &screen_library_panel, instances[0..instance_count], instance_count, "Screen Shader Library");
 
         const objects = selection_mod.Objects{
             .instances = instances[0..instance_count],
@@ -450,7 +474,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
             .particle_systems = particle_systems[0..particle_count],
         };
         selection.syncWithWindows(objects);
-        stampPostEffects(&fractal, render_parts, screen_shaders[0..screen_shader_count]);
+        stampPostEffects(&gpu_ctx, &fractal, render_parts, instances[0..instance_count], screen_shaders[0..screen_shader_count], shaftFor(render_parts, lights[0..light_count], fog_emitters[0..fog_count], sky, camera));
         perf.mark("ui");
 
         if (fractal.isCompiling()) {
@@ -498,6 +522,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
         );
         uniforms.high_quality = 0;
         uniforms.time = @as(f32, @floatFromInt(elapsed_ms)) / 1000.0;
+        fractal.stampApproxUniforms(&uniforms);
         if (play_active) play.stampCarves(&uniforms, now_ticks);
         export_image.prepareParticles(&gpu_ctx, &fractal, particle_systems[0..particle_count], &uniforms);
         perf.mark("particles");
@@ -575,6 +600,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
         const stereo_half_sep = stereo.eye_separation * 0.5;
         const eye_left = camera_mod.stereoEyeBasis(cam, camera.mode_2d, stereo.convergence_distance, -stereo_half_sep);
         const eye_right = camera_mod.stereoEyeBasis(cam, camera.mode_2d, stereo.convergence_distance, stereo_half_sep);
+        if (stereo_preview) uniforms.adapt_enabled = 0;
 
         var diff_uniforms = uniforms;
         if (stereo_preview) export_image.stampEyeBasis(&diff_uniforms, eye_left);

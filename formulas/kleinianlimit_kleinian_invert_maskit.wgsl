@@ -6,18 +6,30 @@
 // @param BoxZ min=0.5 max=2 default=1
 // @param Ceiling min=0.3 max=1 default=0.6
 // @param Iterations min=5 max=80 default=30 int
+const KLEIN_MIN_MAGNITUDE = 1e-30;
+const KLEIN_STEP_MASK = 127u;
+const KLEIN_STEP_DONE = 127u;
+const KLEIN_Y_SHIFT = 1.0;
+const KLEIN_SEP_PIVOT = 1.95;
+const KLEIN_SEP_DIVISOR = 4.0;
+const KLEIN_SEP_SHARPNESS = 7.2;
+const KLEIN_SEP_SHARPNESS_SLOPE = 15.0;
+const KLEIN_MIN_RADIUS_SQ = 1e-20;
+const KLEIN_DE_CAP = 0.3;
+const KLEIN_MIN_DERIVATIVE = 2.0;
+
 fn de_iterations(p: array<f32, 8>) -> i32 {
     return i32(p[5]);
 }
 
 fn klein_pack(v: f32, tag: u32) -> f32 {
-    let safe = select(v, 1e-30, abs(v) < 1e-30);
-    return bitcast<f32>((bitcast<u32>(safe) & ~127u) | tag);
+    let safe = select(v, KLEIN_MIN_MAGNITUDE, abs(v) < KLEIN_MIN_MAGNITUDE);
+    return bitcast<f32>((bitcast<u32>(safe) & ~KLEIN_STEP_MASK) | tag);
 }
 
 fn de_step(carry: IterCarry, pos: vec3f, p: array<f32, 8>) -> IterCarry {
-    let step = bitcast<u32>(carry.dr) & 127u;
-    if (step == 127u) {
+    let step = bitcast<u32>(carry.dr) & KLEIN_STEP_MASK;
+    if (step == KLEIN_STEP_DONE) {
         return carry;
     }
     let a = p[0];
@@ -28,7 +40,7 @@ fn de_step(carry: IterCarry, pos: vec3f, p: array<f32, 8>) -> IterCarry {
     var z = carry.z;
     var df = carry.dr;
     if (step == 0u) {
-        z.y = z.y + 1.0;
+        z.y = z.y + KLEIN_Y_SHIFT;
         df = 1.0;
     }
 
@@ -38,13 +50,13 @@ fn de_step(carry: IterCarry, pos: vec3f, p: array<f32, 8>) -> IterCarry {
     z.x = z.x - b / a * z.y;
 
     let xs = z.x + b * 0.5;
-    let sep = a * 0.5 + sign(b) * (2.0 * a - 1.95) / 4.0 * sign(xs)
-        * (1.0 - exp(-(7.2 - (1.95 - a) * 15.0) * abs(xs)));
+    let sep = a * 0.5 + sign(b) * (2.0 * a - KLEIN_SEP_PIVOT) / KLEIN_SEP_DIVISOR * sign(xs)
+        * (1.0 - exp(-(KLEIN_SEP_SHARPNESS - (KLEIN_SEP_PIVOT - a) * KLEIN_SEP_SHARPNESS_SLOPE) * abs(xs)));
     if (z.y >= sep) {
         z = vec3f(-b, a, 0.0) - z;
     }
 
-    let ir = 1.0 / max(dot(z, z), 1e-20);
+    let ir = 1.0 / max(dot(z, z), KLEIN_MIN_RADIUS_SQ);
     z = z * -ir;
     z.x = -b - z.x;
     z.y = a + z.y;
@@ -52,9 +64,9 @@ fn de_step(carry: IterCarry, pos: vec3f, p: array<f32, 8>) -> IterCarry {
 
     if (i32(step) + 1 >= i32(p[5])) {
         let y = min(z.y, a - z.y);
-        let de = min(y, 0.3) / max(df, 2.0);
-        let cut = pos.y + 1.0 - p[4] * a;
-        return IterCarry(z, klein_pack(max(de, cut), 127u));
+        let de = min(y, KLEIN_DE_CAP) / max(df, KLEIN_MIN_DERIVATIVE);
+        let cut = pos.y + KLEIN_Y_SHIFT - p[4] * a;
+        return IterCarry(z, klein_pack(max(de, cut), KLEIN_STEP_DONE));
     }
     return IterCarry(z, klein_pack(df, step + 1u));
 }

@@ -8,5 +8,5 @@ fn de_step(carry: IterCarry, pos: vec3f, p: array<f32, 8>) -> IterCarry {
 }
 
 fn de_finalize(carry: IterCarry) -> f32 {
-    return (length(carry.z) - 1.0) / max(abs(carry.dr), 1e-6);
+    return (length(carry.z) - 1.0) / max(abs(carry.dr), EPSILON_FINE);
 }

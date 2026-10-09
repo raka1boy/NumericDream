@@ -464,7 +464,7 @@
         <li><a href="#ch1">Starting up</a></li>
         <li><a href="#ch2">Flying the camera</a></li>
         <li><a href="#ch3">How the interface works</a></li>
-        <li><a href="#ch4">The Fractals panel</a></li>
+        <li><a href="#ch4">The Render, Camera &amp; Output windows</a></li>
         <li><a href="#ch5">Ray march precision</a></li>
         <li><a href="#ch6">Shaping a fractal</a></li>
         <li><a href="#ch7">Combining fractals</a></li>
@@ -544,7 +544,7 @@
 
         <p>Base move speed is 2.5 units per second before the Z/C multiplier. Since fractal detail is self-similar, expect to lean on Z heavily as you close in — at a hundredth of a unit from the surface, the default speed crosses the entire visible structure in a single frame.</p>
 
-        <p><strong>Reset camera</strong>, at the bottom of the Fractals panel, returns to the opening view and resets the speed multiplier and the 2D zoom. It deliberately leaves the 2D mode checkbox alone — untick that yourself when you want to go back to ray marching.</p>
+        <p><strong>Reset camera</strong>, at the bottom of the Camera window, returns to the opening view and resets the speed multiplier and the 2D zoom. It deliberately leaves the 2D mode checkbox alone — untick that yourself when you want to go back to ray marching.</p>
 
         <h3>Gizmos</h3>
         <p>Opening an object's editor window also marks it as selected, and selected objects draw a line gizmo in the viewport:</p>
@@ -559,7 +559,7 @@
         <p>Gizmos draw in 2D mode too, projected orthographically onto the cutting plane instead of in perspective (<a href="#ch18">Chapter 18</a>).</p>
 
         <h3>Play mode</h3>
-        <p><strong>Play mode</strong>, the first checkbox in the Fractals panel, swaps the free-fly camera for a body that walks on the fractal. Ticking it captures the mouse straight away and hides the pointer behind a small crosshair. <strong>Esc</strong> gives the mouse back without leaving play mode, and clicking the view captures it again. The status line under the checkbox reads <em>Walking</em>, <em>Falling</em> or <em>Flying</em>.</p>
+        <p><strong>Play mode</strong>, the first checkbox in the Camera window, swaps the free-fly camera for a body that walks on the fractal. Ticking it captures the mouse straight away and hides the pointer behind a small crosshair. <strong>Esc</strong> gives the mouse back without leaving play mode, and clicking the view captures it again. The status line under the checkbox reads <em>Walking</em>, <em>Falling</em> or <em>Flying</em>.</p>
 
         <div class="table-scroll">
           <table>
@@ -589,10 +589,37 @@
         <span class="chapter-num">Chapter 3</span>
         <h2 class="chapter-title">How the interface works</h2>
 
-        <p>There is one permanent panel — <strong>Fractals</strong>, docked at the top right — and one permanent strip, the <strong>Timeline</strong>, along the bottom. Everything else is a floating window you open from a list and close with its × button. All windows are movable and resizable.</p>
+        <p>A <strong>menu bar</strong> runs along the top and the <strong>Timeline</strong> strip along the bottom. Between them, four windows open by default:</p>
+        <ul>
+          <li><strong>Scene</strong>, top right: every object in the scene, grouped by kind (<a href="#ch3">below</a>).</li>
+          <li><strong>Output</strong>, below it: export resolution, stereo, and the export buttons (<a href="#ch4">Chapter 4</a>).</li>
+          <li><strong>Render</strong>, top left: preview and final quality, the photon map, MC Render and the accelerator (<a href="#ch4">Chapter 4</a>).</li>
+          <li><strong>Camera</strong>, below it: play mode, 2D mode, depth of field and Reset camera (<a href="#ch4">Chapter 4</a>).</li>
+        </ul>
+        <p>Every other window floats: object editors, the Sky, Simple render, Stereoscopic Settings, Render Animation, Mesh Export and the formula libraries. All windows can be moved, resized and closed with their × button. A new editor opens in the free space between the left and right windows, beside any editor already there rather than on top of it, and no taller than the space between the menu bar and the timeline; long editors scroll. Windows always stay below the menu bar and can never be dragged completely off screen.</p>
+
+        <h3>The menu bar</h3>
+        <div class="params">
+          <div class="param">
+            <div class="param-head"><span class="param-name">File</span></div>
+            <p><strong>Save scene...</strong> and <strong>Load scene...</strong> (<a href="#ch21">Chapter 21</a>), <strong>Export image</strong> (<a href="#ch19">Chapter 19</a>), and <strong>Render animation...</strong> and <strong>Export mesh...</strong>, which open those windows (<a href="#ch19">Chapter 19</a>, <a href="#ch20">Chapter 20</a>).</p>
+          </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">Add</span><span class="chip">max 4 / 8 / 4 / 4 / 2 / 8</span></div>
+            <p>Fractal, Light, Fog emitter, Warp, Particle system or Screen shader: appends a new object with default settings and opens its editor. An entry is greyed out once its list is full. Adding a fractal recompiles the shader; adding a light or fog emitter does not. Adding the <em>first</em> warp recompiles, and so does removing the last one — see <a href="#ch14">Chapter 14</a>. The first particle system of each look recompiles in the same way (<a href="#ch15">Chapter 15</a>).</p>
+          </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">Windows</span></div>
+            <p>A checkbox per window: Scene, Render, Camera and Output, then Sky, Simple render &amp; approximations, Stereo settings, Render animation and Mesh export. This is how you bring back a main window you closed with its × button.</p>
+          </div>
+        </div>
+        <p>The right end of the bar is a status line. It shows the result of the last save, load or image export, <em>Specialising shader...</em> while Simple render compiles a faster shader (<a href="#ch4">Chapter 4</a>), and <em>MC n / target</em> while MC Render is on (<a href="#ch16">Chapter 16</a>).</p>
+
+        <h3>Sections fold</h3>
+        <p>Most windows are divided into sections with a title bar, such as <em>Transform</em>, <em>Material</em> and <em>Orbit trap</em> in a fractal editor, or <em>Quality</em> and <em>Photon map</em> in the Render window. Clicking a title folds or unfolds that section. Sections you will rarely need start folded, like each colour stop's <em>Refraction</em> and <em>Iridescence</em> or the photon map's <em>Advanced</em> and <em>Details</em>. A window remembers what you folded until it is closed.</p>
 
         <h3>Lists and editors</h3>
-        <p>Fractals, lights, fog emitters, warps, particle systems, screen shaders and mixins all appear as list rows with a name and a <strong>Remove</strong> button. Clicking the name toggles that object's editor window open or closed; the object is also gizmo-highlighted in the viewport while its editor is open. You cannot remove the last fractal — a scene always has at least one. Warp and screen-shader rows also carry <strong>^</strong> and <strong>v</strong> buttons, because in those two lists the order changes the result.</p>
+        <p>The Scene window lists fractals, lights, fog emitters, warps, particle systems and screen shaders in folding groups, each titled with how many it holds. The sky sits in its own <em>Environment</em> group. Mixins are listed inside their fractal's editor (<a href="#ch9">Chapter 9</a>). Each row has a name and an <strong>×</strong> button that removes it. Clicking the name toggles that object's editor window open or closed; the object is also gizmo-highlighted in the viewport while its editor is open. You cannot remove the last fractal — a scene always has at least one. Warp and screen-shader rows also carry up and down arrow buttons, because in those two lists the order changes the result.</p>
 
         <h3>Hiding objects</h3>
         <p>Every row except a mixin's starts with a checkbox. Clearing it hides that object, and the row's name gains <em>(hidden)</em>. A hidden object is not deleted and keeps all its settings. It is just left out of everything that draws or simulates the scene: the viewport, still and animation exports, mesh export, the photon map, the accelerator grid, click-to-select and play-mode collision. A hidden light casts nothing, a hidden warp deforms nothing, and a hidden fog emitter is not there. This is the quick way to answer "what is this one contributing?" without losing its settings.</p>
@@ -619,7 +646,7 @@
         <p>The exception is any slider whose value is a <em>count</em> — march steps, iterations, bounces, samples, Inner max steps. Those step one whole unit at a time and round what they are given, including the ends of their range, since the shader is going to truncate them to integers anyway. A formula's own parameters can opt into this too; see <a href="#ch22">Chapter 22</a>.</p>
 
         <h3>Two independent quality sets</h3>
-        <p>The marching quality you see in the viewport and the marching quality used for a final render are separate settings that never influence each other. The <strong>Fractals</strong> panel tunes the live preview; the <strong>Render settings</strong> popup tunes the one-shot export. Getting a clean preview does not automatically get you a clean export, and vice versa. See chapters <a href="#ch4">4</a>, <a href="#ch5">5</a>, and <a href="#ch19">19</a>.</p>
+        <p>The marching quality you see in the viewport and the marching quality used for a final render are separate settings that never influence each other. They sit side by side in the <strong>Quality</strong> section of the Render window: the <em>Preview</em> column tunes the live viewport, and the <em>Final render</em> column tunes stills and animation renders. Getting a clean preview does not automatically get you a clean export, and vice versa. See chapters <a href="#ch4">4</a>, <a href="#ch5">5</a>, and <a href="#ch19">19</a>.</p>
 
         <h3>Compiling blocks everything</h3>
         <p>While a formula is compiling, the window stays responsive but stops drawing new frames, and the <strong>Compile</strong> button is replaced by a "Compiling…" label. Adding or removing a fractal or a mixin also recompiles, and those two block the app outright until they finish. This is a hard constraint of talking to the GPU driver safely, not a queue you can jump.</p>
@@ -627,22 +654,24 @@
 
       <section class="chapter" id="ch4">
         <span class="chapter-num">Chapter 4</span>
-        <h2 class="chapter-title">The Fractals panel</h2>
+        <h2 class="chapter-title">The Render, Camera &amp; Output windows</h2>
 
-        <p>The top of the panel controls how the live preview is marched. These settings apply <em>only</em> to the viewport.</p>
+        <p>The <strong>Render</strong> window, top left, decides how the scene is marched and lit. It starts with the Simple render switch, then four folding sections: <em>Quality</em>, <em>Photon map</em>, <em>Monte Carlo</em> and <em>Empty-space accelerator</em> (folded by default). The <strong>Camera</strong> and <strong>Output</strong> windows are described at the end of this chapter.</p>
 
         <div class="params">
           <div class="param">
-            <div class="param-head"><span class="param-name">Play mode</span><span class="chip">default off</span></div>
-            <p>Walk on the fractal instead of flying through it, with gravity towards the nearest surface and a left click that carves holes. Described in full in <a href="#ch2">Chapter 2</a>. Not saved with the scene.</p>
-          </div>
-          <div class="param">
             <div class="param-head"><span class="param-name">Simple render</span><span class="chip">default off</span></div>
-            <p>A diagnostic view of the scene. Ticking it opens the <strong>Simple render</strong> window (the <strong>Simple render parts...</strong> button brings the window back if you close it) and the viewport follows whatever the window says. It never touches an export, an animation render or the scene file — untick it and the full image is back.</p>
+            <p>A diagnostic view of the scene. The viewport follows whatever the <strong>Simple render</strong> window says, which opens from the <strong>Parts &amp; approx...</strong> button next to the checkbox (or Windows → Simple render &amp; approximations) and carries the same checkbox at its top. It never touches an export, an animation render or the scene file — untick it and the full image is back.</p>
             <p><strong>Geometry only (fast)</strong>, the window's first switch and its default, is the shape and nothing else: flat grey under one lamp mounted on the camera, with no lights, shadows, fog, reflections, refraction or photon gather anywhere in it. It runs from a separate, much smaller shader, so it is far faster than the full render with everything turned off would be — use it to frame a camera, check a silhouette, or hunt for the parameter value where a shape stops being a blob. The photon map is not traced while it is on.</p>
-            <p>Untick <strong>Geometry only</strong> and the window becomes a list of the full render's parts, each with its own switch: <em>Colour strips</em>, <em>Specular highlights</em>, <em>Subsurface scattering</em> and <em>Iridescence</em> under Surface; <em>Direct lights</em>, <em>Shadows</em>, <em>Ambient occlusion</em>, <em>Photon map</em> and <em>Sky</em> under Light; <em>Fog</em>, <em>Reflections</em>, <em>Refraction</em>, <em>Dispersion</em> and <em>MC indirect light</em> under Transport; <em>Depth of field</em> and <em>Screen space shaders</em> under Camera. With everything ticked the image is exactly the normal one; each switch you clear removes that one contribution and nothing else, and a note under the switch says what is left in its place. <strong>All on</strong> and <strong>All off</strong> reset the list. This is for finding things: whether a dark patch is shadow or occlusion, what the fog alone is adding, whether the photon map is responsible for a speckle.</p>
+            <p>Untick <strong>Geometry only</strong> and the window becomes a list of the full render's parts, in folding groups, each part with its own switch: <em>Colour strips</em>, <em>Specular highlights</em>, <em>Subsurface scattering</em> and <em>Iridescence</em> under Surface; <em>Direct lights</em>, <em>Shadows</em>, <em>Ambient occlusion</em>, <em>Photon map</em> and <em>Sky</em> under Light; <em>Fog</em>, <em>Reflections</em>, <em>Refraction</em>, <em>Dispersion</em> and <em>MC indirect light</em> under Transport; <em>Depth of field</em> and <em>Screen space shaders</em> under Camera. With everything ticked the image is exactly the normal one; each switch you clear removes that one contribution and nothing else, and a note under the switch says what is left in its place. <strong>All on</strong> and <strong>All off</strong> reset the list. This is for finding things: whether a dark patch is shadow or occlusion, what the fog alone is adding, whether the photon map is responsible for a speckle.</p>
             <p>Two things to know. Switching parts off does more than skip their work: a moment after the list changes, the viewport moves to a copy of the full shader compiled with the unticked parts left out entirely, which the GPU runs noticeably faster than the full shader with the same parts merely skipped. Until that copy is ready the note under <strong>Geometry only</strong> says it is compiling and the view uses the full shader, so the picture is the same either way, only slower; the last few part lists you used stay compiled, so going back to one is instant. The fastest case is the <em>fast path</em>: when the only parts left on are <em>Colour strips</em>, <em>Direct lights</em>, <em>Specular highlights</em>, <em>Ambient occlusion</em>, <em>Sky</em> and <em>Screen space shaders</em>, nothing in the picture needs a second ray, and the view switches straight away to the same small shader Geometry only uses, running at close to its speed. A green note under <strong>Geometry only</strong> says when you are on it. The fast path shades in plain RGB rather than across wavelengths, so strongly coloured lights on strongly coloured surfaces can differ very slightly from the full path, and rough surfaces lose their per-pixel grain. MC Render does not accumulate on the fast path (there is no noise to average), the photon map is not traced, and an FT View cloud forces the full path. And the switches are a view of the scene, not a change to it — the photon map is still traced with glass in the scene even while <em>Refraction</em> is off, so caustics can remain after the glass that threw them has gone opaque. While <em>Photon map</em> itself is off the map is not traced at all, so ticking it again takes a moment before the light reappears. <strong>MC Render</strong> accumulates as usual under the part switches and restarts whenever one changes.</p>
           </div>
+        </div>
+
+        <h3>Quality</h3>
+        <p>Each setting in this section is one row with two sliders: <em>Preview</em> on the left, used by the live viewport, and <em>Final render</em> on the right, used by still and animation renders. The value sits to the right of each slider, and the right-click popup works on both. A dash marks a side that does not apply. The final-render values are described in <a href="#ch19">Chapter 19</a>; the defaults below are the preview's.</p>
+
+        <div class="params">
           <div class="param">
             <div class="param-head"><span class="param-name">Max march steps</span><span class="chip">default 128</span><span class="chip">range 32–512</span></div>
             <p>How many steps a view ray may take before it gives up and returns "no hit". Too few and deep or grazing parts of the fractal dissolve into background; too many and every pixel gets slower whether it needed the steps or not. Also caps the cheaper rays derived from it: shadow rays use at most 40 steps, and subsurface scattering's depth probe at most 64. Refraction's interior ray is the exception — it has its own per-material <em>Inner max steps</em> budget and is not bounded by this.</p>
@@ -652,72 +681,135 @@
             <p>How far a ray travels before it is declared a miss, in world units. Anything beyond this is sky. Lower it when you are working close in and want the frame rate back; raise it when distant structure is being cut off.</p>
           </div>
           <div class="param">
-            <div class="param-head"><span class="param-name">Preview quality (render scale)</span><span class="chip">default 1.0</span><span class="chip">range 0.1–1.0</span></div>
-            <p>Renders the viewport at a fraction of the window's pixel size and upscales the result. 0.5 quarters the pixel count. This is the fastest way to keep a heavy scene interactive while you tune it, and it costs nothing in the final render, which never uses this value.</p>
-          </div>
-          <div class="param">
             <div class="param-head"><span class="param-name">Reflection bounces</span><span class="chip">default 1</span><span class="chip">range 0–8</span></div>
             <p>How many times a ray may bounce off reflective material before the remaining reflected energy is treated as sky. These are real marched reflections, so a fractal reflects its own geometry. Cost scales with the number of surfaces actually reflective enough to keep bouncing — on a matte scene, raising this is nearly free. Hard-capped at 8 in the shader even if you widen the slider.</p>
           </div>
           <div class="param">
-            <div class="param-head"><span class="param-name">Photon map</span><span class="chip">default on</span></div>
-            <p>The mirror image of the setting above, run from the lights instead of the camera. Its own group of sliders lives just below, and the whole thing is described in <a href="#ch11">Lights &amp; shadows</a>: <strong>Scatter bounces</strong>, <strong>Photon paths</strong>, <strong>Gather radius</strong>, <strong>Bounce light radius</strong>, <strong>Fog cell scale</strong>, <strong>Dispersion softness</strong>, <strong>Photon brightness</strong>, <strong>Grid size</strong>, <strong>Retrace delay</strong>, <strong>Aim photons at geometry</strong>, <strong>Retrace per MC Render sample</strong> and <strong>Progressive radius</strong>.</p>
-            <p>None of these have a separate copy in <strong>Render Settings</strong>: exported stills and animations use the values set here, so a render always matches the lighting you composed in the viewport.</p>
+            <div class="param-head"><span class="param-name">Render scale</span><span class="chip">default 1.0</span><span class="chip">range 0.1–1.0</span><span class="chip">preview only</span></div>
+            <p>Renders the viewport at a fraction of the window's pixel size and upscales the result. 0.5 quarters the pixel count. This is the fastest way to keep a heavy scene interactive while you tune it, and it costs nothing in the final render, which never uses this value.</p>
+          </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">Fog samples</span><span class="chip">final render only</span></div>
+            <p>How many jittered passes a render averages through fog (<a href="#ch19">Chapter 19</a>). The preview takes one pass per frame.</p>
+          </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">Ray march precision</span><span class="chip">folded by default</span></div>
+            <p>Five more rows, described in <a href="#ch5">Chapter 5</a>.</p>
           </div>
         </div>
 
-        <h3>The rest of the panel</h3>
-        <p>Below the precision group (<a href="#ch5">Chapter 5</a>) and the camera group — <strong>2D mode</strong> (<a href="#ch18">Chapter 18</a>) and <strong>Depth of field</strong> (<a href="#ch16">Chapter 16</a>) — sit the export controls and the object lists:</p>
+        <h3>Photon map, Monte Carlo and the accelerator</h3>
+        <div class="params">
+          <div class="param">
+            <div class="param-head"><span class="param-name">Photon map</span><span class="chip">default on</span></div>
+            <p>The mirror image of Reflection bounces, run from the lights instead of the camera. The section is described in full in <a href="#ch11">Lights &amp; shadows</a>. Under <strong>Enabled</strong> are the everyday controls: <strong>Scatter bounces</strong>, <strong>Photon paths</strong>, <strong>Gather radius</strong>, <strong>Photon brightness</strong>, <strong>Aim photons at geometry</strong>, <strong>Retrace per MC Render sample</strong> and <strong>Progressive radius</strong>. The <em>Advanced</em> fold holds <strong>Bounce light radius</strong>, <strong>Fog cell scale</strong>, <strong>Dispersion softness</strong>, <strong>Grid size</strong> and <strong>Retrace delay</strong>, and the <em>Details</em> fold holds the live trace and pool statistics. Warnings about dropped photons appear above the sliders, outside both folds.</p>
+            <p>None of these have a <em>Final render</em> column: exported stills and animations use the values set here, so a render always matches the lighting you composed in the viewport.</p>
+          </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">Monte Carlo</span></div>
+            <p><strong>MC Render</strong> with its sample counts and adaptive sampling, and the two <strong>Denoise</strong> switches (<a href="#ch16">Chapter 16</a>).</p>
+          </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">Empty-space accelerator</span><span class="chip">folded by default</span></div>
+            <p>A speed feature that never changes the image (<a href="#ch5">Chapter 5</a>).</p>
+          </div>
+        </div>
+
+        <h3>Approximations</h3>
+        <p>Below the parts list, the <strong>Simple render</strong> window has a second list: cheaper stand-ins for the most expensive parts of the full render. Unlike the parts switches, these are part of the scene. They are saved in the <code>.dream</code> file, and stills and animation renders use them too, so a heavy scene can be finished in a fraction of the time when the realism is not needed. They work whether or not <strong>Simple render</strong> is ticked, and the Render window shows <em>Approximations on: n</em> under the Simple render checkbox while any are active.</p>
 
         <div class="params">
           <div class="param">
-            <div class="param-head"><span class="param-name">Export width / height</span><span class="chip">default 2560 × 1440</span><span class="chip">range 16–16384</span></div>
+            <div class="param-head"><span class="param-name">Simple fog</span><span class="chip">default off</span></div>
+            <p>Each fog sphere becomes uniform haze with a closed-form density along the ray, lit by every light without shadows, instead of a stepped march with a shadow ray at every step. Light shafts are then drawn on screen: a streak radiating from the brightest light (or the sky's sun if there are no lights), cut off wherever geometry stands between the light and the camera. The full fog's photon lookups are skipped as well.</p>
+            <p><em>Light shaft strength</em> (default 1.0, range 0–4) scales the streaks; they also grow with how dense the fog is. The shafts only appear when the light is in front of the camera. They are drawn before your own screen-space shaders.</p>
+          </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">Fake caustics</span><span class="chip">default off</span></div>
+            <p>Shadow rays pass through glass, tinted by its colour, and pick up a procedural ripple pattern where they cross it, instead of the photon map's real caustics. <em>Caustic strength</em> (default 1.0, range 0–3) is how strongly the pattern varies, and <em>Caustic scale</em> (default 0.3, range 0.02–2) is the size of its cells in world units.</p>
+          </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">Fake bounce light</span><span class="chip">default off</span></div>
+            <p>Surfaces facing away from each light get a dim fill in their own colour, as if the light had bounced off similar material nearby, instead of the photon map's bounce light. <em>Bounce strength</em> (default 0.35, range 0–2) sets how bright it is.</p>
+          </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">Indirect light</span><span class="chip">default off</span></div>
+            <p>Ambient light becomes the sky colour in the direction the surface faces, plus the sky's sun, darkened by how many march steps the ray needed to reach the surface. Rays that squeeze into crevices take many steps, so creases come out dark for free. This replaces both MC Render's bounce ray and the five-sample ambient occlusion.</p>
+          </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">Thin glass</span><span class="chip">default off</span></div>
+            <p>A ray refracts once as it enters glass, then shows the sky in that bent direction and stops. Nothing behind or inside the glass is traced, so glass looks like a lens onto the environment rather than onto the scene. Combined with <em>Tint approximation</em>, the glass is also tinted by its thickness.</p>
+          </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">Tint approximation</span><span class="chip">default off</span></div>
+            <p>Instead of marching through glass and refracting again on the way out, one short 12-step march measures how thick the glass is, and the light is tinted by Beer-Lambert absorption over that thickness. The ray then leaves the glass going the way it came in, as through a flat slab. <em>Absorption</em> (default 1.0, range 0–8) scales how quickly the glass colour builds up with thickness.</p>
+          </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">Cheap dispersion</span><span class="chip">default off</span></div>
+            <p>Instead of giving each sample one random wavelength, which needs many samples to stop looking speckled, only the last refraction before a ray reaches the sky is split into red, green and blue directions. Rainbow fringes come out clean from the first sample, but colours do not separate further through several walls of glass.</p>
+          </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">Low-precision secondary marches</span><span class="chip">default off</span></div>
+            <p>Every ray after the first (reflections, refraction and MC Render's bounce ray) marches with half the steps, a hit distance four times looser and no refinement. Reflected and refracted detail softens slightly.</p>
+          </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">Distance LOD</span><span class="chip">default off</span></div>
+            <p>Fractals lose iterations as they get further from the camera, blending smoothly between iteration counts, and never drop below a quarter of their own count. Beyond <em>LOD start distance</em> (default 2.0, range 0.1–20) the fractal loses <em>Iterations lost per doubling</em> (default 1.5, range 0–6) iterations each time the distance doubles. Far detail softens, and because a fractal with fewer iterations is usually a little fatter, distant parts can bulge slightly.</p>
+          </div>
+        </div>
+
+        <div class="note">
+          <span class="tag">Interaction worth knowing</span>
+          <p>With <em>Simple fog</em>, <em>Fake caustics</em> and <em>Fake bounce light</em> all on, nothing reads the photon map any more, so it is not traced at all, in the viewport or for exports. The window says so in green when this happens.</p>
+        </div>
+
+        <h3>The Camera window</h3>
+        <div class="params">
+          <div class="param">
+            <div class="param-head"><span class="param-name">Play mode</span><span class="chip">default off</span></div>
+            <p>Walk on the fractal instead of flying through it, with gravity towards the nearest surface and a left click that carves holes. Described in full in <a href="#ch2">Chapter 2</a>. Not saved with the scene.</p>
+          </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">2D mode</span><span class="chip">default off</span></div>
+            <p>Renders the flat slice the camera cuts through the fractal (<a href="#ch18">Chapter 18</a>).</p>
+          </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">Depth of field</span><span class="chip">default off</span></div>
+            <p>Thin-lens focus blur, with <strong>Focus distance</strong>, <strong>Focus range</strong> and <strong>Aperture</strong> (<a href="#ch16">Chapter 16</a>).</p>
+          </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">Reset camera</span></div>
+            <p>Returns the camera to the opening view (<a href="#ch2">Chapter 2</a>).</p>
+          </div>
+        </div>
+
+        <h3>The Output window</h3>
+        <div class="params">
+          <div class="param">
+            <div class="param-head"><span class="param-name">Width / Height</span><span class="chip">default 2560 × 1440</span><span class="chip">range 16–16384</span></div>
             <p>Pixel size of the still export. The four buttons underneath scale both dimensions at once by 25%, 50%, 150%, or 200%, rounding to the nearest pixel and clamping to the same limits.</p>
           </div>
           <div class="param">
             <div class="param-head"><span class="param-name">Render as stereoscopic</span><span class="chip">default off</span></div>
-            <p>Renders the scene twice, once per eye, and lays the pair side by side. Ticking it opens the Stereoscopic Settings window; see <a href="#ch19">Chapter 19</a>.</p>
+            <p>Renders the scene twice, once per eye, and lays the pair side by side. <strong>Settings...</strong> next to it opens the Stereoscopic Settings window; see <a href="#ch19">Chapter 19</a>.</p>
           </div>
           <div class="param">
-            <div class="param-head"><span class="param-name">Export hq image</span></div>
-            <p>Opens a Save As dialog, then renders and writes the image. This blocks the app until it finishes or you cancel.</p>
+            <div class="param-head"><span class="param-name">Export image</span></div>
+            <p>Opens a Save As dialog, then renders and writes the image using the <em>Final render</em> quality column. This blocks the app until it finishes or you cancel. The result is shown under the button and in the menu bar's status line.</p>
           </div>
           <div class="param">
-            <div class="param-head"><span class="param-name">Render settings</span></div>
-            <p>Opens the export-only quality popup (<a href="#ch19">Chapter 19</a>).</p>
-          </div>
-          <div class="param">
-            <div class="param-head"><span class="param-name">Render Anim</span></div>
-            <p>Opens the animation render window (<a href="#ch20">Chapter 20</a>).</p>
-          </div>
-          <div class="param">
-            <div class="param-head"><span class="param-name">Export mesh</span></div>
-            <p>Opens the Mesh Export window, which turns the fractal surfaces into an OBJ or PLY triangle mesh for use in other 3D software (<a href="#ch19">Chapter 19</a>).</p>
-          </div>
-          <div class="param">
-            <div class="param-head"><span class="param-name">Save scene / Load scene</span></div>
-            <p>Write or read a <code>.dream</code> file (<a href="#ch21">Chapter 21</a>).</p>
-          </div>
-          <div class="param">
-            <div class="param-head"><span class="param-name">Sky: Procedural / Sky: Image</span></div>
-            <p>Opens the Sky panel (<a href="#ch12">Chapter 12</a>). One button rather than a list, since every scene has exactly one environment; the label names the source currently in use.</p>
-          </div>
-          <div class="param">
-            <div class="param-head"><span class="param-name">Add fractal / Add light / Add fog emitter / Add warp / Add particle system / Add screen shader</span><span class="chip">max 4 / 8 / 4 / 4 / 2 / 8</span></div>
-            <p>Append a new object with default settings. Adding a fractal recompiles the shader; adding a light or fog emitter does not. Adding the <em>first</em> warp recompiles, and so does removing the last one — see <a href="#ch14">Chapter 14</a>. The first particle system of each look recompiles in the same way (<a href="#ch15">Chapter 15</a>).</p>
-          </div>
-          <div class="param">
-            <div class="param-head"><span class="param-name">Reset camera</span></div>
-            <p>At the very bottom: returns the camera to the opening view (<a href="#ch2">Chapter 2</a>).</p>
+            <div class="param-head"><span class="param-name">Animation... / Mesh...</span></div>
+            <p>Open the Render Animation window (<a href="#ch20">Chapter 20</a>) and the Mesh Export window, which turns the fractal surfaces into an OBJ or PLY triangle mesh for use in other 3D software (<a href="#ch19">Chapter 19</a>). Both are also in the File menu.</p>
           </div>
         </div>
+        <p>Saving and loading scenes, and adding objects, live in the menu bar's <strong>File</strong> and <strong>Add</strong> menus (<a href="#ch3">Chapter 3</a>).</p>
       </section>
 
       <section class="chapter" id="ch5">
         <span class="chapter-num">Chapter 5</span>
         <h2 class="chapter-title">Ray march precision</h2>
 
-        <p>This group decides how close a ray must get to a surface before it counts as a hit, and how much effort the marcher spends double-checking a step it does not trust. The same five sliders appear twice — once in the Fractals panel for the live preview, once in Render settings for the export — with independent values.</p>
+        <p>This group decides how close a ray must get to a surface before it counts as a hit, and how much effort the marcher spends double-checking a step it does not trust. The five settings live in the <em>Ray march precision</em> fold of the Render window's Quality section, each as a row with a <em>Preview</em> slider and an independent <em>Final render</em> slider.</p>
 
         <p>The hit tolerance is <code>epsilon_coefficient × distance + epsilon_floor</code>: it grows with distance from the camera, so a surface a long way off is not asked to resolve to the same absolute precision as one right in front of you. That same radius is reused for surface-normal sampling, which is why loosening it also smears shading detail.</p>
 
@@ -927,7 +1019,7 @@
 
         <p>Normally a fractal iterates its own formula a set number of times and then converts the result into a distance. With mixins active, a single shared trajectory is built by cycling: the base formula runs for a few iterations, then each mixin in turn runs for its own count, then back to the base, repeating until the total iteration budget is spent. Only the <em>base</em> formula converts the result into a distance, which is why a mixed shape keeps the base's overall character while the mixins etch their folds into its surface. A Mandelbulb base with a Menger mixin reads as a Mandelbulb whose surface follows a Menger lattice.</p>
 
-        <p>Add up to three mixins per fractal with <strong>Add mixin</strong>. Each appears as a list row; clicking it opens an editor holding just that mixin's formula section, with its own file and its own parameter sliders. Adding or removing a mixin recompiles the shader and blocks until done.</p>
+        <p>Add up to three mixins per fractal with <strong>Add mixin</strong>, in the fractal editor's <em>Mixins</em> section (folded by default). Each appears as a list row; clicking it opens an editor holding just that mixin's formula section, with its own file and its own parameter sliders. Adding or removing a mixin recompiles the shader and blocks until done.</p>
 
         <div class="params">
           <div class="param">
@@ -959,7 +1051,7 @@
         <p>Each fractal is colored by an orbit trap: while the formula iterates, the renderer tracks how close the trajectory came to the origin, and uses that value to sample a gradient. Points that dive close to the origin land at one end of the strip; points that stay out land at the other. This is what paints structural bands rather than a flat coat of paint.</p>
 
         <h3>Orbit trap</h3>
-        <p>The <strong>Orbit trap</strong> section above the strip decides what "close" means and how the result lands on the strip. Its defaults (a point at the origin, closest approach, span 1.5, clamped) are the original fixed trap, so older scenes look exactly as they did. The trap lives in the formula's own iteration space, the space <code>z</code> moves through, not world space.</p>
+        <p>The fractal editor's <strong>Orbit trap</strong> section, just below Material and folded by default, decides what "close" means and how the result lands on the strip. Its defaults (a point at the origin, closest approach, span 1.5, clamped) are the original fixed trap, so older scenes look exactly as they did. The trap lives in the formula's own iteration space, the space <code>z</code> moves through, not world space.</p>
 
         <div class="params">
           <div class="param">
@@ -1129,7 +1221,7 @@
             <div class="param-head"><span class="param-name">Cast shadows</span><span class="chip">default on</span></div>
             <p>Whether this light is occluded by geometry. Shadow rays are the single most expensive part of surface shading — each one marches up to 40 steps, per light, per surface. Switching this off on fill lights is one of the biggest speedups available. It also controls whether the light carves shafts through volumetric fog: a light that does not shadow surfaces does not shaft through fog either.</p>
             <p>A shadow ray answers one question only: is there a straight, unobstructed line from this surface to that light. Anything that gets to a surface by another route — through glass, off a wall, around a corner — is the <strong>photon map</strong>'s to deliver, and it delivers it in the right place rather than approximately.</p>
-            <p>Light through glass is traced forward from the emitter and bends at every interface, so it lands where the geometry sends it — letting the shadow ray contribute as well would draw the same light twice. With the photon map switched off in the Fractals panel, shadow rays fall back to dimming and tinting the light that crosses glass instead.</p>
+            <p>Light through glass is traced forward from the emitter and bends at every interface, so it lands where the geometry sends it — letting the shadow ray contribute as well would draw the same light twice. With the photon map switched off in the Render window, shadow rays fall back to dimming and tinting the light that crosses glass instead.</p>
           </div>
           <div class="param">
             <div class="param-head"><span class="param-name">Hard shadows</span><span class="chip">default off</span></div>
@@ -1195,7 +1287,7 @@
           </div>
           <div class="param">
             <div class="param-head"><span class="param-name">Grid size (power of two)</span><span class="chip">default 16</span><span class="chip">range 12&ndash;18</span></div>
-            <p>How many cells the spatial hash holds, as a power of two. Costs memory linearly &mdash; the status line above the sliders prints the figure &mdash; and buys a lower load factor: fewer distant regions sharing a cell, and fewer cells overflowing what they can store. Worth raising on a scene where the light is concentrated into a small region, which is exactly what a caustic is.</p>
+            <p>How many cells the spatial hash holds, as a power of two. Costs memory linearly &mdash; the photon map's <em>Details</em> fold prints the figure &mdash; and buys a lower load factor: fewer distant regions sharing a cell, and fewer cells overflowing what they can store. Worth raising on a scene where the light is concentrated into a small region, which is exactly what a caustic is.</p>
           </div>
           <div class="param">
             <div class="param-head"><span class="param-name">Retrace delay (ms)</span><span class="chip">default 180</span><span class="chip">range 0&ndash;1000</span></div>
@@ -1232,7 +1324,7 @@
 
         <p>The sky is the backdrop a ray sees when it escapes the fractal, and it is also the light that backdrop casts back onto the geometry. There is deliberately no separate "background colour": both are the same radiance field, sampled in different directions. That is what makes a bright sky actually <em>light</em> the scene instead of sitting behind it like a painted wall.</p>
 
-        <p>It is one property of the scene rather than a list of objects, so it opens from a single button in the Fractals panel rather than from a removable row. The button is labelled with the current source — <strong>Sky: Procedural</strong> or <strong>Sky: Image</strong> — so the panel says which one you are on without opening anything.</p>
+        <p>It is one property of the scene rather than a list of objects, so it opens from a single row in the Scene window's <em>Environment</em> group (or Windows → Sky) rather than from a removable row. The row is labelled with the current source — <strong>Sky: Procedural</strong> or <strong>Sky: Image</strong> — so the Scene window says which one you are on without opening anything. In the Sky window, the sun disc and the overall <em>Lighting</em> controls are folding sections.</p>
 
         <div class="note">
           <span class="tag">Old scenes look the same</span>
@@ -1344,7 +1436,7 @@
         <div class="note">
           <span class="tag">Why a laser stays clean in fog</span>
           <p>The fog march samples the volume at a fixed number of steps spread over the whole ray, so a step is routinely much wider than a laser is thick. Sampling the beam at one point per step would therefore miss it on most steps and render it as sparse grain that fades out entirely as the spread approaches 0. Ray lights are instead integrated across each step analytically — the beam's Gaussian cross-section has a closed-form integral along a straight segment — so a beam deposits the right amount of light no matter how coarsely the volume is being marched. That is why a laser draws a continuous hairline here and does not need the fog sample count raised to find it.</p>
-          <p>Occlusion is still tested once per step, at the step's own sample point, so a beam threading a gap narrower than a step can pick up slightly the wrong shadowing. Raising <strong>Fog samples</strong> in Render Settings tightens that up on a still.</p>
+          <p>Occlusion is still tested once per step, at the step's own sample point, so a beam threading a gap narrower than a step can pick up slightly the wrong shadowing. Raising the <em>Final render</em> <strong>Fog samples</strong> in the Render window tightens that up on a still.</p>
         </div>
 
         <div class="params">
@@ -1386,7 +1478,7 @@
 
         <p>A <strong>warp</strong> is a scene object that deforms space itself inside a bounded region. It does not move the fractal and it does not bend the rays: it changes the <em>question</em> the renderer asks. Instead of evaluating the fractal at the point a ray has reached, it evaluates it at wherever the warp sends that point — so the shape appears twisted, inverted, tiled or rippled while the rays through it stay perfectly straight.</p>
 
-        <p>Up to four warps live in their own list in the Fractals panel, below the fog emitters. Each row is labelled with its deformation (<em>Warp 1: Twist</em>), since the number alone would tell you nothing, and clicking it opens that warp's editor.</p>
+        <p>Up to four warps live in the <em>Warps</em> group of the Scene window, below the fog emitters. Each row is labelled with its deformation (<em>Warp 1: Twist</em>), since the number alone would tell you nothing, and clicking it opens that warp's editor.</p>
 
         <h3>Warps are global, and they compose</h3>
         <p>A warp is not attached to a fractal. Every warp in the scene applies to the whole scene, before each fractal's own offset, rotation and scale — so a twist twists all four instances together, as one body of space.</p>
@@ -1478,7 +1570,7 @@
 
         <p>A <strong>particle system</strong> is a cloud of featureless points that the GPU simulates and the renderer draws: up to 16,384 of them per system, and at most two systems per scene. Each particle is born somewhere in a spawn shape, flies in a straight line at a constant velocity, and can stop dead when it touches a fractal or a particle that has already stopped &mdash; which is how a rain of points piles up into frost, moss or coral on a fractal's surface.</p>
 
-        <p>Particle systems have their own list in the Fractals panel, below the warps. Each row is labelled with how it renders (<em>Particles 1: Lit spheres</em>); the checkbox hides it, and clicking it opens its editor and draws its spawn shape and direction as a gizmo.</p>
+        <p>Particle systems have their own group in the Scene window, below the warps. Each row is labelled with how it renders (<em>Particles 1: Lit spheres</em>); the checkbox hides it, and clicking it opens its editor and draws its spawn shape and direction as a gizmo.</p>
 
         <h3>Time is a slider, not the clock</h3>
         <p>A system shows its particles at the moment set by its own <strong>t</strong> slider, and nothing moves on its own. Drag t, or keyframe it, to play the system forward. The two systems have independent clocks, which is why they never collide with each other.</p>
@@ -1533,7 +1625,7 @@
         <span class="chapter-num">Chapter 16</span>
         <h2 class="chapter-title">Depth of field &amp; MC Render</h2>
 
-        <p>Two optional camera and lighting effects, both in the Fractals panel, both applying to the preview and to renders alike.</p>
+        <p>Two optional camera and lighting effects, depth of field in the Camera window and MC Render in the Render window's Monte Carlo section, both applying to the preview and to renders alike.</p>
 
         <h3>Depth of field</h3>
         <p>A thin-lens simulation: instead of every ray starting from a single pinhole, several rays start from random points on a disc-shaped lens and are re-aimed at the same point on the focus plane. The preview takes 8 lens samples, an export takes 32 — so DOF reads as a soft grain live and a clean blur when rendered. With MC Render on, DOF converges along with everything else as frames accumulate.</p>
@@ -1579,6 +1671,18 @@
             <div class="param-head"><span class="param-name">Export samples</span><span class="chip">value 512</span><span class="chip">slider range 16–128</span></div>
             <p>The independent sample count used for still and animation renders, where there is no progressive display and every sample is paid up front. Same clamping caveat: it lands at 128 unless you widen the range. Render time scales directly with this number.</p>
           </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">Adaptive sampling</span><span class="chip">default off</span></div>
+            <p>Stops sampling each pixel once its noise has settled, so the remaining samples go to the pixels that need them: glass, fog, caustics and shadow edges. Sky and flat surfaces usually settle within the minimum sample count. A pixel that has stopped keeps the average of the samples it got, so the image stays correct. It is just less refined where the noise was already low. Applies to the live preview and to exports, but not to the stereo preview.</p>
+          </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">Noise threshold</span><span class="chip">value 0.02</span><span class="chip">slider range 0.002–0.1</span></div>
+            <p>How much noise a pixel may keep, measured on the tone-mapped brightness and relative to it, so dark areas must get proportionally quieter before they stop. Lower is cleaner and slower.</p>
+          </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">Minimum samples</span><span class="chip">value 16</span><span class="chip">slider range 4–64</span></div>
+            <p>Samples every pixel takes before it may stop. Raise it if rare bright speckles, such as a caustic that only a few samples find, are getting frozen out too early.</p>
+          </div>
         </div>
 
         <div class="note">
@@ -1616,7 +1720,7 @@
 
         <p>A <strong>screen-space shader</strong> is a <code>.wgsl</code> file of your own that runs as a full-screen pass over the finished picture, with its <code>@param</code> lines exposed as sliders exactly the way a formula's are. It is the one place in NumericDream where you write shader code that is not a distance estimator: no marching, no geometry, just "given this pixel, give me a different pixel".</p>
 
-        <p>Up to eight of them live in a <strong>Screen space shaders</strong> list near the bottom of the Fractals panel, below the particle systems. They form a chain, and the list order is the chain order.</p>
+        <p>Up to eight of them live in the <strong>Screen shaders</strong> group at the bottom of the Scene window, below the particle systems. They form a chain, and the list order is the chain order.</p>
 
         <h3>Where the chain sits</h3>
         <p>The full pipeline for a frame, once at least one effect is enabled:</p>
@@ -1635,7 +1739,7 @@
         </div>
 
         <h3>The list</h3>
-        <p><strong>Add screen shader</strong> appends an empty slot and opens its editor. Each row shows its position, the effect's name, and <em>(off)</em> if it is disabled; the checkbox at the start of the row is the same <strong>Enabled</strong> switch as in the editor, and clicking the name toggles its editor window. The <strong>^</strong> and <strong>v</strong> buttons move an entry up or down the chain, and <strong>Remove</strong> deletes it.</p>
+        <p><strong>Add → Screen shader</strong> appends an empty slot and opens its editor. Each row shows its position, the effect's name, and <em>(off)</em> if it is disabled; the checkbox at the start of the row is the same <strong>Enabled</strong> switch as in the editor, and clicking the name toggles its editor window. The up and down arrow buttons move an entry up or down the chain, and <strong>×</strong> deletes it.</p>
 
         <p>Reordering is a real edit, not a cosmetic one: each effect sees what the one before it produced. Sharpening before grain sharpens geometry; sharpening after grain sharpens the grain. The shipped effects say in their header comments where they want to sit, and two of them care a great deal — see below.</p>
 
@@ -1782,7 +1886,7 @@
         <span class="chapter-num">Chapter 18</span>
         <h2 class="chapter-title">2D mode</h2>
 
-        <p><strong>2D mode</strong>, the first checkbox in the Fractals panel's Camera group, stops ray marching altogether and renders the flat cross section the camera cuts through the fractal. Instead of casting a ray per pixel, the renderer evaluates the fractal directly at the point that pixel sits on, and colours it from the same colour strips the 3D view uses.</p>
+        <p><strong>2D mode</strong>, in the Camera window, stops ray marching altogether and renders the flat cross section the camera cuts through the fractal. Instead of casting a ray per pixel, the renderer evaluates the fractal directly at the point that pixel sits on, and colours it from the same colour strips the 3D view uses.</p>
 
         <p>Nothing about the scene changes when you tick it — the same fractals, the same offsets and rotations, the same strips. Only the camera's job changes: it stops being an eye and becomes a cutting plane.</p>
 
@@ -1834,7 +1938,7 @@
         </div>
 
         <h3>Renders and stereo</h3>
-        <p>2D mode is a property of the camera, so it flows through everything downstream unchanged: <strong>Export hq image</strong>, tiled at any resolution, renders the same slice at the same zoom the viewport is showing (<a href="#ch19">Chapter 19</a>), and so does every frame of an animation render (<a href="#ch20">Chapter 20</a>). Export-only precision settings and fog samples have nothing to act on and cost nothing.</p>
+        <p>2D mode is a property of the camera, so it flows through everything downstream unchanged: <strong>Export image</strong>, tiled at any resolution, renders the same slice at the same zoom the viewport is showing (<a href="#ch19">Chapter 19</a>), and so does every frame of an animation render (<a href="#ch20">Chapter 20</a>). Export-only precision settings and fog samples have nothing to act on and cost nothing.</p>
 
         <p><strong>Render as stereoscopic</strong> works too, though it is worth knowing what it can and cannot mean. A flat picture has no depth to show off, so the pair fuses as one flat image floating at a single distance rather than as a solid you can look into. The two eyes slide the same plane sideways by the eye separation instead of toeing in on a convergence point the way they do in 3D — toe-in would tilt each eye's cutting plane a fraction of a degree and slice genuinely different structure into each half, which is the one thing stereo fusion cannot absorb. <strong>Convergence distance</strong> is therefore ignored in 2D; <strong>Eye separation</strong> sets how far in front of or behind the screen the flat image sits.</p>
 
@@ -1860,14 +1964,14 @@
         <span class="chapter-num">Chapter 19</span>
         <h2 class="chapter-title">Exporting stills &amp; meshes</h2>
 
-        <p><strong>Export hq image</strong> opens a Save As dialog and then renders. The extension you choose decides the encoder: <code>.png</code> (lossless), <code>.jpg</code>/<code>.jpeg</code> (quality 92, fixed), or <code>.bmp</code>. The render is blocking — the app stops drawing its interface and shows a progress bar with a Cancel button instead. Escape cancels too. Cancelling stops after the current tile and writes nothing.</p>
+        <p><strong>Export image</strong>, in the Output window or the File menu, opens a Save As dialog and then renders. The extension you choose decides the encoder: <code>.png</code> (lossless), <code>.jpg</code>/<code>.jpeg</code> (quality 92, fixed), or <code>.bmp</code>. The render is blocking — the app stops drawing its interface and shows a progress bar with a Cancel button instead. Escape cancels too. Cancelling stops after the current tile and writes nothing.</p>
 
         <p>Large exports are rendered in tiles with GPU synchronisation between them, so a 16K render does not trip the driver's watchdog. Resolution is limited to 16384 in each dimension.</p>
 
         <p>A scene with screen-space effects in it is the exception: an effect that samples its neighbours would seam at every tile edge, so such an export is rendered as a single tile whenever it fits under about 16 megapixels, and warns on the console when it does not (<a href="#ch17">Chapter 17</a>).</p>
 
-        <h3>Render settings</h3>
-        <p>These apply only to still and animation renders, never to the preview. Each is an independent copy of a preview setting, because a preview is tuned for frame rate at window size while a render can afford to be careful at a completely different resolution.</p>
+        <h3>Final render quality</h3>
+        <p>These are the <em>Final render</em> column of the Render window's Quality section (<a href="#ch4">Chapter 4</a>). They apply only to still and animation renders, never to the preview. Each is independent of the <em>Preview</em> slider beside it, because a preview is tuned for frame rate at window size while a render can afford to be careful at a completely different resolution.</p>
 
         <div class="params">
           <div class="param">
@@ -1887,8 +1991,8 @@
             <p>How many independently jittered passes the fog march averages. Fog is dithered to avoid banding, and a still image has nothing downstream to hide that grain, so multiple passes average it away. This is the steepest single cost in a render — each pass re-marches the entire fog volume including its per-light visibility rays. If there is no fog in the scene it costs nothing at all. Hard-capped at 32 in the shader.</p>
           </div>
           <div class="param">
-            <div class="param-head"><span class="param-name">Ray March Precision</span></div>
-            <p>The same five sliders as <a href="#ch5">Chapter 5</a>, with their own values. This is where the two export-only precision knobs — HQ footprint budget and high-quality bisection steps — actually take effect.</p>
+            <div class="param-head"><span class="param-name">Ray march precision</span></div>
+            <p>The same five rows as <a href="#ch5">Chapter 5</a>, with their own values. This is where the two export-only precision knobs — HQ footprint budget and high-quality bisection steps — actually take effect.</p>
           </div>
         </div>
 
@@ -1915,7 +2019,7 @@
         <p>While the settings window is open the viewport also draws the <strong>eye rays</strong>: a red line for the left eye and a cyan line for the right eye rising from the bottom of the screen and crossing at a yellow marker, with darker tails continuing past the crossing. The pair is drawn 0.3 units below the camera's view axis — on the axis itself the rays would lie flat on the horizon line — so the crossing is a real point at the convergence distance and moves in perspective as you drag the slider: low and close for a near convergence, rising toward the centre and receding for a far one. A dim stem joins it to the on-axis point the render actually converges on. Widening the eye separation opens the angle of the X.</p>
 
         <h3>Mesh export</h3>
-        <p><strong>Export mesh</strong> opens the Mesh Export window, which turns the fractals into a triangle mesh for 3D printing, sculpting or rendering in other software. Only the fractal surfaces are exported, with their warps applied; lights, fog, sky, particles and play-mode holes are not, and hidden fractals are left out. The extension you type in the save dialog picks the format:</p>
+        <p><strong>Mesh...</strong> in the Output window (or File → Export mesh...) opens the Mesh Export window, which turns the fractals into a triangle mesh for 3D printing, sculpting or rendering in other software. Only the fractal surfaces are exported, with their warps applied; lights, fog, sky, particles and play-mode holes are not, and hidden fractals are left out. The extension you type in the save dialog picks the format:</p>
         <ul>
           <li><code>.obj</code> &mdash; text, with per-vertex normals. Vertex colours are written as three extra numbers on each <code>v</code> line, a widely supported extension (MeshLab, Blender and ZBrush read it).</li>
           <li><code>.ply</code> &mdash; binary little-endian, with normals and 8-bit vertex colours. About a third of the OBJ's size and much faster to load; prefer it for anything large.</li>
@@ -2009,7 +2113,7 @@
         <p>The 2D zoom is the one value that does not interpolate linearly — it moves geometrically, so a descent covers an equal factor of magnification in every equal slice of time. See <a href="#ch18">Chapter 18</a>.</p>
 
         <h3>Render Animation</h3>
-        <p><strong>Render Anim</strong> opens the render window. Duration is edited on the timeline itself, not duplicated here; the window shows it alongside the keyframe count. <strong>Render…</strong> asks for an output folder and then blocks, with the same progress bar, Cancel button, and Escape key as a still render. A cancelled render still finalises whatever frames completed into a playable file.</p>
+        <p><strong>Animation...</strong> in the Output window (or File → Render animation...) opens the render window. Duration is edited on the timeline itself, not duplicated here; the window shows it alongside the keyframe count. <strong>Render…</strong> asks for an output folder and then blocks, with the same progress bar, Cancel button, and Escape key as a still render. A cancelled render still finalises whatever frames completed into a playable file.</p>
 
         <p>Frame count is <code>floor(duration × fps) + 1</code>, so both endpoints are rendered.</p>
 
@@ -2051,9 +2155,9 @@
         <span class="chapter-num">Chapter 21</span>
         <h2 class="chapter-title">Scene files</h2>
 
-        <p><strong>Save scene</strong> writes a <code>.dream</code> file — plain, indented JSON you can read and edit in a text editor. It stores the camera, every fractal with its transform, combine mode, mixins, orbit trap, color strip and FT View settings, every light, fog emitter, warp and particle system, every screen-space effect, each object's visibility checkbox, the sky, both quality sets, the photon map settings, export resolution, stereo and MC settings, every slider's custom min/max, and the whole keyframe timeline.</p>
+        <p><strong>File → Save scene...</strong> writes a <code>.dream</code> file — plain, indented JSON you can read and edit in a text editor. It stores the camera, every fractal with its transform, combine mode, mixins, orbit trap, color strip and FT View settings, every light, fog emitter, warp and particle system, every screen-space effect, each object's visibility checkbox, the sky, both quality sets, the photon map settings, export resolution, stereo and MC settings, every slider's custom min/max, and the whole keyframe timeline.</p>
 
-        <p>Not stored: play mode and any holes carved in it, the current selection, the <strong>Simple render</strong> switches, the empty-space accelerator's settings, the Mesh Export window's settings, and the animation render window's settings. These are ways of looking at or exporting a scene, not part of it.</p>
+        <p>Not stored: play mode and any holes carved in it, the current selection, the <strong>Simple render</strong> parts switches (its <em>Approximations</em> are saved), the empty-space accelerator's settings, the Mesh Export window's settings, and the animation render window's settings. These are ways of looking at or exporting a scene, not part of it.</p>
 
         <p><strong>Load scene</strong> replaces the entire live scene. Formula files are re-read from disk, each formula's saved parameter <em>values</em> are matched back onto it by name, and the shader is rebuilt once in the background — the status line reads "Loaded scene, compiling shader…" until that finishes.</p>
 
@@ -2669,7 +2773,7 @@ fn de_finalize(carry: IterCarry) -&gt; f32</code></pre>
         <p>Lower <strong>Hit epsilon floor</strong>. The normal-estimation radius follows the hit tolerance, so when the tolerance is coarser than the actual feature size, the taps straddle different walls and the normal comes out as their average.</p>
 
         <h4>Fog shows concentric banding</h4>
-        <p>Raise <strong>Fog samples</strong> in Render settings. Fog is dithered to trade banding for grain; more passes average the grain out. In an animation leave it at 1 — neighbouring frames do that averaging for free.</p>
+        <p>Raise the <em>Final render</em> <strong>Fog samples</strong> in the Render window. Fog is dithered to trade banding for grain; more passes average the grain out. In an animation leave it at 1 — neighbouring frames do that averaging for free.</p>
 
         <h4>The image is grainy with MC Render on</h4>
         <p>It has not converged. Watch the <em>Samples: n / target</em> readout and let it settle; any change to the scene restarts it. For renders, raise <strong>Export samples</strong> — remembering that its slider maximum clamps the default down, so you likely need to widen the range first.</p>
@@ -2714,13 +2818,13 @@ fn de_finalize(carry: IterCarry) -&gt; f32</code></pre>
         <p>Click into the field first — keyboard input goes to the camera unless a widget has focus and the pointer is over the interface.</p>
 
         <h4>An object has vanished, or a light stopped lighting</h4>
-        <p>Check the checkbox at the start of its row in the Fractals panel. A hidden object is labelled <em>(hidden)</em> and is left out of everything, exports included (<a href="#ch3">Chapter 3</a>).</p>
+        <p>Check the checkbox at the start of its row in the Scene window. A hidden object is labelled <em>(hidden)</em> and is left out of everything, exports included (<a href="#ch3">Chapter 3</a>).</p>
 
         <h4>A fractal turned into a glowing cloud</h4>
         <p>Its <strong>FT View</strong> is on (<a href="#ch6">Chapter 6</a>). Untick it in the fractal's editor. Exports are unaffected either way.</p>
 
         <h4>The mouse disappeared and the camera falls</h4>
-        <p>Play mode is on (<a href="#ch2">Chapter 2</a>). Press Esc to get the pointer back, then untick <strong>Play mode</strong> at the top of the Fractals panel.</p>
+        <p>Play mode is on (<a href="#ch2">Chapter 2</a>). Press Esc to get the pointer back, then untick <strong>Play mode</strong> at the top of the Camera window.</p>
 
         <h4>Play mode switched itself off with a red message</h4>
         <p>Its collision probe could not run, most often because a formula in the scene has a compile error. Fix the formula, then tick Play mode again.</p>

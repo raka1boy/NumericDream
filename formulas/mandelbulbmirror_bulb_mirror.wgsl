@@ -10,7 +10,7 @@ fn de_step(carry: IterCarry, pos: vec3f, p: array<f32, 8>) -> IterCarry {
     zin.y = -zin.y;
 
     let r = length(zin);
-    if (r > 2.0) {
+    if (r > BULB_BAILOUT) {
         return carry;
     }
     let theta = acos(clamp(zin.z / r, -1.0, 1.0)) * power;

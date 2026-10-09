@@ -82,10 +82,90 @@ pub fn sectionLabel(ctx: *nk.nk_context, text: [:0]const u8) void {
     nk.nk_label(ctx, text.ptr, @intCast(nk.NK_TEXT_LEFT));
 }
 
-fn slider(ctx: *nk.nk_context, label: [:0]const u8, value: *f32, range: *SliderRange, integral: bool) void {
-    normalizeRange(range, integral);
-    const step = if (integral) 1.0 else (range.max - range.min) / float_slider_steps;
+pub const Fold = enum { open, closed };
 
+fn collapseState(fold: Fold) c_int {
+    return switch (fold) {
+        .open => nk.NK_MAXIMIZED,
+        .closed => nk.NK_MINIMIZED,
+    };
+}
+
+pub fn beginSection(ctx: *nk.nk_context, title: [:0]const u8, fold: Fold) bool {
+    return beginSectionId(ctx, title, title, fold);
+}
+
+pub fn beginSectionId(ctx: *nk.nk_context, id: []const u8, title: [:0]const u8, fold: Fold) bool {
+    return nk.nk_tree_push_hashed(ctx, nk.NK_TREE_TAB, title.ptr, @intCast(collapseState(fold)), id.ptr, @intCast(id.len), 0) != 0;
+}
+
+pub fn beginSubsection(ctx: *nk.nk_context, id: []const u8, title: [:0]const u8, fold: Fold) bool {
+    return nk.nk_tree_push_hashed(ctx, nk.NK_TREE_NODE, title.ptr, @intCast(collapseState(fold)), id.ptr, @intCast(id.len), 1) != 0;
+}
+
+pub fn endSection(ctx: *nk.nk_context) void {
+    nk.nk_tree_pop(ctx);
+}
+
+pub const dim = nk.struct_nk_color{ .r = 160, .g = 160, .b = 160, .a = 255 };
+pub const warn = nk.struct_nk_color{ .r = 200, .g = 180, .b = 90, .a = 255 };
+
+pub fn hint(ctx: *nk.nk_context, text: [:0]const u8, color: nk.struct_nk_color) void {
+    const lines: f32 = @floatFromInt((text.len + 39) / 40);
+    nk.nk_layout_row_dynamic(ctx, 4 + 14 * lines, 1);
+    nk.nk_label_colored_wrap(ctx, text.ptr, color);
+}
+
+pub const Bound = struct {
+    value: *f32,
+    range: *SliderRange,
+};
+
+const pair_value_w: f32 = 52;
+
+fn pairRow(ctx: *nk.nk_context, height: f32) void {
+    nk.nk_layout_row_template_begin(ctx, height);
+    nk.nk_layout_row_template_push_dynamic(ctx);
+    nk.nk_layout_row_template_push_static(ctx, pair_value_w);
+    nk.nk_layout_row_template_push_dynamic(ctx);
+    nk.nk_layout_row_template_push_static(ctx, pair_value_w);
+    nk.nk_layout_row_template_end(ctx);
+}
+
+pub fn sliderPairHeader(ctx: *nk.nk_context, left: [:0]const u8, right: [:0]const u8) void {
+    pairRow(ctx, 16);
+    nk.nk_label_colored(ctx, left.ptr, @intCast(nk.NK_TEXT_CENTERED), dim);
+    nk.nk_spacing(ctx, 1);
+    nk.nk_label_colored(ctx, right.ptr, @intCast(nk.NK_TEXT_CENTERED), dim);
+    nk.nk_spacing(ctx, 1);
+}
+
+pub fn sliderPair(ctx: *nk.nk_context, label: [:0]const u8, integral: bool, left: ?Bound, right: ?Bound) void {
+    nk.nk_layout_row_dynamic(ctx, 16, 1);
+    nk.nk_label(ctx, label.ptr, @intCast(nk.NK_TEXT_LEFT));
+    pairRow(ctx, 20);
+    for ([_]?Bound{ left, right }) |side| {
+        if (side) |b| {
+            sliderBody(ctx, b.value, b.range, integral);
+            var buf: [24]u8 = undefined;
+            const text = formatCompact(&buf, b.value.*, integral) catch "";
+            nk.nk_label(ctx, text.ptr, @intCast(nk.NK_TEXT_RIGHT));
+        } else {
+            nk.nk_label_colored(ctx, "-", @intCast(nk.NK_TEXT_CENTERED), dim);
+            nk.nk_spacing(ctx, 1);
+        }
+    }
+}
+
+fn formatCompact(buf: []u8, v: f32, integral: bool) ![:0]const u8 {
+    const a = @abs(v);
+    if (integral or a >= 100) return std.fmt.bufPrintSentinel(buf, "{d:.0}", .{v}, 0);
+    if (a >= 1) return std.fmt.bufPrintSentinel(buf, "{d:.2}", .{v}, 0);
+    if (a >= 0.01 or a == 0) return std.fmt.bufPrintSentinel(buf, "{d:.3}", .{v}, 0);
+    return std.fmt.bufPrintSentinel(buf, "{e:.1}", .{v}, 0);
+}
+
+fn slider(ctx: *nk.nk_context, label: [:0]const u8, value: *f32, range: *SliderRange, integral: bool) void {
     var value_buf: [48]u8 = undefined;
     const value_text = formatNumber(&value_buf, value.*, integral) catch "";
     nk.nk_layout_row_template_begin(ctx, 16);
@@ -96,6 +176,13 @@ fn slider(ctx: *nk.nk_context, label: [:0]const u8, value: *f32, range: *SliderR
     nk.nk_label(ctx, value_text.ptr, @intCast(nk.NK_TEXT_RIGHT));
 
     nk.nk_layout_row_dynamic(ctx, 20, 1);
+    sliderBody(ctx, value, range, integral);
+}
+
+fn sliderBody(ctx: *nk.nk_context, value: *f32, range: *SliderRange, integral: bool) void {
+    normalizeRange(range, integral);
+    const step = if (integral) 1.0 else (range.max - range.min) / float_slider_steps;
+
     const bounds = nk.nk_widget_bounds(ctx);
 
     const inner_x = bounds.x + ctx.style.slider.padding.x;
@@ -187,16 +274,26 @@ pub fn selectableRemovableRow(ctx: *nk.nk_context, label: [:0]const u8, window_o
         nk.nk_layout_row_template_begin(ctx, row_height);
         nk.nk_layout_row_template_push_static(ctx, 22);
         nk.nk_layout_row_template_push_dynamic(ctx);
-        nk.nk_layout_row_template_push_dynamic(ctx);
+        nk.nk_layout_row_template_push_static(ctx, remove_w);
         nk.nk_layout_row_template_end(ctx);
         visibilityCheckbox(ctx, v);
     } else {
-        nk.nk_layout_row_dynamic(ctx, row_height, 2);
+        nk.nk_layout_row_template_begin(ctx, row_height);
+        nk.nk_layout_row_template_push_dynamic(ctx);
+        nk.nk_layout_row_template_push_static(ctx, remove_w);
+        nk.nk_layout_row_template_end(ctx);
     }
     var selected: nk.nk_bool = if (window_open.*) 1 else 0;
-    _ = nk.nk_selectable_label(ctx, label.ptr, @intCast(nk.NK_TEXT_CENTERED), &selected);
+    _ = nk.nk_selectable_label(ctx, label.ptr, @intCast(nk.NK_TEXT_LEFT), &selected);
     window_open.* = selected != 0;
-    return nk.nk_button_label(ctx, "Remove") != 0;
+    return removeButton(ctx);
+}
+
+const remove_w: f32 = 24;
+
+fn removeButton(ctx: *nk.nk_context) bool {
+    if (nk.nk_widget_is_hovered(ctx) != 0) nk.nk_tooltip(ctx, "Remove");
+    return nk.nk_button_symbol(ctx, nk.NK_SYMBOL_X) != 0;
 }
 
 pub const RowAction = enum { none, up, down, remove };
@@ -207,7 +304,7 @@ pub fn reorderableRow(ctx: *nk.nk_context, label: [:0]const u8, window_open: *bo
     nk.nk_layout_row_template_push_dynamic(ctx);
     nk.nk_layout_row_template_push_static(ctx, 22);
     nk.nk_layout_row_template_push_static(ctx, 22);
-    nk.nk_layout_row_template_push_static(ctx, 62);
+    nk.nk_layout_row_template_push_static(ctx, remove_w);
     nk.nk_layout_row_template_end(ctx);
 
     visibilityCheckbox(ctx, visible);
@@ -217,9 +314,9 @@ pub fn reorderableRow(ctx: *nk.nk_context, label: [:0]const u8, window_open: *bo
     window_open.* = selected != 0;
 
     var action: RowAction = .none;
-    if (nk.nk_button_label(ctx, "^") != 0 and index > 0) action = .up;
-    if (nk.nk_button_label(ctx, "v") != 0 and index + 1 < count) action = .down;
-    if (nk.nk_button_label(ctx, "Remove") != 0) action = .remove;
+    if (nk.nk_button_symbol(ctx, nk.NK_SYMBOL_TRIANGLE_UP) != 0 and index > 0) action = .up;
+    if (nk.nk_button_symbol(ctx, nk.NK_SYMBOL_TRIANGLE_DOWN) != 0 and index + 1 < count) action = .down;
+    if (removeButton(ctx)) action = .remove;
     return action;
 }
 

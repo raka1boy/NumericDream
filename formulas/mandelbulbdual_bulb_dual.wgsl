@@ -9,7 +9,7 @@ fn de_step(carry: IterCarry, pos: vec3f, p: array<f32, 8>) -> IterCarry {
     let power1 = p[0];
     let power2 = p[2];
     let r0 = length(carry.z);
-    if (r0 > 2.0) {
+    if (r0 > BULB_BAILOUT) {
         return carry;
     }
 

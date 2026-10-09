@@ -22,6 +22,7 @@ const PartsPipelines = @import("parts_pipelines.zig").PartsPipelines;
 const photon_state = @import("../app/photon_state.zig");
 const accel_state = @import("../app/accel_state.zig");
 const sky_state = @import("../app/sky.zig");
+const approximations = @import("../app/approximations.zig");
 const perf_probe = @import("../app/perf_probe.zig");
 const oidn = @import("../bindings/oidn.zig");
 
@@ -30,6 +31,7 @@ const particles_sim_source = @embedFile("shaders/particles_sim.wgsl");
 const particles_lit_source = @embedFile("shaders/particles_lit.wgsl");
 const particles_dots_source = @embedFile("shaders/particles_dots.wgsl");
 const blit_shader_src = @embedFile("shaders/blit.wgsl");
+const light_shafts_source = @embedFile("shaders/light_shafts.wgsl");
 
 pub const max_instances = 4;
 pub const max_mixins = 3;
@@ -54,6 +56,8 @@ const select_format = wgpu.WGPUTextureFormat_R8Unorm;
 const depth_format = wgpu.WGPUTextureFormat_R32Float;
 const normal_format = wgpu.WGPUTextureFormat_RGBA16Float;
 
+const adapt_stats_stride: u64 = 16;
+
 const aov_format = wgpu.WGPUTextureFormat_RGBA16Float;
 const aov_bytes_per_pixel: u32 = 8;
 const aov_max_samples: u32 = 16;
@@ -69,7 +73,7 @@ pub const filler_formula_source =
     \\    return carry;
     \\}
     \\fn de_finalize(carry: IterCarry) -> f32 {
-    \\    return 1e6;
+    \\    return NO_SURFACE_DE;
     \\}
 ;
 
@@ -289,6 +293,18 @@ pub const Uniforms = extern struct {
     _pad_carve2: f32 = 0,
     carves: [max_carves][4]f32 = @splat(.{ 0, 0, 0, 0 }),
     particle_systems: [max_particle_systems]ParticleSystem = @splat(.{}),
+    approx_flags: f32 = 0,
+    approx_caustic_strength: f32 = 1,
+    approx_caustic_scale: f32 = 0.3,
+    approx_bounce: f32 = 0.35,
+    approx_tint: f32 = 1,
+    approx_lod_start: f32 = 2,
+    approx_lod_strength: f32 = 1.5,
+    _pad_approx0: f32 = 0,
+    adapt_enabled: f32 = 0,
+    adapt_threshold: f32 = 0.02,
+    adapt_min_samples: f32 = 16,
+    adapt_row_width: f32 = 0,
 };
 
 pub const Sky = extern struct {
@@ -320,6 +336,8 @@ comptime {
     std.debug.assert(@offsetOf(Uniforms, "photon_pass") % 16 == 0);
     std.debug.assert(@offsetOf(Uniforms, "carves") % 16 == 0);
     std.debug.assert(@offsetOf(Uniforms, "particle_systems") % 16 == 0);
+    std.debug.assert(@offsetOf(Uniforms, "approx_flags") % 16 == 0);
+    std.debug.assert(@offsetOf(Uniforms, "adapt_enabled") % 16 == 0);
     std.debug.assert(max_lights == photons.aim_max_lights);
     std.debug.assert(@sizeOf(photons.AimEntry) == 16);
     for (.{ "zenith", "horizon", "ground", "sun_color", "sun_dir" }) |field| {
@@ -339,19 +357,31 @@ fn matchesWordAt(source: []const u8, i: usize, word: []const u8) bool {
     return true;
 }
 
-fn collectTopLevelFnNames(allocator: std.mem.Allocator, source: []const u8) ![][]const u8 {
+fn collectTopLevelNames(allocator: std.mem.Allocator, source: []const u8) ![][]const u8 {
     var names: std.ArrayList([]const u8) = .empty;
     errdefer names.deinit(allocator);
+    var depth: usize = 0;
     var i: usize = 0;
     while (i < source.len) {
-        if (matchesWordAt(source, i, "fn")) {
-            var j = i + 2;
+        const keyword: ?[]const u8 = if (matchesWordAt(source, i, "fn"))
+            "fn"
+        else if (depth == 0 and matchesWordAt(source, i, "const"))
+            "const"
+        else
+            null;
+        if (keyword) |kw| {
+            var j = i + kw.len;
             while (j < source.len and (source[j] == ' ' or source[j] == '\t')) j += 1;
             const start = j;
             while (j < source.len and isIdentChar(source[j])) j += 1;
             if (j > start) try names.append(allocator, source[start..j]);
             i = j;
         } else {
+            switch (source[i]) {
+                '{' => depth += 1,
+                '}' => depth -|= 1,
+                else => {},
+            }
             i += 1;
         }
     }
@@ -361,7 +391,7 @@ fn collectTopLevelFnNames(allocator: std.mem.Allocator, source: []const u8) ![][
 const contract_fn_names = [_][]const u8{ "de_step", "de_finalize", "de_iterations" };
 
 fn appendRenamedFormula(allocator: std.mem.Allocator, out: *std.ArrayList(u8), source: []const u8, slot: usize) !void {
-    const names = try collectTopLevelFnNames(allocator, source);
+    const names = try collectTopLevelNames(allocator, source);
     defer allocator.free(names);
 
     var suffix_buf: [24]u8 = undefined;
@@ -399,13 +429,16 @@ fn appendFormulaWrapper(allocator: std.mem.Allocator, out: *std.ArrayList(u8), s
         \\    var carry = IterCarry(pos, 1.0);
         \\    let trap_spec = orbit_trap({0});
         \\    var trap = orbit_trap_begin(trap_spec);
-        \\    let iters = de_iterations_{0}(p);
+        \\    let lod = lod_iterations(de_iterations_{0}(p));
+        \\    let iters = i32(lod.x);
+        \\    var carry_lo = carry;
         \\    for (var it = 0; it < iters; it++) {{
         \\        let z_prev = carry.z;
+        \\        carry_lo = carry;
         \\        carry = de_step_{0}(carry, pos, p);
         \\        trap = orbit_trap_update(trap, trap_spec, carry.z, z_prev, it);
         \\    }}
-        \\    return vec2f(de_finalize_{0}(carry), orbit_trap_finish(trap, trap_spec, iters));
+        \\    return vec2f(de_finalize_{0}(lod_blend(carry_lo, carry, lod.y)), orbit_trap_finish(trap, trap_spec, iters));
         \\}}
         \\
     , .{slot});
@@ -452,11 +485,11 @@ const warp_impl_source =
     \\    for (var i = 0; i < i32(u.warp_count); i++) {
     \\        let w = u.warps[i];
     \\        let inf = warp_influence(w, p);
-    \\        if (inf <= 1e-4) {
+    \\        if (inf <= WARP_MIN_INFLUENCE) {
     \\            continue;
     \\        }
     \\        q = mix(q, coord_warp_raw(w, q), inf);
-    \\        let band = inf / max(w.strength, 1e-4);
+    \\        let band = inf / max(w.strength, WARP_MIN_STRENGTH);
     \\        let lip = 1.0 + inf * w.lip_mult + w.strength * w.lip_grad * (4.0 * band * (1.0 - band));
     \\        scale *= w.safety / lip;
     \\    }
@@ -464,13 +497,13 @@ const warp_impl_source =
     \\}
     \\
     \\fn warp_step_limit(p: vec3f) -> f32 {
-    \\    var lim = 1e30;
+    \\    var lim = INFINITE_DISTANCE;
     \\    for (var i = 0; i < i32(u.warp_count); i++) {
     \\        let w = u.warps[i];
-    \\        if (w.falloff > 1e-4 || i32(w.region_kind + 0.5) == 2) {
+    \\        if (w.falloff > WARP_MIN_FALLOFF || i32(w.region_kind + 0.5) == WARP_REGION_GLOBAL) {
     \\            continue;
     \\        }
-    \\        lim = min(lim, max(abs(warp_region_de(w, p)), 1e-4));
+    \\        lim = min(lim, max(abs(warp_region_de(w, p)), WARP_MIN_STEP_LIMIT));
     \\    }
     \\    return lim;
     \\}
@@ -481,7 +514,7 @@ const warp_stub_source =
     \\    return Warped(p, 1.0);
     \\}
     \\fn warp_step_limit(p: vec3f) -> f32 {
-    \\    return 1e30;
+    \\    return INFINITE_DISTANCE;
     \\}
 ;
 
@@ -493,7 +526,7 @@ const particles_lit_stub_source =
     \\    return ParticleSurface(sp, have);
     \\}
     \\fn particles_nearest_lit(pos: vec3f) -> vec2f {
-    \\    return vec2f(1e30, -1.0);
+    \\    return vec2f(INFINITE_DISTANCE, -1.0);
     \\}
     \\
 ;
@@ -1119,6 +1152,58 @@ fn colorAttachment(view: wgpu.WGPUTextureView, load_existing: bool) wgpu.WGPURen
     };
 }
 
+const AdaptTarget = struct {
+    buffer: wgpu.WGPUBuffer = null,
+    group: wgpu.WGPUBindGroup = null,
+    pixels: u64 = 0,
+
+    fn release(self: *AdaptTarget) void {
+        if (self.group != null) wgpu.wgpuBindGroupRelease(self.group);
+        if (self.buffer != null) wgpu.wgpuBufferRelease(self.buffer);
+        self.* = .{};
+    }
+
+    fn rowWidth(self: AdaptTarget, width: u32, height: u32) f32 {
+        return if (self.pixels >= @as(u64, width) * height) @floatFromInt(width) else 0;
+    }
+};
+
+fn createAdaptTargetSized(ctx: *const Context, layout: wgpu.WGPUBindGroupLayout, pixels: u64) AdaptTarget {
+    const size = @max(pixels, 1) * adapt_stats_stride;
+    var out = AdaptTarget{};
+    out.buffer = wgpu.wgpuDeviceCreateBuffer(ctx.device, &wgpu.WGPUBufferDescriptor{
+        .nextInChain = null,
+        .label = sv("adaptive sampling stats"),
+        .usage = wgpu.WGPUBufferUsage_Storage,
+        .size = size,
+        .mappedAtCreation = 0,
+    });
+    if (out.buffer == null) return out;
+    out.group = wgpu.wgpuDeviceCreateBindGroup(ctx.device, &wgpu.WGPUBindGroupDescriptor{
+        .nextInChain = null,
+        .label = sv("adaptive sampling bind group"),
+        .layout = layout,
+        .entryCount = 1,
+        .entries = &[_]wgpu.WGPUBindGroupEntry{.{ .nextInChain = null, .binding = 1, .buffer = out.buffer, .offset = 0, .size = size, .sampler = null, .textureView = null }},
+    });
+    if (out.group == null) {
+        out.release();
+        return out;
+    }
+    out.pixels = @max(pixels, 1);
+    return out;
+}
+
+fn createAdaptTarget(ctx: *const Context, layout: wgpu.WGPUBindGroupLayout, width: u32, height: u32) AdaptTarget {
+    const pixels = @as(u64, @max(width, 1)) * @max(height, 1);
+    const size = pixels * adapt_stats_stride;
+    if (size <= ctx.limits.maxStorageBufferBindingSize and size <= ctx.limits.maxBufferSize) {
+        const full = createAdaptTargetSized(ctx, layout, pixels);
+        if (full.group != null) return full;
+    }
+    return createAdaptTargetSized(ctx, layout, 1);
+}
+
 fn marchAttachments(color: wgpu.WGPUTextureView, gbuf: GBuffer, load_existing: bool) [3]wgpu.WGPURenderPassColorAttachment {
     return .{
         colorAttachment(color, load_existing),
@@ -1153,6 +1238,14 @@ pub const FractalRenderer = struct {
     sky_settings: sky_state.SkyState = .{},
 
     variant: ShaderVariant = .{},
+
+    approx_settings: approximations.Approximations = .{},
+    shaft_pipeline: wgpu.WGPURenderPipeline = null,
+    shaft_failed: bool = false,
+
+    adapt_layout: wgpu.WGPUBindGroupLayout,
+    adapt_preview: AdaptTarget = .{},
+    active_adapt_group: wgpu.WGPUBindGroup = null,
 
     denoise: bool = false,
     denoise_strength: f32 = 1.0,
@@ -1311,11 +1404,29 @@ pub const FractalRenderer = struct {
         var fft_volume = try FftVolume.init(ctx);
         errdefer fft_volume.deinit();
 
+        const adapt_entry = wgpu.WGPUBindGroupLayoutEntry{
+            .nextInChain = null,
+            .binding = 1,
+            .visibility = wgpu.WGPUShaderStage_Fragment,
+            .bindingArraySize = 0,
+            .buffer = .{ .nextInChain = null, .type = wgpu.WGPUBufferBindingType_Storage, .hasDynamicOffset = 0, .minBindingSize = adapt_stats_stride },
+            .sampler = std.mem.zeroes(wgpu.WGPUSamplerBindingLayout),
+            .texture = std.mem.zeroes(wgpu.WGPUTextureBindingLayout),
+            .storageTexture = std.mem.zeroes(wgpu.WGPUStorageTextureBindingLayout),
+        };
+        const adapt_layout = wgpu.wgpuDeviceCreateBindGroupLayout(ctx.device, &wgpu.WGPUBindGroupLayoutDescriptor{
+            .nextInChain = null,
+            .label = sv("adaptive sampling bind group layout"),
+            .entryCount = 1,
+            .entries = &[_]wgpu.WGPUBindGroupLayoutEntry{adapt_entry},
+        }) orelse return error.BindGroupLayoutCreationFailed;
+        errdefer wgpu.wgpuBindGroupLayoutRelease(adapt_layout);
+
         const pipeline_layout = wgpu.wgpuDeviceCreatePipelineLayout(ctx.device, &wgpu.WGPUPipelineLayoutDescriptor{
             .nextInChain = null,
             .label = sv("fractal pipeline layout"),
-            .bindGroupLayoutCount = 5,
-            .bindGroupLayouts = &[_]wgpu.WGPUBindGroupLayout{ bind_group_layout, accel_grid.render_layout, photon_map.render_layout, sky_tex.layout, fft_volume.render_layout },
+            .bindGroupLayoutCount = 6,
+            .bindGroupLayouts = &[_]wgpu.WGPUBindGroupLayout{ bind_group_layout, accel_grid.render_layout, photon_map.render_layout, sky_tex.layout, fft_volume.render_layout, adapt_layout },
             .immediateSize = 0,
         }) orelse return error.PipelineLayoutCreationFailed;
 
@@ -1487,6 +1598,7 @@ pub const FractalRenderer = struct {
             .photon_pipeline_layout = photon_pipeline_layout,
             .fft_pipeline_layout = fft_pipeline_layout,
             .uniform_layout = bind_group_layout,
+            .adapt_layout = adapt_layout,
             .uniform_slot_stride = @intCast(slot_stride),
             .accel = accel_grid,
             .fft = fft_volume,
@@ -1596,6 +1708,9 @@ pub const FractalRenderer = struct {
         wgpu.wgpuRenderPipelineRelease(self.tonemap_pipeline);
         wgpu.wgpuPipelineLayoutRelease(self.blit_pipeline_layout);
         wgpu.wgpuBindGroupLayoutRelease(self.blit_bind_group_layout);
+        self.adapt_preview.release();
+        wgpu.wgpuBindGroupLayoutRelease(self.adapt_layout);
+        if (self.shaft_pipeline != null) wgpu.wgpuRenderPipelineRelease(self.shaft_pipeline);
     }
 
     pub fn ensureOffscreenSize(self: *FractalRenderer, ctx: *const Context, width: u32, height: u32) void {
@@ -1658,6 +1773,10 @@ pub const FractalRenderer = struct {
 
         if (self.select_depth_bind_group != null) wgpu.wgpuBindGroupRelease(self.select_depth_bind_group);
         self.select_depth_bind_group = if (self.depth_view != null) createDepthBindGroup(ctx, self.select_depth_layout, self.depth_view) else null;
+
+        self.adapt_preview.release();
+        self.adapt_preview = createAdaptTarget(ctx, self.adapt_layout, w, h);
+        self.active_adapt_group = self.adapt_preview.group;
 
         self.post_targets.deinit();
 
@@ -2199,7 +2318,36 @@ pub const FractalRenderer = struct {
     }
 
     pub fn updateUniforms(self: *FractalRenderer, ctx: *const Context, uniforms: Uniforms) void {
-        self.writeUniformSlot(ctx, 0, uniforms);
+        var stamped = uniforms;
+        stamped.adapt_row_width = self.adapt_preview.rowWidth(self.offscreen_width, self.offscreen_height);
+        self.writeUniformSlot(ctx, 0, stamped);
+    }
+
+    pub fn stampApproxUniforms(self: *const FractalRenderer, uniforms: *Uniforms) void {
+        const a = self.approx_settings;
+        uniforms.approx_flags = @floatFromInt(a.mask());
+        uniforms.approx_caustic_strength = a.caustic_strength;
+        uniforms.approx_caustic_scale = a.caustic_scale;
+        uniforms.approx_bounce = a.bounce_strength;
+        uniforms.approx_tint = a.tint_density;
+        uniforms.approx_lod_start = a.lod_start;
+        uniforms.approx_lod_strength = a.lod_strength;
+    }
+
+    pub fn photonsReplaced(self: *const FractalRenderer) bool {
+        return self.approx_settings.replacesPhotons();
+    }
+
+    pub fn shaftEffect(self: *FractalRenderer, ctx: *const Context, allocator: std.mem.Allocator, params: [8]f32) ?post_process.Effect {
+        if (self.shaft_pipeline == null and !self.shaft_failed) {
+            self.shaft_pipeline = self.post.compile(ctx, allocator, light_shafts_source) catch |err| blk: {
+                std.debug.print("[shafts] light shaft effect failed to compile ({s}): {s}\n", .{ @errorName(err), g_error_sink.message() });
+                self.shaft_failed = true;
+                break :blk null;
+            };
+        }
+        if (self.shaft_pipeline == null) return null;
+        return .{ .pipeline = self.shaft_pipeline, .params0 = params[0..4].*, .params1 = params[4..8].* };
     }
 
     fn writeUniformSlot(self: *FractalRenderer, ctx: *const Context, slot: u32, uniforms: Uniforms) void {
@@ -2626,17 +2774,20 @@ pub const FractalRenderer = struct {
         const pixels = try allocator.alloc(u8, @as(usize, width) * height * bytes_per_pixel);
         errdefer allocator.free(pixels);
 
+        var first = samples.at(0).*;
+        self.stampApproxUniforms(&first);
+
         self.accel.invalidate();
         if (self.accel_enabled and !samples.is2d() and samples.allMatch(self.photon_settings, accelSceneHash)) {
-            self.buildAccel(ctx, samples.at(0).*) catch |err| {
+            self.buildAccel(ctx, first) catch |err| {
                 std.debug.print("[accel] export build failed ({s}); rendering without it\n", .{@errorName(err)});
                 self.accel.invalidate();
             };
         }
 
         self.photon_map.invalidate();
-        if (self.photon_settings.enabled and !samples.is2d() and samples.allMatch(self.photon_settings, photonSceneHash)) {
-            self.tracePhotons(ctx, samples.at(0).*, 1.0, self.photon_settings.baseRadius()) catch |err| {
+        if (self.photon_settings.enabled and !self.photonsReplaced() and !samples.is2d() and samples.allMatch(self.photon_settings, photonSceneHash)) {
+            self.tracePhotons(ctx, first, 1.0, self.photon_settings.baseRadius()) catch |err| {
                 std.debug.print("[photons] export trace failed ({s}); rendering without caustics\n", .{@errorName(err)});
                 self.photon_map.invalidate();
             };
@@ -2729,6 +2880,14 @@ pub const FractalRenderer = struct {
         }) orelse return error.BindGroupCreationFailed;
         defer wgpu.wgpuBindGroupRelease(resolve_bind_group);
 
+        var tile_adapt = createAdaptTarget(ctx, self.adapt_layout, tile_w, tile_h);
+        defer tile_adapt.release();
+        if (tile_adapt.group == null) return error.BufferCreationFailed;
+        const tile_adapt_width = tile_adapt.rowWidth(tile_w, tile_h);
+        const preview_adapt_group = self.active_adapt_group;
+        self.active_adapt_group = tile_adapt.group;
+        defer self.active_adapt_group = preview_adapt_group;
+
         const tile_start_ms = nowMs();
         const tile = tileTransform(full_width, full_height, tile_x, tile_y, tile_w, tile_h);
         const is_2d = samples.is2d();
@@ -2750,9 +2909,11 @@ pub const FractalRenderer = struct {
             uniforms.tile_scale = tile.scale;
             uniforms.tile_bias = tile.bias;
             uniforms.mc_sample = @floatFromInt(s);
+            uniforms.adapt_row_width = tile_adapt_width;
             self.stampAccelUniforms(&uniforms);
             self.stampPhotonUniforms(&uniforms);
             self.stampSkyUniforms(&uniforms);
+            self.stampApproxUniforms(&uniforms);
             self.writeUniformSlot(ctx, slot, uniforms);
 
             const blend_constant: f32 = 1.0 / @as(f32, @floatFromInt(s + 1));
@@ -2988,6 +3149,7 @@ pub const FractalRenderer = struct {
             self.stampAccelUniforms(&uniforms);
             self.stampPhotonUniforms(&uniforms);
             self.stampSkyUniforms(&uniforms);
+            self.stampApproxUniforms(&uniforms);
             const slot = k % uniform_ring_slots;
             self.writeUniformSlot(ctx, slot, uniforms);
             const blend: f64 = 1.0 / @as(f64, @floatFromInt(k + 1));
@@ -3285,6 +3447,7 @@ pub const FractalRenderer = struct {
         wgpu.wgpuRenderPassEncoderSetBindGroup(pass, 2, self.photon_map.render_bind_group, 0, null);
         wgpu.wgpuRenderPassEncoderSetBindGroup(pass, 3, self.sky.bind_group, 0, null);
         wgpu.wgpuRenderPassEncoderSetBindGroup(pass, 4, self.fft.render_bind_group, 0, null);
+        wgpu.wgpuRenderPassEncoderSetBindGroup(pass, 5, self.active_adapt_group, 0, null);
     }
 
     pub fn renderSelectMask(self: *FractalRenderer, encoder: wgpu.WGPUCommandEncoder) bool {

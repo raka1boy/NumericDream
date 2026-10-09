@@ -3,6 +3,8 @@
 // @param Vignette min=0.0 max=1.5 default=0.5
 // @param Vignette radius min=0.2 max=1.2 default=0.75
 
+const VIGNETTE_INNER_RATIO = 0.35;
+
 fn effect(uv: vec2f, color: vec4f, p: array<f32, 8>) -> vec4f {
     var c = color.rgb * p[0];
 
@@ -10,7 +12,7 @@ fn effect(uv: vec2f, color: vec4f, p: array<f32, 8>) -> vec4f {
     c = mix(vec3f(grey), c, p[1]);
 
     let centred = (uv - vec2f(0.5)) * vec2f(max(pp.aspect, 1.0), 1.0);
-    let falloff = smoothstep(p[3], p[3] * 0.35, length(centred));
+    let falloff = smoothstep(p[3], p[3] * VIGNETTE_INNER_RATIO, length(centred));
     c *= mix(1.0, falloff, p[2]);
 
     return vec4f(c, color.a);

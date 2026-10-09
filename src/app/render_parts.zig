@@ -1,4 +1,5 @@
 const std = @import("std");
+const Approximations = @import("approximations.zig").Approximations;
 
 pub const Part = enum(u5) {
     color_strips,
@@ -82,6 +83,7 @@ pub const RenderParts = struct {
     window_open: bool = false,
     geometry_only: bool = true,
     on: [Part.count]bool = @splat(true),
+    approx: Approximations = .{},
 
     pub fn geometryOnly(self: RenderParts) bool {
         return self.enabled and self.geometry_only;

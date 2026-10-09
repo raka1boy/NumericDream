@@ -31,6 +31,9 @@ pub const AccelState = struct {
 pub fn sceneHash(uniforms: anytype) u64 {
     var h = std.hash.Wyhash.init(geometryHash(uniforms));
     hashLitParticles(&h, uniforms);
+    h.update(std.mem.asBytes(&uniforms.approx_flags));
+    h.update(std.mem.asBytes(&uniforms.approx_lod_start));
+    h.update(std.mem.asBytes(&uniforms.approx_lod_strength));
     return h.final();
 }
 

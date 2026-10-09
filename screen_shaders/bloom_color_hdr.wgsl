@@ -4,6 +4,9 @@
 // @param Taps min=8 max=48 default=24 int
 
 const GOLDEN_ANGLE = 2.39996323;
+const BLOOM_MIN_TAPS = 4.0;
+const BLOOM_MAX_TAPS = 48.0;
+const BLOOM_MIN_WEIGHT = 1e-4;
 
 fn bright_pass(c: vec3f, threshold: f32) -> vec3f {
     return max(c - vec3f(threshold), vec3f(0.0));
@@ -11,7 +14,7 @@ fn bright_pass(c: vec3f, threshold: f32) -> vec3f {
 
 fn effect(uv: vec2f, color: vec4f, p: array<f32, 8>) -> vec4f {
     let texel = texel_size();
-    let taps = i32(clamp(p[3], 4.0, 48.0));
+    let taps = i32(clamp(p[3], BLOOM_MIN_TAPS, BLOOM_MAX_TAPS));
 
     var glow = vec3f(0.0);
     var weight_sum = 0.0;
@@ -24,7 +27,7 @@ fn effect(uv: vec2f, color: vec4f, p: array<f32, 8>) -> vec4f {
         glow += bright_pass(scene_color(uv + offset), p[0]) * w;
         weight_sum += w;
     }
-    glow /= max(weight_sum, 1e-4);
+    glow /= max(weight_sum, BLOOM_MIN_WEIGHT);
 
     return vec4f(color.rgb + glow * p[1], color.a);
 }

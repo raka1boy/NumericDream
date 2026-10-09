@@ -32,8 +32,20 @@ struct MeshVertOut {
 @group(1) @binding(22) var<storage, read_write> probe_values: array<vec4f>;
 
 const MESH_BLOCK: u32 = 8u;
+const MESH_PROBE_TAPS = 5;
+const TETRA_GRAD_DIVISOR = 4.0;
+const MESH_MIN_GRADIENT = 1e-8;
+const MESH_MIN_DETERMINANT = 1e-20;
+const MESH_MIN_SHARPNESS = 0.001;
+const CUBE_EDGES = 12u;
+const EDGES_PER_AXIS = 4u;
+const MESH_FIELD_PROBE_CELLS = 0.25;
+const MESH_FINAL_NORMAL_PROBE_CELLS = 0.5;
+const MESH_SHARPNESS_FALLOFF = 10.0;
+const MESH_PROJECTION_ITERS = 3;
+const MESH_DEFAULT_GREY = vec3f(0.8);
 
-@compute @workgroup_size(64)
+@compute @workgroup_size(LINEAR_WORKGROUP_SIZE)
 fn cs_mesh_points(@builtin(global_invocation_id) gid: vec3u) {
     let per_item = mp.span * mp.span * mp.span;
     let t = gid.x;
@@ -48,7 +60,7 @@ fn cs_mesh_points(@builtin(global_invocation_id) gid: vec3u) {
     mesh_values[t] = scene_de(p) - mp.iso;
 }
 
-@compute @workgroup_size(64)
+@compute @workgroup_size(LINEAR_WORKGROUP_SIZE)
 fn cs_mesh_probe(@builtin(global_invocation_id) gid: vec3u) {
     if (gid.x >= mp.count) {
         return;
@@ -58,7 +70,7 @@ fn cs_mesh_probe(@builtin(global_invocation_id) gid: vec3u) {
     let q = vec4f(raw.xyz, abs(raw.w));
     var g = vec3f(0.0);
     var centre = 0.0;
-    for (var i = 0; i < 5; i++) {
+    for (var i = 0; i < MESH_PROBE_TAPS; i++) {
         var k = vec3f(0.0);
         if (i == 1) {
             k = vec3f(1.0, -1.0, -1.0);
@@ -76,7 +88,7 @@ fn cs_mesh_probe(@builtin(global_invocation_id) gid: vec3u) {
             g += k * d;
         }
     }
-    probe_values[gid.x] = vec4f(centre, g / (4.0 * q.w));
+    probe_values[gid.x] = vec4f(centre, g / (TETRA_GRAD_DIVISOR * q.w));
 }
 
 fn mesh_field(p: vec3f, h: f32) -> vec4f {
@@ -84,7 +96,7 @@ fn mesh_field(p: vec3f, h: f32) -> vec4f {
     let b = scene_de(p + vec3f(-1.0, -1.0, 1.0) * h) - mp.iso;
     let c = scene_de(p + vec3f(-1.0, 1.0, -1.0) * h) - mp.iso;
     let d = scene_de(p + vec3f(1.0, 1.0, 1.0) * h) - mp.iso;
-    let g = (vec3f(1.0, -1.0, -1.0) * a + vec3f(-1.0, -1.0, 1.0) * b + vec3f(-1.0, 1.0, -1.0) * c + vec3f(1.0, 1.0, 1.0) * d) / (4.0 * h);
+    let g = (vec3f(1.0, -1.0, -1.0) * a + vec3f(-1.0, -1.0, 1.0) * b + vec3f(-1.0, 1.0, -1.0) * c + vec3f(1.0, 1.0, 1.0) * d) / (TETRA_GRAD_DIVISOR * h);
     return vec4f(g, 0.25 * (a + b + c + d));
 }
 
@@ -97,16 +109,16 @@ fn trilinear_grad(c: array<f32, 8>, f: vec3f) -> vec3f {
 
 fn mesh_normal(g: vec3f, fallback: vec3f) -> vec3f {
     let l = length(g);
-    if (l > 1e-8 && l == l) {
+    if (l > MESH_MIN_GRADIENT && l == l) {
         return g / l;
     }
     let lf = length(fallback);
-    return select(vec3f(0.0, 1.0, 0.0), fallback / lf, lf > 1e-12);
+    return select(vec3f(0.0, 1.0, 0.0), fallback / lf, lf > EPSILON_TINY);
 }
 
 fn solve_sym3(a: mat3x3f, b: vec3f) -> vec3f {
     let det = determinant(a);
-    if (abs(det) < 1e-20) {
+    if (abs(det) < MESH_MIN_DETERMINANT) {
         return vec3f(0.0);
     }
     let c0 = cross(a[1], a[2]);
@@ -115,7 +127,7 @@ fn solve_sym3(a: mat3x3f, b: vec3f) -> vec3f {
     return vec3f(dot(c0, b), dot(c1, b), dot(c2, b)) / det;
 }
 
-@compute @workgroup_size(64)
+@compute @workgroup_size(LINEAR_WORKGROUP_SIZE)
 fn cs_mesh_verts(@builtin(global_invocation_id) gid: vec3u) {
     let t = gid.x;
     if (t >= mp.count) {
@@ -130,11 +142,11 @@ fn cs_mesh_verts(@builtin(global_invocation_id) gid: vec3u) {
     var n_cross = 0.0;
     var ata = mat3x3f(vec3f(0.0), vec3f(0.0), vec3f(0.0));
     var atb = vec3f(0.0);
-    let use_qef = mp.sharp > 0.001;
+    let use_qef = mp.sharp > MESH_MIN_SHARPNESS;
 
-    for (var e = 0u; e < 12u; e++) {
-        let axis = e / 4u;
-        let k = e % 4u;
+    for (var e = 0u; e < CUBE_EDGES; e++) {
+        let axis = e / EDGES_PER_AXIS;
+        let k = e % EDGES_PER_AXIS;
         var i0: u32;
         if (axis == 0u) {
             i0 = ((k & 1u) << 1u) | ((k >> 1u) << 2u);
@@ -157,7 +169,7 @@ fn cs_mesh_verts(@builtin(global_invocation_id) gid: vec3u) {
         mass += p;
         n_cross += 1.0;
         if (use_qef) {
-            let n = mesh_normal(mesh_field(p, 0.25 * h).xyz, trilinear_grad(c, f));
+            let n = mesh_normal(mesh_field(p, MESH_FIELD_PROBE_CELLS * h).xyz, trilinear_grad(c, f));
             ata += mat3x3f(n * n.x, n * n.y, n * n.z);
             atb += n * dot(n, p);
         }
@@ -166,7 +178,7 @@ fn cs_mesh_verts(@builtin(global_invocation_id) gid: vec3u) {
 
     var x = mass;
     if (use_qef && n_cross > 0.0) {
-        let lambda = n_cross * exp2(-10.0 * mp.sharp);
+        let lambda = n_cross * exp2(-MESH_SHARPNESS_FALLOFF * mp.sharp);
         let a = ata + mat3x3f(vec3f(lambda, 0.0, 0.0), vec3f(0.0, lambda, 0.0), vec3f(0.0, 0.0, lambda));
         x = mass + solve_sym3(a, atb - ata * mass);
     }
@@ -174,17 +186,17 @@ fn cs_mesh_verts(@builtin(global_invocation_id) gid: vec3u) {
     let hi = o + vec3f(h);
     x = clamp(x, lo, hi);
 
-    for (var it = 0; it < 3; it++) {
-        let fg = mesh_field(x, 0.25 * h);
+    for (var it = 0; it < MESH_PROJECTION_ITERS; it++) {
+        let fg = mesh_field(x, MESH_FIELD_PROBE_CELLS * h);
         let g2 = dot(fg.xyz, fg.xyz);
-        if (g2 < 1e-12 || g2 != g2) {
+        if (g2 < EPSILON_TINY || g2 != g2) {
             break;
         }
         x = clamp(x - fg.w * fg.xyz / g2, lo, hi);
     }
 
-    let n = mesh_normal(mesh_field(x, 0.5 * h).xyz, trilinear_grad(c, clamp((x - o) / h, vec3f(0.0), vec3f(1.0))));
-    var col = vec3f(0.8);
+    let n = mesh_normal(mesh_field(x, MESH_FINAL_NORMAL_PROBE_CELLS * h).xyz, trilinear_grad(c, clamp((x - o) / h, vec3f(0.0), vec3f(1.0))));
+    var col = MESH_DEFAULT_GREY;
     if (mp.color_on > 0.5) {
         col = clamp(hit_material(x).mat.color, vec3f(0.0), vec3f(1.0));
     }

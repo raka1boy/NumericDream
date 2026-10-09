@@ -10,6 +10,9 @@ struct GizmoUniforms {
 }
 
 @group(0) @binding(0) var<uniform> gu: GizmoUniforms;
+const GIZMO_SLICE_DEPTH = 0.5;
+const GIZMO_DEPTH_SCALE = 0.5;
+
 
 struct VertexIn {
     @location(0) position: vec3f,
@@ -31,12 +34,12 @@ fn vs_main(in: VertexIn) -> VertexOut {
     var out: VertexOut;
 
     if (gu.slice_zoom > 0.0) {
-        out.clip_pos = vec4f(right_amt / (gu.aspect * gu.slice_zoom), -up_amt / gu.slice_zoom, 0.5, 1.0);
+        out.clip_pos = vec4f(right_amt / (gu.aspect * gu.slice_zoom), -up_amt / gu.slice_zoom, GIZMO_SLICE_DEPTH, 1.0);
         out.color = in.color;
         return out;
     }
 
-    out.clip_pos = vec4f(right_amt / gu.aspect, -up_amt, 0.5 * forward_amt, forward_amt);
+    out.clip_pos = vec4f(right_amt / gu.aspect, -up_amt, GIZMO_DEPTH_SCALE * forward_amt, forward_amt);
     out.color = in.color;
     return out;
 }

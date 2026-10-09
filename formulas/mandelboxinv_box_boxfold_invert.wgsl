@@ -17,7 +17,7 @@ fn de_step(carry: IterCarry, pos: vec3f, p: array<f32, 8>) -> IterCarry {
 
     var z = carry.z;
     var dr = carry.dr;
-    let r2in = max(dot(z, z), 1e-6);
+    let r2in = max(dot(z, z), EPSILON_FINE);
     let tin = inv_radius2 / r2in;
     z *= tin;
     dr *= tin;

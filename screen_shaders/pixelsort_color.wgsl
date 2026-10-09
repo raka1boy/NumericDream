@@ -10,6 +10,21 @@
 const PS_KEY_BITS = 12;
 const PS_KEY_LEVELS = 4096;
 const PS_MAX_SPAN = 512;
+const PS_EPS = 1e-5;
+const PS_KEY_BRIGHTNESS = 1;
+const PS_KEY_SATURATION = 2;
+const PS_KEY_HUE = 3;
+const PS_DIR_VERTICAL_DESC = 1;
+const PS_DIR_HORIZONTAL = 2;
+const PS_DIR_HORIZONTAL_DESC = 3;
+const PS_MIN_SPAN = 2;
+const PS_ROW_SEED_RATE = 0.137;
+const PS_ROW_SEED_OFFSET = 11.3;
+const PS_DIR_SEED_RATE = 3.1;
+const PS_CHUNK_SEED_RATE = 0.0173;
+const PS_CHUNK_SEED_OFFSET = 7.7;
+const PS_SKIP_ROW_SEED_RATE = 0.311;
+const PS_SKIP_SLOT_SEED_RATE = 5.0;
 
 fn ps_dims() -> vec2i {
     return vec2i(textureDimensions(scene_tex));
@@ -32,7 +47,7 @@ fn ps_hue(c: vec3f) -> f32 {
     let mx = max(c.r, max(c.g, c.b));
     let mn = min(c.r, min(c.g, c.b));
     let d = mx - mn;
-    if (d < 1e-5) { return 0.0; }
+    if (d < PS_EPS) { return 0.0; }
     var h = 0.0;
     if (mx == c.r) {
         h = (c.g - c.b) / d;
@@ -46,15 +61,15 @@ fn ps_hue(c: vec3f) -> f32 {
 
 fn ps_key(rgb: vec3f, mode: i32) -> f32 {
     let t = ps_tonal(rgb);
-    if (mode == 1) {
+    if (mode == PS_KEY_BRIGHTNESS) {
         return max(t.r, max(t.g, t.b));
     }
-    if (mode == 2) {
+    if (mode == PS_KEY_SATURATION) {
         let mx = max(t.r, max(t.g, t.b));
         let mn = min(t.r, min(t.g, t.b));
-        return select(0.0, (mx - mn) / mx, mx > 1e-5);
+        return select(0.0, (mx - mn) / mx, mx > PS_EPS);
     }
-    if (mode == 3) {
+    if (mode == PS_KEY_HUE) {
         return ps_hue(t);
     }
     return luminance(t);
@@ -80,13 +95,13 @@ fn effect(uv: vec2f, color: vec4f, p: array<f32, 8>) -> vec4f {
     let amount = clamp(p[7], 0.0, 1.0);
     if (amount <= 0.0) { return color; }
 
-    let dir = i32(clamp(p[0], 0.0, 3.0));
-    let vertical = dir < 2;
-    let descending = (dir == 1) || (dir == 3);
+    let dir = i32(clamp(p[0], 0.0, f32(PS_DIR_HORIZONTAL_DESC)));
+    let vertical = dir < PS_DIR_HORIZONTAL;
+    let descending = (dir == PS_DIR_VERTICAL_DESC) || (dir == PS_DIR_HORIZONTAL_DESC);
     let lo_t = min(p[1], p[2]);
     let hi_t = max(p[1], p[2]);
-    let max_len = clamp(i32(p[3]), 2, PS_MAX_SPAN);
-    let mode = i32(clamp(p[4], 0.0, 3.0));
+    let max_len = clamp(i32(p[3]), PS_MIN_SPAN, PS_MAX_SPAN);
+    let mode = i32(clamp(p[4], 0.0, f32(PS_KEY_HUE)));
 
     let dims = ps_dims();
     let pix = vec2i(clamp(floor(clamp_uv(uv) * vec2f(dims)), vec2f(0.0), vec2f(dims) - vec2f(1.0)));
@@ -100,13 +115,13 @@ fn effect(uv: vec2f, color: vec4f, p: array<f32, 8>) -> vec4f {
     let row = select(pix.y, pix.x, vertical);
 
     let jitter = clamp(p[5], 0.0, 1.0);
-    let off = i32(hash12(vec2f(f32(row) * 0.137 + 11.3, f32(dir) * 3.1 + pp.slot)) * jitter * f32(max_len));
+    let off = i32(hash12(vec2f(f32(row) * PS_ROW_SEED_RATE + PS_ROW_SEED_OFFSET, f32(dir) * PS_DIR_SEED_RATE + pp.slot)) * jitter * f32(max_len));
     let chunk = ((here + off) / max_len) * max_len - off;
     let win_start = max(chunk, 0);
     let win_end = min(chunk + max_len, extent);
 
     let skip = clamp(p[6], 0.0, 1.0);
-    if (skip > 0.0 && hash12(vec2f(f32(chunk) * 0.0173 + 7.7, f32(row) * 0.311 + pp.slot * 5.0)) < skip) {
+    if (skip > 0.0 && hash12(vec2f(f32(chunk) * PS_CHUNK_SEED_RATE + PS_CHUNK_SEED_OFFSET, f32(row) * PS_SKIP_ROW_SEED_RATE + pp.slot * PS_SKIP_SLOT_SEED_RATE)) < skip) {
         return color;
     }
 
@@ -125,7 +140,7 @@ fn effect(uv: vec2f, color: vec4f, p: array<f32, 8>) -> vec4f {
         last += 1;
     }
     let n = last - start + 1;
-    if (n < 2) { return color; }
+    if (n < PS_MIN_SPAN) { return color; }
 
     let local = here - start;
     let rank = select(local, n - 1 - local, descending);

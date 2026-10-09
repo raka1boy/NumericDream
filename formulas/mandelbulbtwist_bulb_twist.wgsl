@@ -9,7 +9,7 @@ fn de_step(carry: IterCarry, pos: vec3f, p: array<f32, 8>) -> IterCarry {
     let power = p[0];
     let angle = radians(p[2]);
     let r = length(carry.z);
-    if (r > 2.0) {
+    if (r > BULB_BAILOUT) {
         return carry;
     }
     let theta = acos(clamp(carry.z.z / r, -1.0, 1.0)) * power;

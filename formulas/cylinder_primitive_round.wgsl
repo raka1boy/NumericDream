@@ -11,5 +11,5 @@ fn de_finalize(carry: IterCarry) -> f32 {
     let e = vec2f(length(carry.z.xz) - 1.0, abs(carry.z.y) - 1.0);
     let outside = length(max(e, vec2f(0.0)));
     let inside = min(max(e.x, e.y), 0.0);
-    return (outside + inside) / max(abs(carry.dr), 1e-6);
+    return (outside + inside) / max(abs(carry.dr), EPSILON_FINE);
 }

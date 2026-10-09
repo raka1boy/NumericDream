@@ -17,8 +17,6 @@ pub const MarchPrecision = struct {
 };
 
 pub const RenderSettingsState = struct {
-    window_open: bool = false,
-
     max_steps: f32 = 256,
     max_steps_range: SliderRange = .{ .min = 32, .max = 1024 },
 

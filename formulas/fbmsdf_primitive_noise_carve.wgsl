@@ -8,20 +8,38 @@
 // @param Lacunarity min=1.5 max=3 default=2
 // @param Simplex min=0 max=1 default=0 int
 // @param Seed min=0 max=20 default=0
+const FBMSDF_HASH_GAIN = 17.0;
+const FBMSDF_HASH_SCALE = 0.3183099;
+const FBMSDF_HASH_OFFSET = vec3f(0.11, 0.17, 0.13);
+const FBMSDF_FAR = 1e10;
+const FBMSDF_CORNERS = 8u;
+const FBMSDF_SIMPLEX_SKEW = 0.333333333;
+const FBMSDF_SIMPLEX_UNSKEW = 0.166666667;
+const FBMSDF_SIMPLEX_RADIUS = 0.55;
+const FBMSDF_LATTICE_RADIUS = 0.7;
+const FBMSDF_MIN_MAGNITUDE = 1e-30;
+const FBMSDF_LEVEL_MASK = 31u;
+const FBMSDF_LATTICE_OFFSET = 0.5;
+const FBMSDF_ROT_COS = 0.80;
+const FBMSDF_ROT_SIN = 0.60;
+const FBMSDF_ROT_SIN_SQ = 0.36;
+const FBMSDF_ROT_SIN_COS = 0.48;
+const FBMSDF_ROT_COS_SQ = 0.64;
+
 fn de_iterations(p: array<f32, 8>) -> i32 {
     return i32(p[0]);
 }
 
 fn fbmsdf_hash(c: vec3f) -> f32 {
-    let q = 17.0 * fract(c * 0.3183099 + vec3f(0.11, 0.17, 0.13));
+    let q = FBMSDF_HASH_GAIN * fract(c * FBMSDF_HASH_SCALE + FBMSDF_HASH_OFFSET);
     return fract(q.x * q.y * q.z * (q.x + q.y + q.z));
 }
 
 fn fbmsdf_lattice(p: vec3f, radius: f32) -> f32 {
     let i = floor(p);
     let f = p - i;
-    var d = 1e10;
-    for (var k = 0u; k < 8u; k++) {
+    var d = FBMSDF_FAR;
+    for (var k = 0u; k < FBMSDF_CORNERS; k++) {
         let c = vec3f(f32(k & 1u), f32((k >> 1u) & 1u), f32((k >> 2u) & 1u));
         let r = fbmsdf_hash(i + c);
         d = min(d, length(f - c) - r * r * radius);
@@ -30,8 +48,8 @@ fn fbmsdf_lattice(p: vec3f, radius: f32) -> f32 {
 }
 
 fn fbmsdf_simplex(p: vec3f, radius: f32) -> f32 {
-    let k1 = 0.333333333;
-    let k2 = 0.166666667;
+    let k1 = FBMSDF_SIMPLEX_SKEW;
+    let k2 = FBMSDF_SIMPLEX_UNSKEW;
     let i = floor(p + (p.x + p.y + p.z) * k1);
     let d0 = p - (i - (i.x + i.y + i.z) * k2);
     let e = step(d0.yzx, d0);
@@ -44,24 +62,24 @@ fn fbmsdf_simplex(p: vec3f, radius: f32) -> f32 {
     let r1 = fbmsdf_hash(i + i1);
     let r2 = fbmsdf_hash(i + i2);
     let r3 = fbmsdf_hash(i + 1.0);
-    let rs = radius * (0.55 / 0.7);
+    let rs = radius * (FBMSDF_SIMPLEX_RADIUS / FBMSDF_LATTICE_RADIUS);
     return min(min(length(d0) - r0 * r0 * rs, length(d1) - r1 * r1 * rs),
                min(length(d2) - r2 * r2 * rs, length(d3) - r3 * r3 * rs));
 }
 
 fn fbmsdf_pack(m: f32, level: u32) -> f32 {
-    let safe = select(m, 1e-30, abs(m) < 1e-30);
-    return bitcast<f32>((bitcast<u32>(safe) & ~31u) | level);
+    let safe = select(m, FBMSDF_MIN_MAGNITUDE, abs(m) < FBMSDF_MIN_MAGNITUDE);
+    return bitcast<f32>((bitcast<u32>(safe) & ~FBMSDF_LEVEL_MASK) | level);
 }
 
 fn de_step(carry: IterCarry, pos: vec3f, p: array<f32, 8>) -> IterCarry {
-    let level = bitcast<u32>(carry.dr) & 31u;
+    let level = bitcast<u32>(carry.dr) & FBMSDF_LEVEL_MASK;
     var z = carry.z;
     var d = carry.dr;
     if (level == 0u) {
         let q = abs(z) - vec3f(p[1]);
         d = min(max(q.x, max(q.y, q.z)), 0.0) + length(max(q, vec3f(0.0)));
-        z = z + vec3f(0.5 + p[7]);
+        z = z + vec3f(FBMSDF_LATTICE_OFFSET + p[7]);
     }
 
     let s = pow(p[4], f32(level));
@@ -72,16 +90,16 @@ fn de_step(carry: IterCarry, pos: vec3f, p: array<f32, 8>) -> IterCarry {
         base = fbmsdf_lattice(z, p[2]);
     }
     let n = s * base;
-    let k = max(p[3] * s, 1e-6);
+    let k = max(p[3] * s, EPSILON_FINE);
     let h = max(k - abs(d + n), 0.0);
     d = max(d, -n) + h * h * 0.25 / k;
 
     z = p[5] * vec3f(
-        -0.80 * z.y - 0.60 * z.z,
-        0.80 * z.x + 0.36 * z.y - 0.48 * z.z,
-        0.60 * z.x - 0.48 * z.y + 0.64 * z.z,
+        -FBMSDF_ROT_COS * z.y - FBMSDF_ROT_SIN * z.z,
+        FBMSDF_ROT_COS * z.x + FBMSDF_ROT_SIN_SQ * z.y - FBMSDF_ROT_SIN_COS * z.z,
+        FBMSDF_ROT_SIN * z.x - FBMSDF_ROT_SIN_COS * z.y + FBMSDF_ROT_COS_SQ * z.z,
     );
-    return IterCarry(z, fbmsdf_pack(d, min(level + 1u, 31u)));
+    return IterCarry(z, fbmsdf_pack(d, min(level + 1u, FBMSDF_LEVEL_MASK)));
 }
 
 fn de_finalize(carry: IterCarry) -> f32 {

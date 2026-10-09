@@ -40,6 +40,7 @@ const ColorStopState = scene_state.ColorStopState;
 const CombineMode = scene_state.CombineMode;
 const StereoState = @import("stereo.zig").StereoState;
 const McRenderState = @import("mc_render.zig").McRenderState;
+const Approximations = @import("approximations.zig").Approximations;
 const PhotonSettings = @import("photon_state.zig").PhotonSettings;
 const render_precision = @import("render_precision.zig");
 const MarchPrecision = render_precision.MarchPrecision;
@@ -212,6 +213,7 @@ const SceneFile = struct {
     sky: SkyDto = .{},
     stereo: StereoState = .{},
     mc: McRenderState = .{},
+    approximations: Approximations = .{},
     keyframes: []const Keyframe = &.{},
     timeline_duration: f32 = 10.0,
 };
@@ -221,7 +223,7 @@ fn pathSlice(formula: *const FormulaState) []const u8 {
     return formula.formula_path[0..n];
 }
 
-fn paramToDto(p: CustomParam) ParamDto {
+fn paramToDto(p: *const CustomParam) ParamDto {
     return .{ .name = p.label(), .value = p.value, .range = p.range };
 }
 const InstanceScratch = struct {
@@ -232,10 +234,10 @@ const InstanceScratch = struct {
 };
 
 fn instanceToDto(inst: *const FractalInstanceState, scratch: *InstanceScratch) InstanceDto {
-    for (0..inst.formula.custom_param_count) |i| scratch.params[i] = paramToDto(inst.formula.custom_params[i]);
+    for (0..inst.formula.custom_param_count) |i| scratch.params[i] = paramToDto(&inst.formula.custom_params[i]);
     for (0..inst.mixin_count) |j| {
         const m = &inst.mixins[j];
-        for (0..m.formula.custom_param_count) |i| scratch.mixin_params[j][i] = paramToDto(m.formula.custom_params[i]);
+        for (0..m.formula.custom_param_count) |i| scratch.mixin_params[j][i] = paramToDto(&m.formula.custom_params[i]);
         scratch.mixins[j] = .{
             .formula = .{ .path = pathSlice(&m.formula), .params = scratch.mixin_params[j][0..m.formula.custom_param_count] },
             .iterations = m.iterations,
@@ -312,6 +314,7 @@ pub fn saveScene(
     sky: *const SkyState,
     stereo: StereoState,
     mc: McRenderState,
+    approx: Approximations,
     timeline: TimelineState,
     status_buf: []u8,
 ) [:0]const u8 {
@@ -329,7 +332,7 @@ pub fn saveScene(
     var screen_params: [max_screen_shaders][max_params]ParamDto = undefined;
     var screen_dtos: [max_screen_shaders]ScreenShaderDto = undefined;
     for (screen_shaders, 0..) |*s, i| {
-        for (0..s.param_count) |p| screen_params[i][p] = paramToDto(s.params[p]);
+        for (0..s.param_count) |p| screen_params[i][p] = paramToDto(&s.params[p]);
         screen_dtos[i] = .{
             .path = s.pathSlice(),
             .params = screen_params[i][0..s.param_count],
@@ -362,6 +365,7 @@ pub fn saveScene(
         .sky = skyToDto(sky),
         .stereo = stereo,
         .mc = mc,
+        .approximations = approx,
         .keyframes = timeline.keyframes[0..timeline.keyframe_count],
         .timeline_duration = timeline.duration,
     };
@@ -437,6 +441,7 @@ pub fn loadScene(
     sky: *SkyState,
     stereo: *StereoState,
     mc: *McRenderState,
+    approx: *Approximations,
     timeline: *TimelineState,
     status_buf: []u8,
 ) [:0]const u8 {
@@ -594,6 +599,7 @@ pub fn loadScene(
     stereo.settings_open = false;
 
     mc.* = scene.mc;
+    approx.* = scene.approximations;
 
     timeline.keyframe_count = @min(scene.keyframes.len, animation.max_keyframes);
     for (0..timeline.keyframe_count) |i| timeline.keyframes[i] = scene.keyframes[i];
@@ -615,7 +621,6 @@ pub fn loadScene(
     photon.* = scene.photon;
     precision.* = scene.precision;
     render_settings.* = scene.render_settings;
-    render_settings.window_open = false;
     export_width.* = scene.export_width;
     export_height.* = scene.export_height;
 

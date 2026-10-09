@@ -13,7 +13,7 @@ const FreeCamera = @import("../app/camera.zig").FreeCamera;
 const animation = @import("../app/animation.zig");
 const TimelineState = animation.TimelineState;
 
-const panel_h: f32 = 116;
+pub const panel_h: f32 = 116;
 const controls_h: f32 = 24;
 const ruler_h: f32 = 18;
 const track_h: f32 = 40;

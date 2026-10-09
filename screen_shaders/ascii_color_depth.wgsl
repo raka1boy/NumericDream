@@ -9,9 +9,33 @@
 
 const ASCII_RAMP_LEN = 13u;
 const ASCII_PI = 3.14159265359;
+const ASCII_GLYPH_COUNT = 17;
+const ASCII_LAST_GLYPH = 16u;
+const ASCII_GLYPH_COLS = 5u;
+const ASCII_GLYPH_LAST_COL = 4u;
+const ASCII_GLYPH_LAST_ROW = 6u;
+const ASCII_ROWS_PER_WORD = 4u;
+const ASCII_MIN_CELL_PX = 6.0;
+const ASCII_CELL_ASPECT = 0.75;
+const ASCII_MIN_CELL_WIDTH_PX = 4.0;
+const ASCII_SUBSAMPLES = 4;
+const ASCII_SUBSAMPLE_STEP = 0.25;
+const ASCII_SUBSAMPLE_HALF = 2;
+const ASCII_SAMPLE_COUNT = 16.0;
+const ASCII_HALF_SAMPLE_COUNT = 8.0;
+const ASCII_MIN_DEPTH = 1e-4;
+const ASCII_DEPTH_EDGE_WEIGHT = 0.5;
+const ASCII_EDGE_THRESHOLD_BASE = 1.05;
+const ASCII_EDGE_BINS = 4u;
+const ASCII_EDGE_BIN_FRACTION = 0.25;
+const ASCII_EDGE_GLYPHS = vec4u(13u, 15u, 14u, 16u);
+const ASCII_GLYPH_GRID = vec2f(6.0, 8.0);
+const ASCII_GLYPH_GRID_MAX = vec2f(5.0, 7.0);
+const ASCII_MIN_PEAK = 1e-4;
+const ASCII_TINT_SATURATION = 0.75;
 
 fn ascii_glyph(index: u32) -> vec2u {
-    var glyphs = array<vec2u, 17>(
+    var glyphs = array<vec2u, ASCII_GLYPH_COUNT>(
         vec2u(0x00000u, 0x0000u),
         vec2u(0x00000u, 0x18c0u),
         vec2u(0x018c0u, 0x00c6u),
@@ -30,15 +54,15 @@ fn ascii_glyph(index: u32) -> vec2u {
         vec2u(0x22210u, 0x0422u),
         vec2u(0x20821u, 0x4208u),
     );
-    return glyphs[min(index, 16u)];
+    return glyphs[min(index, ASCII_LAST_GLYPH)];
 }
 
 fn ascii_ink(glyph: vec2u, col: u32, row: u32) -> bool {
-    if (col > 4u || row > 6u) {
+    if (col > ASCII_GLYPH_LAST_COL || row > ASCII_GLYPH_LAST_ROW) {
         return false;
     }
-    let bits = select(glyph.x, glyph.y, row >= 4u);
-    return ((bits >> ((row % 4u) * 5u + col)) & 1u) != 0u;
+    let bits = select(glyph.x, glyph.y, row >= ASCII_ROWS_PER_WORD);
+    return ((bits >> ((row % ASCII_ROWS_PER_WORD) * ASCII_GLYPH_COLS + col)) & 1u) != 0u;
 }
 
 fn ascii_tone(rgb: vec3f, exposure: f32) -> f32 {
@@ -52,8 +76,8 @@ fn ascii_hue(h: f32, s: f32) -> vec3f {
 }
 
 fn effect(uv: vec2f, color: vec4f, p: array<f32, 8>) -> vec4f {
-    let cell_h = max(round(p[0]), 6.0);
-    let cell = vec2f(max(round(cell_h * 0.75), 4.0), cell_h);
+    let cell_h = max(round(p[0]), ASCII_MIN_CELL_PX);
+    let cell = vec2f(max(round(cell_h * ASCII_CELL_ASPECT), ASCII_MIN_CELL_WIDTH_PX), cell_h);
     let px = uv * pp.resolution;
     let cell_id = floor(px / cell);
     let origin = cell_id * cell;
@@ -63,44 +87,44 @@ fn effect(uv: vec2f, color: vec4f, p: array<f32, 8>) -> vec4f {
     var tone = 0.0;
     var g_tone = vec2f(0.0);
     var g_depth = vec2f(0.0);
-    for (var j = 0; j < 4; j++) {
-        for (var i = 0; i < 4; i++) {
-            let suv = (origin + (vec2f(f32(i), f32(j)) + 0.5) * 0.25 * cell) / pp.resolution;
+    for (var j = 0; j < ASCII_SUBSAMPLES; j++) {
+        for (var i = 0; i < ASCII_SUBSAMPLES; i++) {
+            let suv = (origin + (vec2f(f32(i), f32(j)) + 0.5) * ASCII_SUBSAMPLE_STEP * cell) / pp.resolution;
             let d = scene_depth(suv);
             let c = select(vec3f(0.0), scene_color(suv), d > 0.0 || sky_ascii);
             let t = ascii_tone(c, p[1]);
-            let ld = log(max(select(pp.max_dist, d, d > 0.0), 1e-4));
-            let side = vec2f(select(-1.0, 1.0, i >= 2), select(-1.0, 1.0, j >= 2));
+            let ld = log(max(select(pp.max_dist, d, d > 0.0), ASCII_MIN_DEPTH));
+            let side = vec2f(select(-1.0, 1.0, i >= ASCII_SUBSAMPLE_HALF), select(-1.0, 1.0, j >= ASCII_SUBSAMPLE_HALF));
             avg += c;
             tone += t;
             g_tone += side * t;
             g_depth += side * ld;
         }
     }
-    avg *= 1.0 / 16.0;
-    tone *= 1.0 / 16.0;
-    g_tone *= 1.0 / 8.0;
-    g_depth *= 1.0 / 8.0;
+    avg *= 1.0 / ASCII_SAMPLE_COUNT;
+    tone *= 1.0 / ASCII_SAMPLE_COUNT;
+    g_tone *= 1.0 / ASCII_HALF_SAMPLE_COUNT;
+    g_depth *= 1.0 / ASCII_HALF_SAMPLE_COUNT;
 
     var glyph_index = u32(clamp(tone * f32(ASCII_RAMP_LEN), 0.0, f32(ASCII_RAMP_LEN - 1u)));
 
-    let depth_strength = length(g_depth) * 0.5;
+    let depth_strength = length(g_depth) * ASCII_DEPTH_EDGE_WEIGHT;
     let tone_strength = length(g_tone);
     let g = select(g_tone, g_depth, depth_strength > tone_strength);
-    if (p[3] > 0.0 && max(depth_strength, tone_strength) > 1.05 - p[3]) {
+    if (p[3] > 0.0 && max(depth_strength, tone_strength) > ASCII_EDGE_THRESHOLD_BASE - p[3]) {
         var a = atan2(g.y, g.x);
         if (a < 0.0) { a += ASCII_PI; }
-        let bin = u32(floor(a / (ASCII_PI * 0.25) + 0.5)) % 4u;
-        let edge_glyphs = vec4u(13u, 15u, 14u, 16u);
+        let bin = u32(floor(a / (ASCII_PI * ASCII_EDGE_BIN_FRACTION) + 0.5)) % ASCII_EDGE_BINS;
+        let edge_glyphs = ASCII_EDGE_GLYPHS;
         glyph_index = edge_glyphs[bin];
     }
 
-    let unit = vec2u(clamp(floor((px - origin) / cell * vec2f(6.0, 8.0)), vec2f(0.0), vec2f(5.0, 7.0)));
+    let unit = vec2u(clamp(floor((px - origin) / cell * ASCII_GLYPH_GRID), vec2f(0.0), ASCII_GLYPH_GRID_MAX));
     let on = ascii_ink(ascii_glyph(glyph_index), unit.x, unit.y);
 
-    let peak = max(max(avg.r, avg.g), max(avg.b, 1e-4));
+    let peak = max(max(avg.r, avg.g), max(avg.b, ASCII_MIN_PEAK));
     let cell_hue = max(avg, vec3f(0.0)) / peak;
-    let ink = mix(ascii_hue(p[5], 0.75), cell_hue, clamp(p[4], 0.0, 1.0)) * p[7];
+    let ink = mix(ascii_hue(p[5], ASCII_TINT_SATURATION), cell_hue, clamp(p[4], 0.0, 1.0)) * p[7];
     let paper = max(avg, vec3f(0.0)) * p[6];
     return vec4f(select(paper, ink, on), color.a);
 }
