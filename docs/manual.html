@@ -2529,11 +2529,10 @@ fn de_finalize(carry: IterCarry) -&gt; f32 {
         </ul>
 
         <h3>Step 4 — your own helpers</h3>
-        <p>Anything you find yourself writing twice belongs in a helper function above the contract functions. The assembler renames every function your file declares with a per-slot suffix, so two files can both define a <code>fold</code>, and one file can sit in all sixteen slots at once, without a clash. Here is a polar wedge fold — the one <code>prismkifs_box_boxfold_wedgefold.wgsl</code> writes inline — as a helper:</p>
+        <p>Anything you find yourself writing twice belongs in a helper function above the contract functions. The assembler renames every function and every module-scope <code>const</code> your file declares with a per-slot suffix, so two files can both define a <code>fold</code> or a <code>FOLD_ANGLE</code>, and one file can sit in all sixteen slots at once, without a clash. Here is a polar wedge fold — the one <code>prismkifs_box_boxfold_wedgefold.wgsl</code> writes inline — as a helper:</p>
         <pre><code>// Fold the XY plane into one wedge of angle 2π/n, mirrored about the wedge's centre line.
 fn wedge_fold(z: vec3f, n: f32) -&gt; vec3f {
-    const TAU = 6.28318530717959;               // function-scope const: private to this function
-    let period = TAU / n;
+    let period = TAU / n;                       // TAU comes from the template
     var a = wrap_angle(atan2(z.y, z.x), period);
     if (a &gt; period * 0.5) {
         a = period - a;
@@ -2544,8 +2543,8 @@ fn wedge_fold(z: vec3f, n: f32) -&gt; vec3f {
         <p>Drop it into Step 2's file and call it on the first line of the step — <code>var z = wedge_fold(carry.z, 5.0);</code> — for five-fold symmetry. A wedge fold is rotations and one mirror, so <code>dr</code> is untouched.</p>
         <div class="note">
           <span class="tag">Three renaming traps</span>
-          <p><strong>Only functions are renamed.</strong> A module-scope <code>const</code>, <code>var</code> or <code>struct</code> keeps its name, so the moment the file is loaded into a second slot — or another file happens to declare the same name — the shader fails with a redeclaration error. Keep constants inside the function that uses them, as above, or write the literal.</p>
-          <p><strong>The renamer reads comments.</strong> It finds function names by scanning the whole file for the word <code>fn</code> followed by an identifier. A comment such as <code>// like fn sphere_fold but…</code> registers <code>sphere_fold</code> as one of <em>your</em> functions and renames every call to it, which then points at a function that does not exist. Write "like sphere_fold" instead.</p>
+          <p><strong>Only functions and constants are renamed.</strong> A module-scope <code>const</code> gets the same per-slot suffix as a function, so <code>FOLD_ANGLE</code> becomes <code>FOLD_ANGLE_f2</code> in slot 2 and every use in your file follows it. A module-scope <code>var</code> or <code>struct</code> keeps its name, so the moment the file is loaded into a second slot — or another file happens to declare the same name — the shader fails with a redeclaration error. The template's own constants, such as <code>PI</code>, <code>TAU</code>, <code>EPSILON</code> and <code>BULB_BAILOUT</code>, are visible to every formula without being declared.</p>
+          <p><strong>The renamer reads comments.</strong> It finds names by scanning the whole file for the word <code>fn</code>, or a top-level <code>const</code>, followed by an identifier. A comment such as <code>// like fn sphere_fold but…</code> registers <code>sphere_fold</code> as one of <em>your</em> functions and renames every call to it, which then points at a function that does not exist. Write "like sphere_fold" instead.</p>
           <p><strong>Shadowing works, on purpose.</strong> If you declare your own <code>box_fold</code>, every call in your file is renamed along with it and reaches yours, not the template's. Handy for trying a variant of a helper — just do not name a helper after a WGSL built-in such as <code>clamp</code> or <code>mix</code>, for the same reason.</p>
         </div>
 

@@ -1123,6 +1123,9 @@ const WARP_MIN_FALLOFF = 1e-4;
 const WARP_MIN_SCALE = 1e-3;
 const WARP_MIN_INVERSION_RADIUS = 1e-3;
 const WARP_MIN_REPEAT_CELL = 1e-4;
+const WARP_MIN_INFLUENCE = 1e-4;
+const WARP_MIN_STRENGTH = 1e-4;
+const WARP_MIN_STEP_LIMIT = 1e-4;
 
 fn warp_region_de(w: Warp, p: vec3f) -> f32 {
     let rk = i32(w.region_kind + 0.5);
