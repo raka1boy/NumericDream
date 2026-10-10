@@ -763,6 +763,16 @@
           <p>With <em>Simple fog</em>, <em>Fake caustics</em> and <em>Fake bounce light</em> all on, nothing reads the photon map any more, so it is not traced at all, in the viewport or for exports. The window says so in green when this happens.</p>
         </div>
 
+        <h3>Marcher hotspots</h3>
+        <p>The first checkbox in the <strong>Simple render</strong> window swaps the viewport for a cost map of the ray marcher, using Inigo Quilez's palette from his comparison of ray marching and binary search. Each pixel is coloured by how many distance estimates its camera ray needed, hit or miss, including the refinement steps from <em>Ray march precision</em>. Steps the empty-space accelerator skipped cost no estimate, so it shows up as calmer blue background. Dark blue is cheap, yellow is about a third of the scale and red is the scale or more. Edges, grazing angles and thin gaps are where rays crawl, so that is where the colour heats up.</p>
+        <div class="params">
+          <div class="param">
+            <div class="param-head"><span class="param-name">Marcher hotspots</span><span class="chip">default off</span><span class="chip">preview only</span></div>
+            <p>Replaces every other view, whether or not <strong>Simple render</strong> is ticked, and draws through the quick shader, so MC Render, the photon map, the denoiser and screen-space shaders are all paused while it is on. Not saved with the scene, and exports ignore it.</p>
+            <p><em>Red at estimates</em> (default 128, range 8–1024) is the count that shows as full red. Set it near <strong>Max march steps</strong> to see which rays come close to running out (refinement can push a ray's count past that number), or lower it to separate the cheap areas from each other.</p>
+          </div>
+        </div>
+
         <h3>The Camera window</h3>
         <div class="params">
           <div class="param">

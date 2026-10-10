@@ -145,7 +145,7 @@ pub const PreviewDenoiser = struct {
         const w = fractal.offscreen_width;
         const h = fractal.offscreen_height;
         if (w == 0 or h == 0 or fractal.offscreen_texture == null) return error.NoPreviewImage;
-        try fractal.ensureAovPipeline(ctx);
+        try fractal.ensureGroup(ctx, .aov);
         try self.ensureAovTargets(ctx, w, h);
         try self.ensureBuffers(ctx, w, h, ctx.float32_accum);
 

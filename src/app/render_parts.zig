@@ -1,5 +1,6 @@
 const std = @import("std");
 const Approximations = @import("approximations.zig").Approximations;
+const SliderRange = @import("slider_range.zig").SliderRange;
 
 pub const Part = enum(u5) {
     color_strips,
@@ -77,6 +78,7 @@ pub fn lite(part: Part) bool {
 }
 
 const geometry_only_bit: u32 = 1 << 16;
+const hotspots_bit: u32 = 1 << 17;
 
 pub const RenderParts = struct {
     enabled: bool = false,
@@ -84,9 +86,20 @@ pub const RenderParts = struct {
     geometry_only: bool = true,
     on: [Part.count]bool = @splat(true),
     approx: Approximations = .{},
+    hotspots: bool = false,
+    hotspot_scale: f32 = 128,
+    hotspot_scale_range: SliderRange = .{ .min = 8, .max = 1024 },
 
     pub fn geometryOnly(self: RenderParts) bool {
         return self.enabled and self.geometry_only;
+    }
+
+    pub fn plainView(self: RenderParts) bool {
+        return self.hotspots or self.geometryOnly();
+    }
+
+    pub fn hotspotScaleUniform(self: RenderParts) f32 {
+        return if (self.hotspots) @max(self.hotspot_scale, 1) else 0;
     }
 
     pub fn liteOnly(self: RenderParts) bool {
@@ -97,6 +110,7 @@ pub const RenderParts = struct {
     }
 
     pub fn fastPath(self: RenderParts, ft_view: bool) bool {
+        if (self.hotspots) return true;
         if (!self.enabled) return false;
         return self.geometry_only or (!ft_view and self.liteOnly());
     }
@@ -114,6 +128,7 @@ pub const RenderParts = struct {
     }
 
     pub fn mask(self: RenderParts) u32 {
+        if (self.hotspots) return hotspots_bit;
         if (!self.enabled) return 0;
         if (self.geometry_only) return geometry_only_bit;
         var bits: u32 = 0;
@@ -124,7 +139,7 @@ pub const RenderParts = struct {
     }
 
     pub fn shaderMask(self: RenderParts) u32 {
-        if (self.geometry_only) return 0;
+        if (self.geometry_only or self.hotspots) return 0;
         return self.mask() & (Part.screen_shaders.bit() - 1);
     }
 
@@ -163,4 +178,16 @@ test "fast path covers geometry only and lite-only part sets" {
     try std.testing.expect(parts.fastPath(true));
     parts.enabled = false;
     try std.testing.expect(!parts.fastPath(false));
+}
+
+test "hotspots override every other view and need no Simple render" {
+    var parts = RenderParts{ .hotspots = true };
+    try std.testing.expect(parts.fastPath(true));
+    try std.testing.expectEqual(hotspots_bit, parts.mask());
+    try std.testing.expectEqual(@as(u32, 0), parts.shaderMask());
+    parts.enabled = true;
+    parts.geometry_only = false;
+    parts.set(.shadows, false);
+    try std.testing.expectEqual(hotspots_bit, parts.mask());
+    try std.testing.expectEqual(@as(u32, 0), parts.shaderMask());
 }

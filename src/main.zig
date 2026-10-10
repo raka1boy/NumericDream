@@ -81,7 +81,7 @@ fn stampPostEffects(gpu_ctx: *const Context, fractal: *FractalRenderer, parts: R
             n = 1;
         }
     }
-    if (!parts.geometryOnly() and (!parts.enabled or parts.isOn(.screen_shaders))) {
+    if (!parts.plainView() and (!parts.enabled or parts.isOn(.screen_shaders))) {
         n += screen_shader_mod.buildEffects(shaders, buf[n..][0..max_screen_shaders]).len;
     }
     fractal.setPostEffects(buf[0..n]);
@@ -628,6 +628,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
         diff_uniforms.photon_pass = 0;
         diff_uniforms.photon_path_offset = 0;
         diff_uniforms.debug_parts = render_parts.maskUniform();
+        diff_uniforms.hotspot_scale = render_parts.hotspotScaleUniform();
         const scene_changed = !has_last_uniforms or !std.mem.eql(u8, std.mem.asBytes(&diff_uniforms), std.mem.asBytes(&last_render_uniforms));
         last_render_uniforms = diff_uniforms;
         has_last_uniforms = true;
@@ -701,6 +702,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
         }
 
         uniforms.debug_parts = render_parts.maskUniform();
+        uniforms.hotspot_scale = render_parts.hotspotScaleUniform();
         const render_mode: fractal_gpu.RenderMode = if (camera.mode_2d)
             .slice
         else if (fast_render)
@@ -752,7 +754,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
         const outline_id = if (camera.mode_2d) 0 else selection.maskId(objects);
         if (outline_id != 0 and !selection.mask_valid) {
-            selection.mask_valid = fractal.renderSelectMask(frame.encoder);
+            selection.mask_valid = fractal.renderSelectMask(&gpu_ctx, frame.encoder);
         }
 
         fractal.runPostChain(&gpu_ctx, frame.encoder, FractalRenderer.postFrameInfo(uniforms, render_w, render_h));

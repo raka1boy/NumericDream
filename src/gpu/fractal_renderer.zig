@@ -288,7 +288,7 @@ pub const Uniforms = extern struct {
     photon_bounce_scale: f32 = 4,
     photon_aim: f32 = 0,
     carve_count: f32 = 0,
-    _pad_carve0: f32 = 0,
+    hotspot_scale: f32 = 0,
     _pad_carve1: f32 = 0,
     _pad_carve2: f32 = 0,
     carves: [max_carves][4]f32 = @splat(.{ 0, 0, 0, 0 }),
@@ -934,23 +934,30 @@ const PipelinePair = struct {
     particle: [particle_entry_count]wgpu.WGPUComputePipeline = @splat(null),
     module: wgpu.WGPUShaderModule = null,
 
-    fn isComplete(self: PipelinePair) bool {
-        return self.march != null and self.slice != null and self.simple != null and self.select != null and
-            self.build_accel != null and self.trace_photons != null and
-            self.clear_photons != null and self.alloc_photons != null and self.scatter_photons != null;
+    fn has(self: PipelinePair, group: PipelineGroup) bool {
+        return switch (group) {
+            .core => self.march != null and self.slice != null and self.simple != null,
+            .select => self.select != null,
+            .accel => self.build_accel != null,
+            .photons => self.trace_photons != null and self.clear_photons != null and
+                self.alloc_photons != null and self.scatter_photons != null,
+            .aim => self.aim_photons != null,
+            .aov => self.aov != null,
+            .fft => self.build_fft_voxelize != null and self.build_fft_axis_seed != null and
+                self.build_fft_axis_complex != null and self.build_fft_magnitude != null and
+                self.build_fft_finalize != null,
+            .particles => for (self.particle) |p| {
+                if (p == null) break false;
+            } else true,
+        };
     }
 
-    fn hasFft(self: PipelinePair) bool {
-        return self.build_fft_voxelize != null and self.build_fft_axis_seed != null and
-            self.build_fft_axis_complex != null and self.build_fft_magnitude != null and
-            self.build_fft_finalize != null;
-    }
-
-    fn hasParticles(self: PipelinePair) bool {
-        for (self.particle) |p| {
-            if (p == null) return false;
+    fn builtGroups(self: PipelinePair) GroupSet {
+        var set = GroupSet.empty;
+        for (std.enums.values(PipelineGroup)) |g| {
+            if (self.has(g)) set.insert(g);
         }
-        return true;
+        return set;
     }
 
     fn release(self: PipelinePair) void {
@@ -977,6 +984,172 @@ const PipelinePair = struct {
     }
 };
 
+pub const PipelineGroup = enum { core, select, accel, photons, aim, aov, fft, particles };
+const GroupSet = std.EnumSet(PipelineGroup);
+
+const max_pipeline_jobs = 3 + 1 + 1 + 4 + 1 + 1 + 5 + particle_entry_count;
+
+const PipelineJob = struct {
+    label: []const u8,
+    entry: []const u8,
+    layout: wgpu.WGPUPipelineLayout,
+    out: union(enum) {
+        compute: *wgpu.WGPUComputePipeline,
+        render: struct { pipeline: *wgpu.WGPURenderPipeline, format: wgpu.WGPUTextureFormat, blend: bool, gbuffer: bool },
+        aov: *wgpu.WGPURenderPipeline,
+    },
+
+    fn run(self: *const PipelineJob, ctx: *const Context, module: wgpu.WGPUShaderModule) void {
+        switch (self.out) {
+            .compute => |p| p.* = FractalRenderer.createComputePipeline(ctx, self.layout, module, self.label, self.entry),
+            .render => |r| r.pipeline.* = FractalRenderer.createPipeline(ctx, self.layout, module, self.label, self.entry, r.format, r.blend, r.gbuffer),
+            .aov => |p| p.* = FractalRenderer.createAovPipeline(ctx, self.layout, module),
+        }
+    }
+
+    fn made(self: *const PipelineJob) bool {
+        return switch (self.out) {
+            .compute => |p| p.* != null,
+            .render => |r| r.pipeline.* != null,
+            .aov => |p| p.* != null,
+        };
+    }
+
+    fn discard(self: *const PipelineJob) void {
+        switch (self.out) {
+            .compute => |p| if (p.* != null) {
+                wgpu.wgpuComputePipelineRelease(p.*);
+                p.* = null;
+            },
+            .render => |r| if (r.pipeline.* != null) {
+                wgpu.wgpuRenderPipelineRelease(r.pipeline.*);
+                r.pipeline.* = null;
+            },
+            .aov => |p| if (p.* != null) {
+                wgpu.wgpuRenderPipelineRelease(p.*);
+                p.* = null;
+            },
+        }
+    }
+};
+
+const JobBatch = struct {
+    jobs: [max_pipeline_jobs]PipelineJob = undefined,
+    len: usize = 0,
+
+    fn slice(self: *JobBatch) []PipelineJob {
+        return self.jobs[0..self.len];
+    }
+
+    fn push(self: *JobBatch, job: PipelineJob) void {
+        self.jobs[self.len] = job;
+        self.len += 1;
+    }
+
+    fn compute(self: *JobBatch, out: *wgpu.WGPUComputePipeline, layout: wgpu.WGPUPipelineLayout, label: []const u8, entry: []const u8) void {
+        if (out.* != null) return;
+        self.push(.{ .label = label, .entry = entry, .layout = layout, .out = .{ .compute = out } });
+    }
+
+    fn render(self: *JobBatch, out: *wgpu.WGPURenderPipeline, layout: wgpu.WGPUPipelineLayout, label: []const u8, entry: []const u8, format: wgpu.WGPUTextureFormat, blend: bool, gbuffer: bool) void {
+        if (out.* != null) return;
+        self.push(.{ .label = label, .entry = entry, .layout = layout, .out = .{ .render = .{ .pipeline = out, .format = format, .blend = blend, .gbuffer = gbuffer } } });
+    }
+
+    fn addGroup(self: *JobBatch, ctx: *const Context, lay: Layouts, p: *PipelinePair, group: PipelineGroup) void {
+        switch (group) {
+            .core => {
+                self.render(&p.march, lay.render, "fractal pipeline", "fs_main", accumFormat(ctx), true, true);
+                self.render(&p.simple, lay.render, "fractal simple render pipeline", "fs_simple", accumFormat(ctx), true, true);
+                self.render(&p.slice, lay.render, "fractal 2D slice pipeline", "fs_slice", accumFormat(ctx), true, true);
+            },
+            .select => self.render(&p.select, lay.select, "fractal selection id pipeline", "fs_select", select_format, false, false),
+            .accel => self.compute(&p.build_accel, lay.accel, "accel build pipeline", "cs_build_accel"),
+            .photons => {
+                self.compute(&p.trace_photons, lay.photon, "photon trace pipeline", "cs_trace_photons");
+                self.compute(&p.clear_photons, lay.photon, "photon clear pipeline", "cs_clear_photons");
+                self.compute(&p.alloc_photons, lay.photon, "photon alloc pipeline", "cs_alloc_photons");
+                self.compute(&p.scatter_photons, lay.photon, "photon scatter pipeline", "cs_scatter_photons");
+            },
+            .aim => self.compute(&p.aim_photons, lay.photon, "photon aim pipeline", "cs_photon_aim"),
+            .aov => if (p.aov == null) self.push(.{ .label = "fractal denoise aov pipeline", .entry = "fs_aov", .layout = lay.render, .out = .{ .aov = &p.aov } }),
+            .fft => {
+                self.compute(&p.build_fft_voxelize, lay.fft, "fft voxelize pipeline", "cs_fft_voxelize");
+                self.compute(&p.build_fft_axis_seed, lay.fft, "fft axis seed pipeline", "cs_fft_axis_seed");
+                self.compute(&p.build_fft_axis_complex, lay.fft, "fft axis complex pipeline", "cs_fft_axis_complex");
+                self.compute(&p.build_fft_magnitude, lay.fft, "fft magnitude pipeline", "cs_fft_magnitude");
+                self.compute(&p.build_fft_finalize, lay.fft, "fft finalize pipeline", "cs_fft_finalize");
+            },
+            .particles => inline for (comptime std.enums.values(ParticleEntry)) |e| {
+                const name = "cs_particle_" ++ @tagName(e);
+                self.compute(&p.particle[@intFromEnum(e)], if (e.isSim()) lay.particle_sim else lay.particle_build, name, name);
+            },
+        }
+    }
+
+    fn addGroups(self: *JobBatch, ctx: *const Context, lay: Layouts, p: *PipelinePair, groups: GroupSet) void {
+        var it = groups.iterator();
+        while (it.next()) |g| self.addGroup(ctx, lay, p, g);
+    }
+
+    fn run(self: *JobBatch, ctx: *const Context, module: wgpu.WGPUShaderModule) bool {
+        const jobs = self.slice();
+        if (jobs.len == 0) return true;
+        const errors_before = webgpu_context.g_error_count.load(.acquire);
+
+        var queue = JobQueue{ .ctx = ctx, .module = module, .jobs = jobs };
+        const workers = std.math.clamp(std.Thread.getCpuCount() catch 1, 1, jobs.len);
+        var threads: [max_pipeline_jobs]std.Thread = undefined;
+        var spawned: usize = 0;
+        while (spawned + 1 < workers) : (spawned += 1) {
+            threads[spawned] = std.Thread.spawn(.{}, JobQueue.drain, .{&queue}) catch break;
+        }
+        queue.drain();
+        for (threads[0..spawned]) |t| t.join();
+
+        wgpu.wgpuInstanceProcessEvents(ctx.instance);
+        wgpu.wgpuInstanceProcessEvents(ctx.instance);
+        var ok = webgpu_context.g_error_count.load(.acquire) == errors_before;
+        for (jobs) |*j| {
+            if (!j.made()) ok = false;
+        }
+        if (!ok) {
+            for (jobs) |*j| j.discard();
+        }
+        return ok;
+    }
+};
+
+const JobQueue = struct {
+    ctx: *const Context,
+    module: wgpu.WGPUShaderModule,
+    jobs: []PipelineJob,
+    next: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+
+    fn drain(self: *JobQueue) void {
+        while (true) {
+            const i = self.next.fetchAdd(1, .acq_rel);
+            if (i >= self.jobs.len) return;
+            self.jobs[i].run(self.ctx, self.module);
+        }
+    }
+};
+
+fn groupNames(groups: GroupSet, buf: []u8) []const u8 {
+    var len: usize = 0;
+    var it = groups.iterator();
+    while (it.next()) |g| {
+        const name = @tagName(g);
+        const sep: []const u8 = if (len == 0) "" else "+";
+        if (len + sep.len + name.len > buf.len) break;
+        @memcpy(buf[len..][0..sep.len], sep);
+        len += sep.len;
+        @memcpy(buf[len..][0..name.len], name);
+        len += name.len;
+    }
+    return buf[0..len];
+}
+
 pub const RenderMode = enum { march, slice, simple };
 
 const PipelineCacheEntry = struct {
@@ -997,6 +1170,7 @@ const Shared = struct {
     formula_sources: [max_instances][]u8,
     mixin_sources: [max_instances][max_mixins][]u8,
     variant: ShaderVariant,
+    groups: GroupSet,
     hash: u64,
     requester: ?*anyopaque,
     done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
@@ -1035,9 +1209,11 @@ const Layouts = struct {
     accel: wgpu.WGPUPipelineLayout,
     photon: wgpu.WGPUPipelineLayout,
     fft: wgpu.WGPUPipelineLayout,
+    particle_sim: wgpu.WGPUPipelineLayout,
+    particle_build: wgpu.WGPUPipelineLayout,
 };
 
-fn buildPipelines(ctx: *const Context, layouts: Layouts, source: []const u8) !PipelinePair {
+fn buildPipelines(ctx: *const Context, layouts: Layouts, source: []const u8, groups: GroupSet) !PipelinePair {
     g_error_sink.reset();
     var shader_desc_wgsl = wgpu.WGPUShaderSourceWGSL{
         .chain = .{ .next = null, .sType = wgpu.WGPUSType_ShaderSourceWGSL },
@@ -1055,10 +1231,10 @@ fn buildPipelines(ctx: *const Context, layouts: Layouts, source: []const u8) !Pi
         return error.ShaderCompileFailed;
     }
 
-    const pipelines = FractalRenderer.createPipelinePair(ctx, layouts, module);
-    wgpu.wgpuInstanceProcessEvents(ctx.instance);
-    wgpu.wgpuInstanceProcessEvents(ctx.instance);
-    if (!pipelines.isComplete() or g_error_sink.has_error) {
+    var pipelines = PipelinePair{ .module = module };
+    var batch = JobBatch{};
+    batch.addGroups(ctx, layouts, &pipelines, groups);
+    if (!batch.run(ctx, module)) {
         pipelines.release();
         return error.PipelineCreationFailed;
     }
@@ -1083,7 +1259,7 @@ fn compileWorker(shared: *Shared) void {
     defer shared.allocator.free(source);
     shared.source_len = source.len;
 
-    shared.pipelines = buildPipelines(shared.ctx, shared.layouts, source) catch |err| {
+    shared.pipelines = buildPipelines(shared.ctx, shared.layouts, source, shared.groups) catch |err| {
         const copied = copyErr(shared, g_error_sink.message());
         shared.err_len = if (copied > 0) copied else copyErr(shared, @errorName(err));
         return;
@@ -1259,6 +1435,7 @@ pub const FractalRenderer = struct {
 
     pipeline_cache: [pipeline_cache_capacity]?PipelineCacheEntry = @splat(null),
     cache_clock: u64 = 0,
+    failed_groups: GroupSet = GroupSet.empty,
 
     pending: ?PendingRebuild = null,
     parts: PartsPipelines = .{},
@@ -1857,69 +2034,26 @@ pub const FractalRenderer = struct {
         });
     }
 
-    fn createPipelinePair(ctx: *const Context, lay: Layouts, module: wgpu.WGPUShaderModule) PipelinePair {
-        return .{
-            .march = createPipeline(ctx, lay.render, module, "fractal pipeline", "fs_main", accumFormat(ctx), true, true),
-            .slice = createPipeline(ctx, lay.render, module, "fractal 2D slice pipeline", "fs_slice", accumFormat(ctx), true, true),
-            .simple = createPipeline(ctx, lay.render, module, "fractal simple render pipeline", "fs_simple", accumFormat(ctx), true, true),
-            .select = createPipeline(ctx, lay.select, module, "fractal selection id pipeline", "fs_select", select_format, false, false),
-            .build_accel = createComputePipeline(ctx, lay.accel, module, "accel build pipeline", "cs_build_accel"),
-            .trace_photons = createComputePipeline(ctx, lay.photon, module, "photon trace pipeline", "cs_trace_photons"),
-            .clear_photons = createComputePipeline(ctx, lay.photon, module, "photon clear pipeline", "cs_clear_photons"),
-            .alloc_photons = createComputePipeline(ctx, lay.photon, module, "photon alloc pipeline", "cs_alloc_photons"),
-            .scatter_photons = createComputePipeline(ctx, lay.photon, module, "photon scatter pipeline", "cs_scatter_photons"),
-            .module = module,
-        };
-    }
-
-    fn ensureFftPipelines(self: *FractalRenderer, ctx: *const Context) !void {
-        if (self.pipelines.hasFft()) return;
-        const module = self.pipelines.module orelse return error.FftNotReady;
+    pub fn ensureGroup(self: *FractalRenderer, ctx: *const Context, group: PipelineGroup) !void {
+        if (self.pipelines.has(group)) return;
+        const module = self.pipelines.module orelse return error.PipelinesNotReady;
+        if (self.failed_groups.contains(group)) return error.PipelineCreationFailed;
         const started = sdl.SDL_GetTicks();
         g_error_sink.reset();
-        const lay = self.fft_pipeline_layout;
         var p = self.pipelines;
-        p.build_fft_voxelize = createComputePipeline(ctx, lay, module, "fft voxelize pipeline", "cs_fft_voxelize");
-        p.build_fft_axis_seed = createComputePipeline(ctx, lay, module, "fft axis seed pipeline", "cs_fft_axis_seed");
-        p.build_fft_axis_complex = createComputePipeline(ctx, lay, module, "fft axis complex pipeline", "cs_fft_axis_complex");
-        p.build_fft_magnitude = createComputePipeline(ctx, lay, module, "fft magnitude pipeline", "cs_fft_magnitude");
-        p.build_fft_finalize = createComputePipeline(ctx, lay, module, "fft finalize pipeline", "cs_fft_finalize");
-        wgpu.wgpuInstanceProcessEvents(ctx.instance);
-        wgpu.wgpuInstanceProcessEvents(ctx.instance);
-        if (!p.hasFft() or g_error_sink.has_error) {
-            inline for (.{ "build_fft_voxelize", "build_fft_axis_seed", "build_fft_axis_complex", "build_fft_magnitude", "build_fft_finalize" }) |field| {
-                if (@field(p, field) != null) wgpu.wgpuComputePipelineRelease(@field(p, field));
-            }
+        var batch = JobBatch{};
+        batch.addGroup(ctx, self.pipelineLayouts(), &p, group);
+        if (!batch.run(ctx, module)) {
+            if (self.pending == null) self.failed_groups.insert(group);
+            std.debug.print("[pipelines] on-demand {s} build failed: {s}\n", .{ @tagName(group), g_error_sink.message() });
             return error.PipelineCreationFailed;
         }
-        std.debug.print("[fft] built FT View pipelines in {d}ms\n", .{sdl.SDL_GetTicks() -| started});
+        std.debug.print("[pipelines] built {s} on demand ({d} pipelines) in {d}ms\n", .{ @tagName(group), batch.len, sdl.SDL_GetTicks() -| started });
 
         self.pipelines = p;
         for (&self.pipeline_cache) |*slot| {
             if (slot.*) |*entry| {
-                if (entry.pipelines.march == p.march) entry.pipelines = p;
-            }
-        }
-    }
-
-    fn ensureAimPipeline(self: *FractalRenderer, ctx: *const Context) !void {
-        if (self.pipelines.aim_photons != null) return;
-        const module = self.pipelines.module orelse return error.PhotonMapNotReady;
-        const started = sdl.SDL_GetTicks();
-        g_error_sink.reset();
-        const pipeline = createComputePipeline(ctx, self.photon_pipeline_layout, module, "photon aim pipeline", "cs_photon_aim");
-        wgpu.wgpuInstanceProcessEvents(ctx.instance);
-        wgpu.wgpuInstanceProcessEvents(ctx.instance);
-        if (pipeline == null or g_error_sink.has_error) {
-            if (pipeline != null) wgpu.wgpuComputePipelineRelease(pipeline);
-            return error.PipelineCreationFailed;
-        }
-        std.debug.print("[photons] built aim pipeline in {d}ms\n", .{sdl.SDL_GetTicks() -| started});
-
-        self.pipelines.aim_photons = pipeline;
-        for (&self.pipeline_cache) |*slot| {
-            if (slot.*) |*entry| {
-                if (entry.pipelines.march == self.pipelines.march) entry.pipelines = self.pipelines;
+                if (entry.pipelines.module == module) entry.pipelines = p;
             }
         }
     }
@@ -1957,60 +2091,6 @@ pub const FractalRenderer = struct {
                 .targets = &targets,
             },
         });
-    }
-
-    pub fn ensureAovPipeline(self: *FractalRenderer, ctx: *const Context) !void {
-        if (self.pipelines.aov != null) return;
-        const module = self.pipelines.module orelse return error.DenoiserNotReady;
-        const started = sdl.SDL_GetTicks();
-        g_error_sink.reset();
-        const pipeline = createAovPipeline(ctx, self.pipeline_layout, module);
-        wgpu.wgpuInstanceProcessEvents(ctx.instance);
-        wgpu.wgpuInstanceProcessEvents(ctx.instance);
-        if (pipeline == null or g_error_sink.has_error) {
-            if (pipeline != null) wgpu.wgpuRenderPipelineRelease(pipeline);
-            return error.PipelineCreationFailed;
-        }
-        std.debug.print("[denoise] built albedo/normal pipeline in {d}ms\n", .{sdl.SDL_GetTicks() -| started});
-
-        self.pipelines.aov = pipeline;
-        for (&self.pipeline_cache) |*slot| {
-            if (slot.*) |*entry| {
-                if (entry.pipelines.march == self.pipelines.march) entry.pipelines = self.pipelines;
-            }
-        }
-    }
-
-    fn ensureParticlePipelines(self: *FractalRenderer, ctx: *const Context) !void {
-        if (self.pipelines.hasParticles()) return;
-        const module = self.pipelines.module orelse return error.ParticlesNotReady;
-        const started = sdl.SDL_GetTicks();
-        g_error_sink.reset();
-        var p = self.pipelines;
-        inline for (comptime std.enums.values(ParticleEntry)) |e| {
-            const slot = &p.particle[@intFromEnum(e)];
-            if (slot.* == null) {
-                const name = "cs_particle_" ++ @tagName(e);
-                const layout = if (e.isSim()) self.particle_sim_pipeline_layout else self.particle_build_pipeline_layout;
-                slot.* = createComputePipeline(ctx, layout, module, name, name);
-            }
-        }
-        wgpu.wgpuInstanceProcessEvents(ctx.instance);
-        wgpu.wgpuInstanceProcessEvents(ctx.instance);
-        if (!p.hasParticles() or g_error_sink.has_error) {
-            for (&p.particle, self.pipelines.particle) |*made, had| {
-                if (made.* != null and made.* != had) wgpu.wgpuComputePipelineRelease(made.*);
-            }
-            return error.PipelineCreationFailed;
-        }
-        std.debug.print("[particles] built particle pipelines in {d}ms\n", .{sdl.SDL_GetTicks() -| started});
-
-        self.pipelines = p;
-        for (&self.pipeline_cache) |*slot| {
-            if (slot.*) |*entry| {
-                if (entry.pipelines.march == p.march) entry.pipelines = p;
-            }
-        }
     }
 
     fn particlePipeline(self: *const FractalRenderer, e: ParticleEntry) wgpu.WGPUComputePipeline {
@@ -2061,7 +2141,7 @@ pub const FractalRenderer = struct {
             const stepping = resim or job.target_steps > rt.steps;
             if (!stepping and rt.has_build and rt.build_key == job.build_key and rt.build_steps == rt.steps) continue;
 
-            try self.ensureParticlePipelines(ctx);
+            try self.ensureGroup(ctx, .particles);
             if (!scene_written) {
                 self.updateUniforms(ctx, scene);
                 scene_written = true;
@@ -2203,11 +2283,26 @@ pub const FractalRenderer = struct {
 
     fn usePipelines(self: *FractalRenderer, pipelines: PipelinePair) void {
         self.pipelines = pipelines;
+        self.failed_groups = GroupSet.empty;
         self.content_generation +%= 1;
     }
 
     fn pipelineLayouts(self: *const FractalRenderer) Layouts {
-        return .{ .render = self.pipeline_layout, .select = self.select_pipeline_layout, .accel = self.accel_pipeline_layout, .photon = self.photon_pipeline_layout, .fft = self.fft_pipeline_layout };
+        return .{
+            .render = self.pipeline_layout,
+            .select = self.select_pipeline_layout,
+            .accel = self.accel_pipeline_layout,
+            .photon = self.photon_pipeline_layout,
+            .fft = self.fft_pipeline_layout,
+            .particle_sim = self.particle_sim_pipeline_layout,
+            .particle_build = self.particle_build_pipeline_layout,
+        };
+    }
+
+    fn rebuildGroups(self: *const FractalRenderer) GroupSet {
+        var groups = self.pipelines.builtGroups();
+        groups.insert(.core);
+        return groups;
     }
 
     pub fn rebuild(self: *FractalRenderer, ctx: *const Context, allocator: std.mem.Allocator, formula_sources: [max_instances][]const u8, mixin_sources: [max_instances][max_mixins][]const u8) !void {
@@ -2222,8 +2317,10 @@ pub const FractalRenderer = struct {
         const started = sdl.SDL_GetTicks();
         const source = try assembleShaderSource(allocator, formula_sources, mixin_sources, self.variant);
         defer allocator.free(source);
-        const built = try buildPipelines(ctx, self.pipelineLayouts(), source);
-        std.debug.print("[stage] rebuild: compiled {d} bytes in {d}ms\n", .{ source.len, sdl.SDL_GetTicks() -| started });
+        const groups = self.rebuildGroups();
+        const built = try buildPipelines(ctx, self.pipelineLayouts(), source, groups);
+        var names_buf: [96]u8 = undefined;
+        std.debug.print("[stage] rebuild: compiled {d} bytes ({s}) in {d}ms\n", .{ source.len, groupNames(groups, &names_buf), sdl.SDL_GetTicks() -| started });
         self.usePipelines(built);
         self.cachePipeline(hash, built);
     }
@@ -2248,6 +2345,7 @@ pub const FractalRenderer = struct {
             .formula_sources = undefined,
             .mixin_sources = undefined,
             .variant = self.variant,
+            .groups = self.rebuildGroups(),
             .hash = hash,
             .requester = requester,
         };
@@ -2303,11 +2401,13 @@ pub const FractalRenderer = struct {
             .err_message = self.last_err_buf[0..self.last_err_len],
             .requester = shared.requester,
         };
-        std.debug.print("[stage] pollRebuild: background compile {s} (hash={x}) {d}ms source={d} bytes {s}\n", .{
+        var names_buf: [96]u8 = undefined;
+        std.debug.print("[stage] pollRebuild: background compile {s} (hash={x}) {d}ms source={d} bytes groups={s} {s}\n", .{
             if (shared.ok) "succeeded" else "failed",
             shared.hash,
             shared.total_ms,
             shared.source_len,
+            groupNames(shared.groups, &names_buf),
             if (shared.ok) "" else outcome.err_message,
         });
 
@@ -2419,7 +2519,7 @@ pub const FractalRenderer = struct {
 
     pub fn buildFftVolume(self: *FractalRenderer, ctx: *const Context, scene: Uniforms) !void {
         if (!self.fft.isAllocated() or scene.fft_active < 0.5) return error.FftNotReady;
-        try self.ensureFftPipelines(ctx);
+        try self.ensureGroup(ctx, .fft);
 
         const started_ms = sdl.SDL_GetTicks();
         const groups3d = fft.groups3d();
@@ -2457,7 +2557,8 @@ pub const FractalRenderer = struct {
     }
 
     pub fn buildAccel(self: *FractalRenderer, ctx: *const Context, scene: Uniforms) !void {
-        if (!self.accel.isAllocated() or self.pipelines.build_accel == null) return error.AccelNotReady;
+        if (!self.accel.isAllocated()) return error.AccelNotReady;
+        try self.ensureGroup(ctx, .accel);
 
         const started_ms = sdl.SDL_GetTicks();
         const res = self.accel.resolution;
@@ -2524,7 +2625,7 @@ pub const FractalRenderer = struct {
 
     pub fn tracePhotons(self: *FractalRenderer, ctx: *const Context, scene: Uniforms, seed: f32, radius: f32) !void {
         if (!self.photon_map.isAllocated()) return error.PhotonMapNotReady;
-        if (self.pipelines.trace_photons == null or self.pipelines.clear_photons == null) return error.PhotonMapNotReady;
+        try self.ensureGroup(ctx, .photons);
 
         const started_ms = sdl.SDL_GetTicks();
         const buckets = self.photon_map.buckets;
@@ -2652,7 +2753,7 @@ pub const FractalRenderer = struct {
     }
 
     fn buildPhotonAim(self: *FractalRenderer, ctx: *const Context, scene: Uniforms, binds: []const ComputeBindGroup) !void {
-        try self.ensureAimPipeline(ctx);
+        try self.ensureGroup(ctx, .aim);
         const started_ms = sdl.SDL_GetTicks();
         const light_count: u32 = @intFromFloat(std.math.clamp(scene.light_count, 0, @as(f32, @floatFromInt(max_lights))));
         if (light_count == 0) return;
@@ -3187,7 +3288,7 @@ pub const FractalRenderer = struct {
         tile_h: u32,
     ) !void {
         const started_ms = nowMs();
-        try self.ensureAovPipeline(ctx);
+        try self.ensureGroup(ctx, .aov);
 
         const albedo_texture = createAovTexture(ctx, "fractal denoise albedo", tile_w, tile_h) orelse return error.TextureCreationFailed;
         defer wgpu.wgpuTextureRelease(albedo_texture);
@@ -3450,8 +3551,9 @@ pub const FractalRenderer = struct {
         wgpu.wgpuRenderPassEncoderSetBindGroup(pass, 5, self.active_adapt_group, 0, null);
     }
 
-    pub fn renderSelectMask(self: *FractalRenderer, encoder: wgpu.WGPUCommandEncoder) bool {
-        if (self.pipelines.select == null or self.select_view == null or self.select_depth_bind_group == null) return false;
+    pub fn renderSelectMask(self: *FractalRenderer, ctx: *const Context, encoder: wgpu.WGPUCommandEncoder) bool {
+        if (self.select_view == null or self.select_depth_bind_group == null) return false;
+        self.ensureGroup(ctx, .select) catch return false;
         const pass = wgpu.wgpuCommandEncoderBeginRenderPass(encoder, &wgpu.WGPURenderPassDescriptor{
             .nextInChain = null,
             .label = sv("fractal selection mask pass"),
@@ -3479,7 +3581,7 @@ pub const FractalRenderer = struct {
     }
 
     pub fn pickObject(self: *FractalRenderer, ctx: *const Context, uniforms: Uniforms, x: u32, y: u32) !u8 {
-        if (self.pipelines.select == null) return 0;
+        try self.ensureGroup(ctx, .select);
 
         var pick_uniforms = uniforms;
         const tile = tileTransform(self.offscreen_width, self.offscreen_height, x, y, 1, 1);

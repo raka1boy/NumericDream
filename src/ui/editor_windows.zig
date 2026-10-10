@@ -923,6 +923,15 @@ pub fn buildRenderPartsWindow(ctx: *nk.nk_context, ws: layout.Workspace, parts: 
     const title = "Simple render";
     if (layout.begin(ctx, ws, title, .{ .floating = .{ 300, 640 } })) {
         nk.nk_layout_row_dynamic(ctx, 22, 1);
+        const hot_now: nk.nk_bool = if (parts.hotspots) 1 else 0;
+        parts.hotspots = nk.nk_check_label(ctx, "Marcher hotspots", hot_now) != 0;
+        if (parts.hotspots) {
+            widgets.hint(ctx, "Colours each pixel by how many distance estimates its primary ray took: blue is cheap, yellow a third of the scale, red the scale or more. Replaces every other view below.", nk.nk_rgb(120, 180, 220));
+            widgets.sliderInt(ctx, "Red at estimates", &parts.hotspot_scale, &parts.hotspot_scale_range);
+        }
+        widgets.separator(ctx);
+
+        nk.nk_layout_row_dynamic(ctx, 22, 1);
         const enabled_now: nk.nk_bool = if (parts.enabled) 1 else 0;
         parts.enabled = nk.nk_check_label(ctx, "Simple render", enabled_now) != 0;
 

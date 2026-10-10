@@ -258,7 +258,7 @@ struct Uniforms {
     photon_bounce_scale: f32,
     photon_aim: f32,
     carve_count: f32,
-    _pad_carve0: f32,
+    hotspot_scale: f32,
     _pad_carve1: f32,
     _pad_carve2: f32,
     carves: array<vec4f, MAX_CARVES>,
@@ -307,6 +307,7 @@ const PART_SKY: u32 = 1u << 12u;
 const PART_DEPTH_OF_FIELD: u32 = 1u << 13u;
 const PART_MC_INDIRECT: u32 = 1u << 14u;
 const PART_GEOMETRY_ONLY: u32 = 1u << 16u;
+const PART_HOTSPOTS: u32 = 1u << 17u;
 
 override PARTS_FIXED: bool = false;
 override PARTS_FIXED_OFF: u32 = 0u;
@@ -1468,6 +1469,7 @@ struct MarchResult {
     hit: bool,
     dist: f32,
     steps: f32,
+    evals: f32,
 }
 
 fn march_epsilon(t: f32) -> f32 {
@@ -1523,6 +1525,7 @@ fn march_to(origin: vec3f, dir: vec3f, max_t: f32) -> MarchResult {
     var hi = 0.0;
     var refines = 0;
     var resolved = false;
+    var evals = 0;
 
     let max_samples = max_steps * (1 + refine_budget);
     for (var n = 0; n < max_samples; n++) {
@@ -1547,8 +1550,9 @@ fn march_to(origin: vec3f, dir: vec3f, max_t: f32) -> MarchResult {
         }
 
         let d = scene_de(origin + dir * sample_t);
+        evals++;
         if (d < eps) {
-            return MarchResult(true, sample_t, f32(i));
+            return MarchResult(true, sample_t, f32(i), f32(evals));
         }
 
         if (probing) {
@@ -1578,7 +1582,7 @@ fn march_to(origin: vec3f, dir: vec3f, max_t: f32) -> MarchResult {
             probing = true;
         }
     }
-    return MarchResult(false, t, f32(max_steps));
+    return MarchResult(false, t, f32(max_steps), f32(evals));
 }
 
 const DEFAULT_ALBEDO = vec3f(0.8, 0.8, 0.85);
@@ -3118,12 +3122,40 @@ fn render_lite(dir: vec3f) -> FragOut {
     return frag_out(vec4f(dots.emit + shade_lite(hit_pos, dir, normal, m.dist), 0.0), m.dist, normal);
 }
 
+const HOTSPOT_COOL = vec3f(0.0, 0.3, 1.0);
+const HOTSPOT_WARM = vec3f(1.0, 0.8, 0.0);
+const HOTSPOT_HOT = vec3f(1.0, 0.0, 0.0);
+const HOTSPOT_WARM_AT = 0.33;
+const HOTSPOT_HOT_AT = 0.66;
+const HOTSPOT_BLEND = 0.2;
+const HOTSPOT_WARM_GLOW = 0.5;
+const HOTSPOT_GAIN = 2.0;
+
+// Cost palette from Inigo Quilez, "Robust Binary-Search based intersection for SDFs" (iq/2018-2022).
+fn hotspot_palette(h: f32) -> vec3f {
+    var col = HOTSPOT_COOL;
+    col = mix(col, HOTSPOT_WARM, smoothstep(HOTSPOT_WARM_AT - HOTSPOT_BLEND, HOTSPOT_WARM_AT + HOTSPOT_BLEND, h));
+    col = mix(col, HOTSPOT_HOT, smoothstep(HOTSPOT_HOT_AT - HOTSPOT_BLEND, HOTSPOT_HOT_AT + HOTSPOT_BLEND, h));
+    col.y += HOTSPOT_WARM_GLOW * (1.0 - smoothstep(0.0, HOTSPOT_BLEND, abs(h - HOTSPOT_WARM_AT)));
+    return col * (0.5 + 0.5 * h);
+}
+
+fn render_hotspots(dir: vec3f) -> FragOut {
+    let m = march(u.camera_pos, dir);
+    let cost = clamp(m.evals / max(u.hotspot_scale, 1.0), 0.0, 1.0);
+    let col = sqrt(clamp(hotspot_palette(cost) * HOTSPOT_GAIN, vec3f(0.0), vec3f(1.0)));
+    return frag_out(vec4f(undo_tonemap(col), 0.0), select(0.0, m.dist, m.hit), select(vec3f(0.0), -dir, m.hit));
+}
+
 @fragment
 fn fs_simple(in: VertexOut) -> FragOut {
     let aspect = u.resolution.x / u.resolution.y;
     let uv = vec2f(in.uv.x * aspect, in.uv.y);
     let dir = normalize(u.camera_forward + uv.x * u.camera_right + uv.y * u.camera_up);
 
+    if (!part_on(PART_HOTSPOTS)) {
+        return render_hotspots(dir);
+    }
     if (part_on(PART_GEOMETRY_ONLY)) {
         return render_lite(dir);
     }
