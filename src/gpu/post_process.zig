@@ -4,6 +4,7 @@ const webgpu_context = @import("webgpu_context.zig");
 const Context = webgpu_context.Context;
 const g_error_sink = &webgpu_context.g_error_sink;
 const sv = webgpu_context.sv;
+const gpu_timer = @import("gpu_timer.zig");
 
 const post_template = @embedFile("shaders/post_template.wgsl");
 const effect_marker = "@@EFFECT@@";
@@ -348,7 +349,7 @@ fn fullscreenPass(
         }},
         .depthStencilAttachment = null,
         .occlusionQuerySet = null,
-        .timestampWrites = null,
+        .timestampWrites = gpu_timer.pass(.post_chain),
     }) orelse return;
     wgpu.wgpuRenderPassEncoderSetPipeline(pass, pipeline);
     wgpu.wgpuRenderPassEncoderSetBindGroup(pass, 0, group, 0, null);

@@ -188,7 +188,7 @@ const InstanceDto = struct {
     visible: bool = true,
 };
 
-const SceneFile = struct {
+pub const SceneFile = struct {
     version: u32 = current_version,
     camera: FreeCamera,
     max_steps: f32,
@@ -288,9 +288,9 @@ fn instanceToDto(inst: *const FractalInstanceState, scratch: *InstanceScratch) I
     };
 }
 
-pub fn saveScene(
+pub fn encodeScene(
     allocator: std.mem.Allocator,
-    window: *sdl.SDL_Window,
+    pretty: bool,
     camera: FreeCamera,
     max_steps: f32,
     max_steps_range: SliderRange,
@@ -316,14 +316,24 @@ pub fn saveScene(
     mc: McRenderState,
     approx: Approximations,
     timeline: TimelineState,
-    status_buf: []u8,
-) [:0]const u8 {
-    var path_buf: [export_image.max_path_len]u8 = undefined;
-    const path_len = file_dialog.pickSaveDreamFile(window, &path_buf) orelse
-        return std.fmt.bufPrintSentinel(status_buf, "Save canceled.", .{}, 0) catch "";
-    if (path_len >= path_buf.len) {
-        return std.fmt.bufPrintSentinel(status_buf, "Save path too long.", .{}, 0) catch "";
+) ![]u8 {
+    const lights_ui = try allocator.dupe(LightState, lights);
+    defer allocator.free(lights_ui);
+    for (lights_ui) |*l| l.window_open = false;
+    const fog_ui = try allocator.dupe(FogEmitterState, fog_emitters);
+    defer allocator.free(fog_ui);
+    for (fog_ui) |*f| f.window_open = false;
+    const warps_ui = try allocator.dupe(WarpState, warps);
+    defer allocator.free(warps_ui);
+    for (warps_ui) |*w| w.window_open = false;
+    const particles_ui = try allocator.dupe(ParticleSystemState, particle_systems);
+    defer allocator.free(particles_ui);
+    for (particles_ui) |*ps| {
+        ps.window_open = false;
+        ps.selected_color = null;
     }
+    var stereo_ui = stereo;
+    stereo_ui.settings_open = false;
 
     var scratch: [max_instances]InstanceScratch = undefined;
     var instance_dtos: [max_instances]InstanceDto = undefined;
@@ -357,13 +367,13 @@ pub fn saveScene(
         .export_width = export_width,
         .export_height = export_height,
         .instances = instance_dtos[0..instances.len],
-        .lights = lights,
-        .fog_emitters = fog_emitters,
-        .warps = warps,
-        .particle_systems = particle_systems,
+        .lights = lights_ui,
+        .fog_emitters = fog_ui,
+        .warps = warps_ui,
+        .particle_systems = particles_ui,
         .screen_shaders = screen_dtos[0..screen_shaders.len],
         .sky = skyToDto(sky),
-        .stereo = stereo,
+        .stereo = stereo_ui,
         .mc = mc,
         .approximations = approx,
         .keyframes = timeline.keyframes[0..timeline.keyframe_count],
@@ -371,13 +381,84 @@ pub fn saveScene(
     };
 
     var aw = std.Io.Writer.Allocating.init(allocator);
-    defer aw.deinit();
-    std.json.Stringify.value(scene, .{ .whitespace = .indent_2 }, &aw.writer) catch {
+    errdefer aw.deinit();
+    try std.json.Stringify.value(scene, .{ .whitespace = if (pretty) .indent_2 else .minified }, &aw.writer);
+    return aw.toOwnedSlice();
+}
+
+pub fn saveScene(
+    allocator: std.mem.Allocator,
+    window: *sdl.SDL_Window,
+    camera: FreeCamera,
+    max_steps: f32,
+    max_steps_range: SliderRange,
+    max_dist: f32,
+    max_dist_range: SliderRange,
+    preview_quality: f32,
+    preview_quality_range: SliderRange,
+    max_reflection_bounces: f32,
+    max_reflection_bounces_range: SliderRange,
+    photon: PhotonSettings,
+    precision: MarchPrecision,
+    render_settings: RenderSettingsState,
+    export_width: i32,
+    export_height: i32,
+    instances: []const FractalInstanceState,
+    lights: []const LightState,
+    fog_emitters: []const FogEmitterState,
+    warps: []const WarpState,
+    particle_systems: []const ParticleSystemState,
+    screen_shaders: []const ScreenShaderState,
+    sky: *const SkyState,
+    stereo: StereoState,
+    mc: McRenderState,
+    approx: Approximations,
+    timeline: TimelineState,
+    status_buf: []u8,
+
+) [:0]const u8 {
+    var path_buf: [export_image.max_path_len]u8 = undefined;
+    const path_len = file_dialog.pickSaveDreamFile(window, &path_buf) orelse
+        return std.fmt.bufPrintSentinel(status_buf, "Save canceled.", .{}, 0) catch "";
+    if (path_len >= path_buf.len) {
+        return std.fmt.bufPrintSentinel(status_buf, "Save path too long.", .{}, 0) catch "";
+    }
+
+    const data = encodeScene(
+        allocator,
+        true,
+        camera,
+        max_steps,
+        max_steps_range,
+        max_dist,
+        max_dist_range,
+        preview_quality,
+        preview_quality_range,
+        max_reflection_bounces,
+        max_reflection_bounces_range,
+        photon,
+        precision,
+        render_settings,
+        export_width,
+        export_height,
+        instances,
+        lights,
+        fog_emitters,
+        warps,
+        particle_systems,
+        screen_shaders,
+        sky,
+        stereo,
+        mc,
+        approx,
+        timeline,
+    ) catch {
         return std.fmt.bufPrintSentinel(status_buf, "Failed to encode scene.", .{}, 0) catch "";
     };
+    defer allocator.free(data);
 
     const io = std.Io.Threaded.global_single_threaded.io();
-    std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path_buf[0..path_len], .data = aw.written() }) catch |err| {
+    std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path_buf[0..path_len], .data = data }) catch |err| {
         return std.fmt.bufPrintSentinel(status_buf, "Failed to save scene ({s}).", .{@errorName(err)}, 0) catch "Failed to save scene.";
     };
 
@@ -405,6 +486,312 @@ fn applyParamDtosTo(params: []CustomParam, count: usize, saved: []const ParamDto
 
 fn applyParamDtos(formula: *FormulaState, saved: []const ParamDto) void {
     applyParamDtosTo(&formula.custom_params, formula.custom_param_count, saved);
+}
+
+
+pub const ApplyMode = enum { load, undo };
+
+pub fn applyScene(
+    allocator: std.mem.Allocator,
+    gpu_ctx: *Context,
+    fractal: *FractalRenderer,
+    camera: *FreeCamera,
+    max_steps: *f32,
+    max_steps_range: *SliderRange,
+    max_dist: *f32,
+    max_dist_range: *SliderRange,
+    preview_quality: *f32,
+    preview_quality_range: *SliderRange,
+    max_reflection_bounces: *f32,
+    max_reflection_bounces_range: *SliderRange,
+    photon: *PhotonSettings,
+    precision: *MarchPrecision,
+    render_settings: *RenderSettingsState,
+    export_width: *i32,
+    export_height: *i32,
+    instances: *[max_instances]FractalInstanceState,
+    instance_count: *usize,
+    lights: *[max_lights]LightState,
+    light_count: *usize,
+    fog_emitters: *[max_fog_emitters]FogEmitterState,
+    fog_count: *usize,
+    warps: *[max_warps]WarpState,
+    warp_count: *usize,
+    particle_systems: *[max_particle_systems]ParticleSystemState,
+    particle_count: *usize,
+    screen_shaders: *[max_screen_shaders]ScreenShaderState,
+    screen_shader_count: *usize,
+    sky: *SkyState,
+    stereo: *StereoState,
+    mc: *McRenderState,
+    approx: *Approximations,
+    timeline: *TimelineState,
+    scene: SceneFile,
+    mode: ApplyMode,
+) void {
+    const undo = mode == .undo;
+
+    const old_count = instance_count.*;
+    var old_instances: [max_instances]FractalInstanceState = undefined;
+    for (0..old_count) |i| old_instances[i] = instances[i];
+    var kept_formula: [max_instances]bool = @splat(false);
+    var kept_mixin: [max_instances][max_mixins]bool = @splat(@splat(false));
+
+    const new_instance_count = @min(scene.instances.len, max_instances);
+    var needs_rebuild = !undo or new_instance_count != old_count;
+    for (0..new_instance_count) |i| {
+        const src = scene.instances[i];
+        instances[i] = scene_state.newInstance();
+        instances[i].offset = src.offset;
+        instances[i].offset_range_x = src.offset_range_x;
+        instances[i].offset_range_y = src.offset_range_y;
+        instances[i].offset_range_z = src.offset_range_z;
+        instances[i].scale = src.scale;
+        instances[i].scale_range_x = src.scale_range_x;
+        instances[i].scale_range_y = src.scale_range_y;
+        instances[i].scale_range_z = src.scale_range_z;
+        instances[i].scale_uniform = src.scale_uniform;
+        instances[i].scale_uniform_range = src.scale_uniform_range;
+        instances[i].rotation = src.rotation;
+        instances[i].rotation_range_x = src.rotation_range_x;
+        instances[i].rotation_range_y = src.rotation_range_y;
+        instances[i].rotation_range_z = src.rotation_range_z;
+        instances[i].step_safety = src.step_safety;
+        instances[i].step_safety_range = src.step_safety_range;
+        instances[i].combine_mode = src.combine_mode;
+        instances[i].blend_k = src.blend_k;
+        instances[i].blend_k_range = src.blend_k_range;
+        instances[i].hybrid_base_iters = src.hybrid_base_iters;
+        instances[i].hybrid_base_iters_range = src.hybrid_base_iters_range;
+        instances[i].hybrid_total_iters = src.hybrid_total_iters;
+        instances[i].hybrid_total_iters_range = src.hybrid_total_iters_range;
+        instances[i].trap = src.trap;
+        instances[i].ft_view = src.ft_view;
+        instances[i].fft_box_radius = src.fft_box_radius;
+        instances[i].fft_box_radius_range = src.fft_box_radius_range;
+        instances[i].fft_cloud_density = src.fft_cloud_density;
+        instances[i].fft_cloud_density_range = src.fft_cloud_density_range;
+        instances[i].fft_lowpass = src.fft_lowpass;
+        instances[i].fft_lowpass_range = src.fft_lowpass_range;
+        instances[i].fft_highpass = src.fft_highpass;
+        instances[i].fft_highpass_range = src.fft_highpass_range;
+        instances[i].fft_normalize = src.fft_normalize;
+        instances[i].visible = src.visible;
+
+        const old: ?*const FractalInstanceState = if (undo and i < old_count) &old_instances[i] else null;
+
+        copyPathInto(&instances[i].formula, src.formula.path);
+        if (old) |o| {
+            if (canKeepFormula(&o.formula, src.formula.path)) {
+                instances[i].formula = o.formula;
+                kept_formula[i] = true;
+            }
+            instances[i].window_open = o.window_open;
+        }
+
+        instances[i].mixin_count = @min(src.mixins.len, max_mixins);
+        if (old) |o| {
+            if (instances[i].mixin_count != o.mixin_count) needs_rebuild = true;
+        }
+        for (0..instances[i].mixin_count) |j| {
+            const msrc = src.mixins[j];
+            instances[i].mixins[j].iterations = msrc.iterations;
+            instances[i].mixins[j].iterations_range = msrc.iterations_range;
+            copyPathInto(&instances[i].mixins[j].formula, msrc.formula.path);
+            if (old) |o| {
+                if (j < o.mixin_count) {
+                    if (canKeepFormula(&o.mixins[j].formula, msrc.formula.path)) {
+                        instances[i].mixins[j].formula = o.mixins[j].formula;
+                        kept_mixin[i][j] = true;
+                    }
+                    instances[i].mixins[j].window_open = o.mixins[j].window_open;
+                }
+            }
+        }
+
+        instances[i].color_count = @min(src.colors.len, max_color_stops);
+        for (0..instances[i].color_count) |k| instances[i].colors[k] = src.colors[k];
+        if (old) |o| {
+            if (o.selected_color) |sel| {
+                if (sel < instances[i].color_count) instances[i].selected_color = sel;
+            }
+        }
+    }
+
+    for (0..old_count) |i| {
+        if (!(i < new_instance_count and kept_formula[i])) old_instances[i].formula.deinit(allocator);
+        for (0..old_instances[i].mixin_count) |j| {
+            const kept = i < new_instance_count and j < instances[i].mixin_count and kept_mixin[i][j];
+            if (!kept) old_instances[i].mixins[j].formula.deinit(allocator);
+        }
+    }
+    instance_count.* = new_instance_count;
+    formula_library.noteListChanged();
+
+    for (0..new_instance_count) |i| {
+        const src = scene.instances[i];
+        if (!kept_formula[i]) {
+            needs_rebuild = true;
+            if (src.formula.path.len > 0) scene_state.loadFormulaBodyOnly(allocator, &instances[i].formula);
+        }
+        applyParamDtos(&instances[i].formula, src.formula.params);
+
+        for (0..instances[i].mixin_count) |j| {
+            const msrc = src.mixins[j];
+            if (!kept_mixin[i][j]) {
+                needs_rebuild = true;
+                if (msrc.formula.path.len > 0) scene_state.loadFormulaBodyOnly(allocator, &instances[i].mixins[j].formula);
+            }
+            applyParamDtos(&instances[i].mixins[j].formula, msrc.formula.params);
+        }
+    }
+
+    const old_shader_count = screen_shader_count.*;
+    var old_shaders: [max_screen_shaders]ScreenShaderState = undefined;
+    for (0..old_shader_count) |i| old_shaders[i] = screen_shaders[i];
+    var kept_shader: [max_screen_shaders]bool = @splat(false);
+    screen_shader_count.* = @min(scene.screen_shaders.len, max_screen_shaders);
+    for (0..screen_shader_count.*) |i| {
+        const src = scene.screen_shaders[i];
+        if (undo and i < old_shader_count and std.mem.eql(u8, old_shaders[i].pathSlice(), src.path) and
+            (old_shaders[i].pipeline != null or src.path.len == 0))
+        {
+            screen_shaders[i] = old_shaders[i];
+            kept_shader[i] = true;
+        } else {
+            screen_shaders[i] = ScreenShaderState.init();
+            screen_shaders[i].setPath(src.path);
+            if (src.path.len > 0) {
+                screen_shader.compileInto(allocator, gpu_ctx, &fractal.post, &screen_shaders[i]);
+            }
+        }
+        screen_shaders[i].enabled = src.enabled;
+        screen_shaders[i].animated = src.animated;
+        applyParamDtosTo(&screen_shaders[i].params, screen_shaders[i].param_count, src.params);
+    }
+    for (0..old_shader_count) |i| {
+        if (!kept_shader[i]) old_shaders[i].deinit(allocator);
+    }
+
+    const old_particle_count = particle_count.*;
+    var old_particles: [max_particle_systems]ParticleSystemState = undefined;
+    for (0..old_particle_count) |i| old_particles[i] = particle_systems[i];
+    particle_count.* = @min(scene.particle_systems.len, max_particle_systems);
+    for (0..particle_count.*) |i| {
+        particle_systems[i] = scene.particle_systems[i];
+        particle_systems[i].window_open = false;
+        particle_systems[i].selected_color = null;
+        particle_systems[i].color_count = @min(particle_systems[i].color_count, max_color_stops);
+        if (undo and i < old_particle_count) {
+            particle_systems[i].window_open = old_particles[i].window_open;
+            if (old_particles[i].selected_color) |sel| {
+                if (sel < particle_systems[i].color_count) particle_systems[i].selected_color = sel;
+            }
+        }
+    }
+
+    if (!undo) {
+        const needs = particles_mod.shaderNeeds(particle_systems[0..particle_count.*]);
+        fractal.variant = .{ .warps = scene.warps.len > 0, .particles_lit = needs.lit, .particles_dots = needs.dots };
+    }
+    if (needs_rebuild) {
+        scene_state.rebuildAllAsync(gpu_ctx, fractal, allocator, instances[0..instance_count.*], instance_count.*);
+    }
+
+    const old_light_count = light_count.*;
+    var old_light_open: [max_lights]bool = undefined;
+    for (0..old_light_count) |i| old_light_open[i] = lights[i].window_open;
+    light_count.* = @min(scene.lights.len, max_lights);
+    for (0..light_count.*) |i| {
+        lights[i] = scene.lights[i];
+        lights[i].window_open = undo and i < old_light_count and old_light_open[i];
+    }
+
+    const old_fog_count = fog_count.*;
+    var old_fog_open: [max_fog_emitters]bool = undefined;
+    for (0..old_fog_count) |i| old_fog_open[i] = fog_emitters[i].window_open;
+    fog_count.* = @min(scene.fog_emitters.len, max_fog_emitters);
+    for (0..fog_count.*) |i| {
+        fog_emitters[i] = scene.fog_emitters[i];
+        fog_emitters[i].window_open = undo and i < old_fog_count and old_fog_open[i];
+    }
+
+    const old_warp_count = warp_count.*;
+    var old_warp_open: [max_warps]bool = undefined;
+    for (0..old_warp_count) |i| old_warp_open[i] = warps[i].window_open;
+    warp_count.* = @min(scene.warps.len, max_warps);
+    for (0..warp_count.*) |i| {
+        warps[i] = scene.warps[i];
+        warps[i].window_open = undo and i < old_warp_count and old_warp_open[i];
+    }
+
+    const old_sky = sky.*;
+    skyFromDto(sky, scene.sky);
+    if (undo) sky.window_open = old_sky.window_open;
+    if (undo and std.mem.eql(u8, old_sky.pathSlice(), sky.pathSlice())) {
+        sky.image_status = old_sky.image_status;
+    } else {
+        fractal.sky.clear(gpu_ctx);
+        if (sky.pathSlice().len > 0) {
+            if (fractal.sky.loadFromFile(gpu_ctx, allocator, sky.pathSlice())) |info| {
+                sky.setStatus("Loaded {d}x{d}.{s}", .{ info.width, info.height, if (info.is_hdr) " HDR." else "" });
+            } else |err| {
+                sky.setStatus("Could not load image ({s}).", .{@errorName(err)});
+            }
+        }
+    }
+
+    const stereo_open = stereo.settings_open;
+    stereo.* = scene.stereo;
+    stereo.settings_open = undo and stereo_open;
+
+    mc.* = scene.mc;
+    approx.* = scene.approximations;
+
+    timeline.keyframe_count = @min(scene.keyframes.len, animation.max_keyframes);
+    for (0..timeline.keyframe_count) |i| timeline.keyframes[i] = scene.keyframes[i];
+    timeline.duration = scene.timeline_duration;
+    if (undo) {
+        timeline.playhead = @min(timeline.playhead, timeline.duration);
+    } else {
+        timeline.playhead = 0;
+        timeline.playing = false;
+        timeline.dirty = true;
+    }
+
+    const kept_camera = camera.*;
+    camera.* = scene.camera;
+    if (undo) {
+        camera.position = kept_camera.position;
+        camera.forward = kept_camera.forward;
+        camera.up = kept_camera.up;
+        camera.zoom_2d = kept_camera.zoom_2d;
+        camera.speed_multiplier = kept_camera.speed_multiplier;
+    }
+    camera.zoom_2d = std.math.clamp(camera.zoom_2d, camera_mod.min_zoom_2d, camera_mod.max_zoom_2d);
+    max_steps.* = scene.max_steps;
+    max_steps_range.* = scene.max_steps_range;
+    max_dist.* = scene.max_dist;
+    max_dist_range.* = scene.max_dist_range;
+    preview_quality.* = scene.preview_quality;
+    preview_quality_range.* = scene.preview_quality_range;
+    max_reflection_bounces.* = scene.max_reflection_bounces;
+    max_reflection_bounces_range.* = scene.max_reflection_bounces_range;
+    photon.* = scene.photon;
+    precision.* = scene.precision;
+    render_settings.* = scene.render_settings;
+    export_width.* = scene.export_width;
+    export_height.* = scene.export_height;
+}
+
+fn canKeepFormula(old: *const FormulaState, new_path: []const u8) bool {
+    if (old.compile_pending) return false;
+    if (!std.mem.eql(u8, pathSlice(old), new_path)) return false;
+    return old.formula_body != null or new_path.len == 0;
+}
+
+pub fn parseScene(allocator: std.mem.Allocator, content: []const u8) !std.json.Parsed(SceneFile) {
+    return std.json.parseFromSlice(SceneFile, allocator, content, .{ .ignore_unknown_fields = true });
 }
 
 pub fn loadScene(
@@ -458,171 +845,53 @@ pub fn loadScene(
     };
     defer allocator.free(content);
 
-    var parsed = std.json.parseFromSlice(SceneFile, allocator, content, .{ .ignore_unknown_fields = true }) catch |err| {
+    var parsed = parseScene(allocator, content) catch |err| {
         return std.fmt.bufPrintSentinel(status_buf, "Invalid scene file ({s}).", .{@errorName(err)}, 0) catch "Invalid scene file.";
     };
     defer parsed.deinit();
-    const scene = parsed.value;
 
-    if (scene.version > current_version) {
+    if (parsed.value.version > current_version) {
         return std.fmt.bufPrintSentinel(status_buf, "Scene file is from a newer version of the app.", .{}, 0) catch "";
     }
 
-    for (0..instance_count.*) |i| scene_state.freeInstanceOwned(allocator, &instances[i]);
-
-    const new_instance_count = @min(scene.instances.len, max_instances);
-    for (0..new_instance_count) |i| {
-        const src = scene.instances[i];
-        instances[i] = scene_state.newInstance();
-        instances[i].offset = src.offset;
-        instances[i].offset_range_x = src.offset_range_x;
-        instances[i].offset_range_y = src.offset_range_y;
-        instances[i].offset_range_z = src.offset_range_z;
-        instances[i].scale = src.scale;
-        instances[i].scale_range_x = src.scale_range_x;
-        instances[i].scale_range_y = src.scale_range_y;
-        instances[i].scale_range_z = src.scale_range_z;
-        instances[i].scale_uniform = src.scale_uniform;
-        instances[i].scale_uniform_range = src.scale_uniform_range;
-        instances[i].rotation = src.rotation;
-        instances[i].rotation_range_x = src.rotation_range_x;
-        instances[i].rotation_range_y = src.rotation_range_y;
-        instances[i].rotation_range_z = src.rotation_range_z;
-        instances[i].step_safety = src.step_safety;
-        instances[i].step_safety_range = src.step_safety_range;
-        instances[i].combine_mode = src.combine_mode;
-        instances[i].blend_k = src.blend_k;
-        instances[i].blend_k_range = src.blend_k_range;
-        instances[i].hybrid_base_iters = src.hybrid_base_iters;
-        instances[i].hybrid_base_iters_range = src.hybrid_base_iters_range;
-        instances[i].hybrid_total_iters = src.hybrid_total_iters;
-        instances[i].hybrid_total_iters_range = src.hybrid_total_iters_range;
-        instances[i].trap = src.trap;
-        instances[i].ft_view = src.ft_view;
-        instances[i].fft_box_radius = src.fft_box_radius;
-        instances[i].fft_box_radius_range = src.fft_box_radius_range;
-        instances[i].fft_cloud_density = src.fft_cloud_density;
-        instances[i].fft_cloud_density_range = src.fft_cloud_density_range;
-        instances[i].fft_lowpass = src.fft_lowpass;
-        instances[i].fft_lowpass_range = src.fft_lowpass_range;
-        instances[i].fft_highpass = src.fft_highpass;
-        instances[i].fft_highpass_range = src.fft_highpass_range;
-        instances[i].fft_normalize = src.fft_normalize;
-        instances[i].visible = src.visible;
-
-        copyPathInto(&instances[i].formula, src.formula.path);
-
-        instances[i].mixin_count = @min(src.mixins.len, max_mixins);
-        for (0..instances[i].mixin_count) |j| {
-            const msrc = src.mixins[j];
-            instances[i].mixins[j].iterations = msrc.iterations;
-            instances[i].mixins[j].iterations_range = msrc.iterations_range;
-            copyPathInto(&instances[i].mixins[j].formula, msrc.formula.path);
-        }
-
-        instances[i].color_count = @min(src.colors.len, max_color_stops);
-        for (0..instances[i].color_count) |k| instances[i].colors[k] = src.colors[k];
-    }
-    instance_count.* = new_instance_count;
-    formula_library.noteListChanged();
-
-    for (0..new_instance_count) |i| {
-        const src = scene.instances[i];
-        if (src.formula.path.len > 0) {
-            scene_state.loadFormulaBodyOnly(allocator, &instances[i].formula);
-        }
-        applyParamDtos(&instances[i].formula, src.formula.params);
-
-        for (0..instances[i].mixin_count) |j| {
-            const msrc = src.mixins[j];
-            if (msrc.formula.path.len > 0) {
-                scene_state.loadFormulaBodyOnly(allocator, &instances[i].mixins[j].formula);
-            }
-            applyParamDtos(&instances[i].mixins[j].formula, msrc.formula.params);
-        }
-    }
-    for (0..screen_shader_count.*) |i| screen_shaders[i].deinit(allocator);
-    screen_shader_count.* = @min(scene.screen_shaders.len, max_screen_shaders);
-    for (0..screen_shader_count.*) |i| {
-        const src = scene.screen_shaders[i];
-        screen_shaders[i] = ScreenShaderState.init();
-        screen_shaders[i].setPath(src.path);
-        screen_shaders[i].enabled = src.enabled;
-        screen_shaders[i].animated = src.animated;
-        if (src.path.len > 0) {
-            screen_shader.compileInto(allocator, gpu_ctx, &fractal.post, &screen_shaders[i]);
-        }
-        applyParamDtosTo(&screen_shaders[i].params, screen_shaders[i].param_count, src.params);
-    }
-
-    particle_count.* = @min(scene.particle_systems.len, max_particle_systems);
-    for (0..particle_count.*) |i| {
-        particle_systems[i] = scene.particle_systems[i];
-        particle_systems[i].window_open = false;
-        particle_systems[i].selected_color = null;
-        particle_systems[i].color_count = @min(particle_systems[i].color_count, max_color_stops);
-    }
-    const needs = particles_mod.shaderNeeds(particle_systems[0..particle_count.*]);
-
-    fractal.variant = .{ .warps = scene.warps.len > 0, .particles_lit = needs.lit, .particles_dots = needs.dots };
-    scene_state.rebuildAllAsync(gpu_ctx, fractal, allocator, instances[0..instance_count.*], instance_count.*);
-
-    light_count.* = @min(scene.lights.len, max_lights);
-    for (0..light_count.*) |i| {
-        lights[i] = scene.lights[i];
-        lights[i].window_open = false;
-    }
-
-    fog_count.* = @min(scene.fog_emitters.len, max_fog_emitters);
-    for (0..fog_count.*) |i| {
-        fog_emitters[i] = scene.fog_emitters[i];
-        fog_emitters[i].window_open = false;
-    }
-
-    warp_count.* = @min(scene.warps.len, max_warps);
-    for (0..warp_count.*) |i| {
-        warps[i] = scene.warps[i];
-        warps[i].window_open = false;
-    }
-
-    skyFromDto(sky, scene.sky);
-    fractal.sky.clear(gpu_ctx);
-    if (sky.pathSlice().len > 0) {
-        if (fractal.sky.loadFromFile(gpu_ctx, allocator, sky.pathSlice())) |info| {
-            sky.setStatus("Loaded {d}x{d}.{s}", .{ info.width, info.height, if (info.is_hdr) " HDR." else "" });
-        } else |err| {
-            sky.setStatus("Could not load image ({s}).", .{@errorName(err)});
-        }
-    }
-
-    stereo.* = scene.stereo;
-    stereo.settings_open = false;
-
-    mc.* = scene.mc;
-    approx.* = scene.approximations;
-
-    timeline.keyframe_count = @min(scene.keyframes.len, animation.max_keyframes);
-    for (0..timeline.keyframe_count) |i| timeline.keyframes[i] = scene.keyframes[i];
-    timeline.duration = scene.timeline_duration;
-    timeline.playhead = 0;
-    timeline.playing = false;
-    timeline.dirty = true;
-
-    camera.* = scene.camera;
-    camera.zoom_2d = std.math.clamp(camera.zoom_2d, camera_mod.min_zoom_2d, camera_mod.max_zoom_2d);
-    max_steps.* = scene.max_steps;
-    max_steps_range.* = scene.max_steps_range;
-    max_dist.* = scene.max_dist;
-    max_dist_range.* = scene.max_dist_range;
-    preview_quality.* = scene.preview_quality;
-    preview_quality_range.* = scene.preview_quality_range;
-    max_reflection_bounces.* = scene.max_reflection_bounces;
-    max_reflection_bounces_range.* = scene.max_reflection_bounces_range;
-    photon.* = scene.photon;
-    precision.* = scene.precision;
-    render_settings.* = scene.render_settings;
-    export_width.* = scene.export_width;
-    export_height.* = scene.export_height;
+    applyScene(
+        allocator,
+        gpu_ctx,
+        fractal,
+        camera,
+        max_steps,
+        max_steps_range,
+        max_dist,
+        max_dist_range,
+        preview_quality,
+        preview_quality_range,
+        max_reflection_bounces,
+        max_reflection_bounces_range,
+        photon,
+        precision,
+        render_settings,
+        export_width,
+        export_height,
+        instances,
+        instance_count,
+        lights,
+        light_count,
+        fog_emitters,
+        fog_count,
+        warps,
+        warp_count,
+        particle_systems,
+        particle_count,
+        screen_shaders,
+        screen_shader_count,
+        sky,
+        stereo,
+        mc,
+        approx,
+        timeline,
+        parsed.value,
+        .load,
+    );
 
     return std.fmt.bufPrintSentinel(status_buf, "Loaded scene, compiling shader...", .{}, 0) catch "Loaded.";
 }

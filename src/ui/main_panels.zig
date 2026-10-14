@@ -5,6 +5,7 @@ const nk = @import("../bindings/nuklear.zig").c;
 const Context = @import("../gpu/webgpu_context.zig").Context;
 const fractal_gpu = @import("../gpu/fractal_renderer.zig");
 const FractalRenderer = fractal_gpu.FractalRenderer;
+const gpu_timer = fractal_gpu.gpu_timer;
 const max_instances = fractal_gpu.max_instances;
 const max_lights = fractal_gpu.max_lights;
 const max_fog_emitters = fractal_gpu.max_fog_emitters;
@@ -506,8 +507,55 @@ fn buildSceneWindow(ctx: *nk.nk_context, app: *const App, ws: layout.Workspace) 
             defer widgets.endSection(ctx);
             buildScreenShaderList(ctx, app);
         }
+
+        if (widgets.beginSection(ctx, "GPU timings", .closed)) {
+            defer widgets.endSection(ctx);
+            buildGpuTimings(ctx, &gpu_timer.global);
+        }
     }
     layout.end(ctx, title, &panels.scene);
+}
+
+fn timingRow(ctx: *nk.nk_context, label: [:0]const u8, ms: f32, color: nk.struct_nk_color) void {
+    var buf: [32]u8 = undefined;
+    const text: [:0]const u8 = std.fmt.bufPrintSentinel(&buf, "{d:.2} ms", .{ms}, 0) catch "?";
+    nk.nk_layout_row_dynamic(ctx, 18, 2);
+    nk.nk_label_colored(ctx, label.ptr, @intCast(nk.NK_TEXT_LEFT), color);
+    nk.nk_label_colored(ctx, text.ptr, @intCast(nk.NK_TEXT_RIGHT), color);
+}
+
+fn buildGpuTimings(ctx: *nk.nk_context, timer: *gpu_timer.GpuTimer) void {
+    if (!timer.supported) {
+        widgets.hint(ctx, "This GPU or driver does not support timestamp queries, so passes cannot be timed.", widgets.warn);
+        return;
+    }
+    timer.wanted = true;
+
+    var any = false;
+    for (std.enums.values(gpu_timer.Lane)) |lane| {
+        const s = timer.stats[@intFromEnum(lane)];
+        if (!lane.everyFrame() or !s.seen) continue;
+        timingRow(ctx, lane.label(), s.ms, if (s.fresh) nk.nk_rgb(220, 220, 225) else widgets.dim);
+        any = true;
+    }
+    if (!any) {
+        widgets.hint(ctx, "Waiting for a frame that re-renders the fractal. Move the camera or change a setting.", widgets.dim);
+        return;
+    }
+    timingRow(ctx, "Last timed frame", timer.frame_ms, nk.nk_rgb(140, 220, 140));
+
+    var any_rebuild = false;
+    for (std.enums.values(gpu_timer.Lane)) |lane| {
+        const s = timer.stats[@intFromEnum(lane)];
+        if (lane.everyFrame() or !s.seen) continue;
+        if (!any_rebuild) {
+            nk.nk_layout_row_dynamic(ctx, 18, 1);
+            nk.nk_label_colored(ctx, "Rebuilds, last run:", @intCast(nk.NK_TEXT_LEFT), widgets.dim);
+            any_rebuild = true;
+        }
+        timingRow(ctx, lane.label(), s.ms, if (s.fresh) nk.nk_rgb(220, 220, 225) else widgets.dim);
+    }
+    widgets.hint(ctx, "GPU time per pass, smoothed. Only frames that re-render the fractal are timed; grey rows did not run in the last timed frame.", widgets.dim);
 }
 
 fn buildScreenShaderList(ctx: *nk.nk_context, app: *const App) void {

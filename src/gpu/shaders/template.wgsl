@@ -259,8 +259,8 @@ struct Uniforms {
     photon_aim: f32,
     carve_count: f32,
     hotspot_scale: f32,
-    _pad_carve1: f32,
-    _pad_carve2: f32,
+    hotspot_sources: f32,
+    overstep_scale: f32,
     carves: array<vec4f, MAX_CARVES>,
     particle_systems: array<ParticleSystem, MAX_PARTICLE_SYSTEMS>,
     approx_flags: f32,
@@ -286,6 +286,7 @@ const APPROX_TINT: u32 = 1u << 5u;
 const APPROX_CHEAP_DISPERSION: u32 = 1u << 6u;
 const APPROX_COARSE_SECONDARY: u32 = 1u << 7u;
 const APPROX_DISTANCE_LOD: u32 = 1u << 8u;
+const APPROX_SKY_REFLECTIONS: u32 = 1u << 9u;
 
 fn approx_on(flag: u32) -> bool {
     return (u32(u.approx_flags) & flag) != 0u;
@@ -308,6 +309,36 @@ const PART_DEPTH_OF_FIELD: u32 = 1u << 13u;
 const PART_MC_INDIRECT: u32 = 1u << 14u;
 const PART_GEOMETRY_ONLY: u32 = 1u << 16u;
 const PART_HOTSPOTS: u32 = 1u << 17u;
+const PART_OVERSTEP: u32 = 1u << 18u;
+
+const HOT_PRIMARY: u32 = 1u << 0u;
+const HOT_NORMALS: u32 = 1u << 1u;
+const HOT_MATERIALS: u32 = 1u << 2u;
+const HOT_SHADOWS: u32 = 1u << 3u;
+const HOT_AO: u32 = 1u << 4u;
+const HOT_FOG: u32 = 1u << 5u;
+const HOT_SECONDARY: u32 = 1u << 6u;
+const HOT_SUBSURFACE: u32 = 1u << 7u;
+const HOT_MC_INDIRECT: u32 = 1u << 8u;
+const HOT_DOF: u32 = 1u << 9u;
+const HOT_OWNERS: u32 = HOT_SHADOWS | HOT_FOG | HOT_SUBSURFACE | HOT_MC_INDIRECT | HOT_DOF;
+
+var<private> g_hot_src: u32 = 0u;
+var<private> g_hot_evals: f32 = 0.0;
+
+fn hot_enter(src: u32) -> u32 {
+    let prev = g_hot_src;
+    if ((prev & HOT_OWNERS) == 0u) {
+        g_hot_src = src;
+    }
+    return prev;
+}
+
+fn hot_count() {
+    if ((g_hot_src & u32(u.hotspot_sources)) != 0u) {
+        g_hot_evals += 1.0;
+    }
+}
 
 override PARTS_FIXED: bool = false;
 override PARTS_FIXED_OFF: u32 = 0u;
@@ -1423,6 +1454,7 @@ fn apply_carves(pos: vec3f, d: f32) -> f32 {
 }
 
 fn scene_de(pos: vec3f) -> f32 {
+    hot_count();
     let wp = warp_domain(pos);
     let count = max(i32(u.instance_count), 1);
     var d = empty_scene_de();
@@ -1449,6 +1481,7 @@ fn scene_de(pos: vec3f) -> f32 {
 const TETRAHEDRAL_TAPS = 4;
 
 fn estimate_normal(pos: vec3f, t: f32) -> vec3f {
+    let hot_prev = hot_enter(HOT_NORMALS);
     let e = march_epsilon(t);
     var grad = vec3f(0.0);
     for (var i = 0; i < TETRAHEDRAL_TAPS; i++) {
@@ -1462,6 +1495,7 @@ fn estimate_normal(pos: vec3f, t: f32) -> vec3f {
         }
         grad += k * scene_de(pos + k * e);
     }
+    g_hot_src = hot_prev;
     return normalize(grad);
 }
 
@@ -1488,6 +1522,7 @@ fn calc_ao(pos: vec3f, normal: vec3f, t: f32) -> f32 {
     if (!part_on(PART_AMBIENT_OCCLUSION)) {
         return 1.0;
     }
+    let hot_prev = hot_enter(HOT_AO);
     let radius = clamp(t * AO_RADIUS_PER_DIST, AO_MIN_RADIUS, AO_MAX_RADIUS);
     var occlusion = 0.0;
     var weight = 1.0;
@@ -1497,6 +1532,7 @@ fn calc_ao(pos: vec3f, normal: vec3f, t: f32) -> f32 {
         occlusion += max(step_dist - d, 0.0) * weight;
         weight *= AO_WEIGHT_DECAY;
     }
+    g_hot_src = hot_prev;
     return clamp(1.0 - AO_STRENGTH * occlusion / radius, 0.0, 1.0);
 }
 
@@ -1510,12 +1546,18 @@ const COARSE_STEP_DIVISOR = 2;
 
 var<private> g_coarse_march: bool = false;
 
+const OVERSTEP_TOLERANCE = 0.02;
+
+var<private> g_overstep_watch: bool = false;
+var<private> g_overstep_worst: f32 = 0.0;
+var<private> g_overstep_count: f32 = 0.0;
+
 fn march_to(origin: vec3f, dir: vec3f, max_t: f32) -> MarchResult {
     let coarse = g_coarse_march;
     let max_steps = select(i32(u.max_steps), max(i32(u.max_steps) / COARSE_STEP_DIVISOR, COARSE_MIN_STEPS), coarse);
     let hq = u.high_quality > 0.5 && !coarse;
     let eps_scale = select(1.0, COARSE_EPS_SCALE, coarse);
-    let refine_budget = select(max(select(i32(u.refine_fast), i32(u.refine_hq), hq), 0), 0, coarse);
+    let refine_budget = max(select(max(select(i32(u.refine_fast), i32(u.refine_hq), hq), 0), 0, coarse), select(0, 1, g_overstep_watch));
     let footprint_per_unit_t = u.hq_footprint_budget_px * 2.0 / max(u.resolution.y, 1.0);
 
     var t = 0.0;
@@ -1551,6 +1593,13 @@ fn march_to(origin: vec3f, dir: vec3f, max_t: f32) -> MarchResult {
 
         let d = scene_de(origin + dir * sample_t);
         evals++;
+        if (g_overstep_watch && !probing) {
+            let claimed = hi - sample_t;
+            if (claimed > eps && d < claimed * (1.0 - OVERSTEP_TOLERANCE)) {
+                g_overstep_worst = max(g_overstep_worst, 1.0 - d / claimed);
+                g_overstep_count += 1.0;
+            }
+        }
         if (d < eps) {
             return MarchResult(true, sample_t, f32(i), f32(evals));
         }
@@ -1748,6 +1797,9 @@ struct SurfacePoint {
 }
 
 fn hit_material(hit_pos: vec3f) -> SurfacePoint {
+    let hot_prev = hot_enter(HOT_MATERIALS);
+    hot_count();
+    g_hot_src = hot_prev;
     let wp = warp_domain(hit_pos);
     let count = max(i32(u.instance_count), 1);
     var d = empty_scene_de();
@@ -1978,7 +2030,10 @@ fn shadow_factor(surf_pos: vec3f, normal: vec3f, light: Light, light_dir: vec3f,
     }
     let bias = SHADOW_BIAS;
     let vp = VisParams(mix(light.shadow_softness, SHADOW_HARD_K, light.hard_shadows), bias, SHADOW_HIT_EPS, SHADOW_EXIT_SLOPE, SHADOW_EXIT_BIAS, SHADOW_STEP_FLOOR, SHADOW_FLOOR_GROWTH, SHADOW_MIN_STEP, SHADOW_TINT_CUT, min(i32(u.max_steps), SHADOW_MAX_STEPS), true);
-    return visibility_march(surf_pos + normal * bias, light_dir, light_dist, vp);
+    let hot_prev = hot_enter(HOT_SHADOWS);
+    let vis = visibility_march(surf_pos + normal * bias, light_dir, light_dist, vp);
+    g_hot_src = hot_prev;
+    return vis;
 }
 
 fn fog_light_visibility(pos: vec3f, light_dir: vec3f, light_dist: f32, steps: i32) -> Spec {
@@ -2294,6 +2349,7 @@ fn march_fog(origin: vec3f, dir: vec3f, max_t: f32, screen_pos: vec2f) -> Volume
     let span_origin = origin + dir * span.x;
     let samples = clamp(i32(u.fog_samples), 1, FOG_MAX_SAMPLES);
 
+    let hot_prev = hot_enter(HOT_FOG);
     var accum_color = spec_splat(0.0);
     var accum_transmittance = 0.0;
     for (var s = 0; s < samples; s++) {
@@ -2302,6 +2358,7 @@ fn march_fog(origin: vec3f, dir: vec3f, max_t: f32, screen_pos: vec2f) -> Volume
         accum_color = spec_add(accum_color, one.color);
         accum_transmittance += one.transmittance;
     }
+    g_hot_src = hot_prev;
     result.color = spec_scale(accum_color, 1.0 / f32(samples));
     result.transmittance = accum_transmittance / f32(samples);
     return result;
@@ -2464,7 +2521,9 @@ fn shade_local(pos: vec3f, dir: vec3f, normal: vec3f, mat: ColorStop, ambient_li
     let sss = clamp(mat.subsurface, 0.0, 1.0);
     var translucency = 0.0;
     if (sss > MATERIAL_EPSILON) {
+        let hot_prev = hot_enter(HOT_SUBSURFACE);
         let inside = march_inside(pos - normal * SSS_PROBE_OFFSET, -normal, min(i32(u.max_steps), SSS_MAX_STEPS), SSS_PROBE_STEP);
+        g_hot_src = hot_prev;
         if (inside.exited) {
             translucency = sss * exp(-inside.dist * mix(SSS_ABSORB_THIN, SSS_ABSORB_THICK, sss));
         }
@@ -2537,6 +2596,13 @@ fn cosine_hemisphere_from(normal: vec3f, u1: f32, u2: f32) -> vec3f {
 }
 
 fn indirect_light(pos: vec3f, normal: vec3f, seed: vec2f) -> Spec {
+    let hot_prev = hot_enter(HOT_MC_INDIRECT);
+    let light = indirect_light_traced(pos, normal, seed);
+    g_hot_src = hot_prev;
+    return light;
+}
+
+fn indirect_light_traced(pos: vec3f, normal: vec3f, seed: vec2f) -> Spec {
     let dir = cosine_hemisphere_sample(normal, seed);
     let origin = pos + normal * INDIRECT_RAY_BIAS;
     let coarse_before = g_coarse_march;
@@ -2894,6 +2960,7 @@ fn trace_path(ray_origin: vec3f, ray_dir: vec3f, screen_pos: vec2f) -> vec3f {
         var hit_ok = false;
         var seg_steps = 0.0;
         g_coarse_march = depth > 0 && approx_on(APPROX_COARSE_SECONDARY);
+        g_hot_src = select(HOT_SECONDARY, HOT_PRIMARY, depth == 0);
         if (in_solid) {
             let ins = march_inside(pos, dir, inner_steps, INSIDE_STEP_BASE);
             hit_t = ins.dist;
@@ -3005,6 +3072,12 @@ fn trace_path(ray_origin: vec3f, ray_dir: vec3f, screen_pos: vec2f) -> vec3f {
         disp.valid = sc.kind == SCATTER_TRANSMIT && cheap_disp && mat.abbe > MIN_ABBE;
         if (disp.valid) {
             disp = DispersionRecord(true, dir, normal, max(mat.ior, 1.0), mat.abbe, in_solid);
+        }
+
+        if (sc.kind == SCATTER_REFLECT && !in_solid && approx_on(APPROX_SKY_REFLECTIONS)) {
+            throughput = spec_mul(throughput, spec_mul(disp_weight, sc.weight));
+            radiance = spec_add(radiance, spec_mul(throughput, spec_from_rgb(escape_sky(sc.dir, disp) * step_ao(seg_steps))));
+            break;
         }
 
         let thin_glass = approx_on(APPROX_THIN_GLASS);
@@ -3140,27 +3213,21 @@ fn hotspot_palette(h: f32) -> vec3f {
     return col * (0.5 + 0.5 * h);
 }
 
-fn render_hotspots(dir: vec3f) -> FragOut {
-    let m = march(u.camera_pos, dir);
-    let cost = clamp(m.evals / max(u.hotspot_scale, 1.0), 0.0, 1.0);
-    let col = sqrt(clamp(hotspot_palette(cost) * HOTSPOT_GAIN, vec3f(0.0), vec3f(1.0)));
-    return frag_out(vec4f(undo_tonemap(col), 0.0), select(0.0, m.dist, m.hit), select(vec3f(0.0), -dir, m.hit));
+fn hotspot_color(amount: f32) -> vec3f {
+    return sqrt(clamp(hotspot_palette(clamp(amount, 0.0, 1.0)) * HOTSPOT_GAIN, vec3f(0.0), vec3f(1.0)));
 }
 
-@fragment
-fn fs_simple(in: VertexOut) -> FragOut {
-    let aspect = u.resolution.x / u.resolution.y;
-    let uv = vec2f(in.uv.x * aspect, in.uv.y);
-    let dir = normalize(u.camera_forward + uv.x * u.camera_right + uv.y * u.camera_up);
+fn hotspot_cost_color() -> vec3f {
+    return undo_tonemap(hotspot_color(g_hot_evals / max(u.hotspot_scale, 1.0)));
+}
 
-    if (!part_on(PART_HOTSPOTS)) {
-        return render_hotspots(dir);
-    }
-    if (part_on(PART_GEOMETRY_ONLY)) {
-        return render_lite(dir);
-    }
-
+fn render_hotspots(dir: vec3f) -> FragOut {
+    g_hot_src = HOT_PRIMARY;
     let m = march(u.camera_pos, dir);
+    return frag_out(vec4f(hotspot_cost_color(), 0.0), select(0.0, m.dist, m.hit), select(vec3f(0.0), -dir, m.hit));
+}
+
+fn simple_geometry(dir: vec3f, m: MarchResult) -> FragOut {
     if (!m.hit) {
         return frag_out(vec4f(undo_tonemap(SIMPLE_BACKGROUND), 0.0), 0.0, vec3f(0.0));
     }
@@ -3176,6 +3243,36 @@ fn fs_simple(in: VertexOut) -> FragOut {
     let color = mix(SIMPLE_ALBEDO * shade, SIMPLE_BACKGROUND, depth * SIMPLE_DEPTH_CUE);
 
     return frag_out(vec4f(undo_tonemap(color), 0.0), m.dist, normal);
+}
+
+fn render_overstep(dir: vec3f) -> FragOut {
+    g_overstep_watch = true;
+    let m = march(u.camera_pos, dir);
+    g_overstep_watch = false;
+    var out = simple_geometry(dir, m);
+    if (g_overstep_count > 0.0) {
+        out.color = vec4f(undo_tonemap(hotspot_color(g_overstep_worst / max(u.overstep_scale, EPSILON))), 0.0);
+    }
+    return out;
+}
+
+@fragment
+fn fs_simple(in: VertexOut) -> FragOut {
+    let aspect = u.resolution.x / u.resolution.y;
+    let uv = vec2f(in.uv.x * aspect, in.uv.y);
+    let dir = normalize(u.camera_forward + uv.x * u.camera_right + uv.y * u.camera_up);
+
+    if (!part_on(PART_OVERSTEP)) {
+        return render_overstep(dir);
+    }
+    if (!part_on(PART_HOTSPOTS)) {
+        return render_hotspots(dir);
+    }
+    if (part_on(PART_GEOMETRY_ONLY)) {
+        return render_lite(dir);
+    }
+
+    return simple_geometry(dir, march(u.camera_pos, dir));
 }
 
 const SELECT_ID_NONE = 0;
@@ -3428,7 +3525,9 @@ fn fs_main(in: VertexOut) -> FragOut {
         if (u.mc_enabled < 0.5 && !hq) {
             post_blur = true;
         } else {
+            let hot_prev = hot_enter(HOT_DOF);
             let probe = march(u.camera_pos, dir);
+            g_hot_src = hot_prev;
             eff_aperture = dof_aperture(select(u.max_dist, probe.dist, probe.hit), focus_t);
             if (eff_aperture > DOF_MIN_APERTURE) {
                 samples = select(DOF_SAMPLES_FAST, DOF_SAMPLES_HQ, hq);
@@ -3452,6 +3551,10 @@ fn fs_main(in: VertexOut) -> FragOut {
         accum += trace_path(sample_origin, sample_dir, seed);
     }
     color = accum / f32(samples);
+
+    if (!part_on(PART_HOTSPOTS)) {
+        return frag_out(vec4f(hotspot_cost_color(), 0.0), g_primary_dist, g_primary_normal);
+    }
 
     if (post_blur) {
         let hit_t = select(u.max_dist, g_primary_dist, g_primary_dist > 0.0);

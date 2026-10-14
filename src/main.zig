@@ -5,6 +5,7 @@ const wgpu = @import("bindings/webgpu.zig").c;
 const webgpu_context = @import("gpu/webgpu_context.zig");
 const Context = webgpu_context.Context;
 const fractal_gpu = @import("gpu/fractal_renderer.zig");
+const gpu_timer = fractal_gpu.gpu_timer;
 const FractalRenderer = fractal_gpu.FractalRenderer;
 const max_instances = fractal_gpu.max_instances;
 const max_lights = fractal_gpu.max_lights;
@@ -61,6 +62,7 @@ const PhotonPolicy = photon_policy.PhotonPolicy;
 const photons_gpu = @import("gpu/photons.zig");
 const fft_policy = @import("app/fft_state.zig");
 const play_mode = @import("app/play_mode.zig");
+const history = @import("app/history.zig");
 const PlayState = play_mode.PlayState;
 const PreviewDenoiser = @import("gpu/preview_denoiser.zig").PreviewDenoiser;
 const oidn = @import("bindings/oidn.zig");
@@ -74,7 +76,7 @@ fn stampPostEffects(gpu_ctx: *const Context, fractal: *FractalRenderer, parts: R
     fractal.approx_settings = parts.approx;
     var buf: [max_screen_shaders + 1]post_process.Effect = undefined;
     var n: usize = 0;
-    const fog_shown = !fastRender(parts, instances) and (!parts.enabled or parts.isOn(.fog));
+    const fog_shown = !fastRender(parts, instances) and !parts.diagnosticView() and (!parts.enabled or parts.isOn(.fog));
     if (shaft != null and fog_shown) {
         if (fractal.shaftEffect(gpu_ctx, allocator, shaft.?)) |effect| {
             buf[0] = effect;
@@ -95,6 +97,13 @@ fn shaftFor(parts: RenderParts, lights: []const LightState, fog_emitters: []cons
 fn uiHasMouse(ui: *const NuklearBackend, play: *const PlayState) bool {
     return !play.captured and ui.isHoveringUi();
 }
+
+fn uiTextEditing(ui: *const NuklearBackend) bool {
+    const win = ui.ctx.active;
+    return win != null and (win.*.edit.active != 0 or win.*.property.active != 0);
+}
+
+const HistoryOp = enum { none, undo, redo };
 
 fn isMouseEvent(kind: u32) bool {
     return kind == sdl.SDL_EVENT_MOUSE_MOTION or kind == sdl.SDL_EVENT_MOUSE_BUTTON_DOWN or
@@ -154,6 +163,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
     defer gpu_ctx.deinit();
     std.debug.print("[stage] Context.init: done\n", .{});
     webgpu_context.printAdapterInfo(&gpu_ctx);
+    gpu_timer.global.init(&gpu_ctx);
+    defer gpu_timer.global.deinit();
 
     std.debug.print("[stage] FractalRenderer.init: begin\n", .{});
     var fractal = FractalRenderer.init(&gpu_ctx, allocator) catch |err| {
@@ -249,6 +260,10 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var preview_denoiser = PreviewDenoiser{};
     defer preview_denoiser.deinit();
     var preview_denoise_wanted = false;
+
+    var hist = history.History{};
+    defer hist.deinit(allocator);
+    var history_op = HistoryOp.none;
 
     var mc_sample_count: u32 = 0;
     var last_render_uniforms = std.mem.zeroes(fractal_gpu.Uniforms);
@@ -346,8 +361,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
                 (photon_settings.enabled and photonsShown(render_parts, instances[0..instance_count]) and photon_state.debounce_state.dirty) or
                 (if (ftViewSlot(instances[0..instance_count])) |slot| instances[slot].fft_state.debounce_state.dirty else false));
         const continuous_input = (!uiHasMouse(&ui, &play) and (dragging or anyMovementKeyDown(keys_for_wait))) or
-            mc_converging or timeline.playing or redraw_pending or screen_shaders_animating or play_active or rebuild_waiting or fractal.parts.compiling() or
-            preview_denoiser.busy(preview_denoise_wanted);
+            hist.settling() or mc_converging or timeline.playing or redraw_pending or screen_shaders_animating or play_active or rebuild_waiting or fractal.parts.compiling() or
+            preview_denoiser.busy(preview_denoise_wanted) or gpu_timer.global.busy();
         redraw_pending = false;
 
         var event: sdl.SDL_Event = undefined;
@@ -404,7 +419,12 @@ pub fn main(init: std.process.Init.Minimal) !void {
                     }
                 },
                 sdl.SDL_EVENT_KEY_DOWN => {
-                    if (!uiHasMouse(&ui, &play) and !event.key.repeat) {
+                    const ctrl_held = (event.key.mod & sdl.SDL_KMOD_CTRL) != 0;
+                    const alt_held = (event.key.mod & sdl.SDL_KMOD_ALT) != 0;
+                    if (ctrl_held and event.key.scancode == sdl.SDL_SCANCODE_Z and !uiTextEditing(&ui)) {
+                        history_op = if (alt_held) .redo else .undo;
+                    }
+                    if (!uiHasMouse(&ui, &play) and !event.key.repeat and !ctrl_held) {
                         if (event.key.scancode == sdl.SDL_SCANCODE_Z) camera.slowDown();
                         if (event.key.scancode == sdl.SDL_SCANCODE_C) camera.speedUp();
                         if (play_active and event.key.scancode == sdl.SDL_SCANCODE_SPACE) play.pressSpace(sdl.SDL_GetTicks());
@@ -424,11 +444,22 @@ pub fn main(init: std.process.Init.Minimal) !void {
         ui.endInput();
         perf.mark("events");
 
+        if (history_op != .none and !play.captured) {
+            const changed = switch (history_op) {
+                .undo => hist.undo(&app_ui),
+                .redo => hist.redo(&app_ui),
+                .none => false,
+            };
+            if (changed) redraw_pending = true;
+        }
+        history_op = .none;
+
         const should_render = continuous_input or got_any_event or first_frame;
         first_frame = false;
         if (!should_render) {
             continue;
         }
+        gpu_timer.global.collect(&gpu_ctx);
 
         const now_ticks = sdl.SDL_GetTicks();
         const dt: f32 = @min(@as(f32, @floatFromInt(now_ticks -| last_ticks)) / 1000.0, 1.0 / 30.0);
@@ -462,6 +493,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
         stampPostEffects(&gpu_ctx, &fractal, render_parts, instances[0..instance_count], screen_shaders[0..screen_shader_count], shaftFor(render_parts, lights[0..light_count], fog_emitters[0..fog_count], sky, camera));
 
         editor_windows.buildCrosshair(&ui.ctx, &play, width_f, height_f);
+        gpu_timer.global.wanted = false;
         main_panels.build(&ui.ctx, &app_ui, width_f, height_f);
         play.syncCapture(window);
         if (export_image.quit_requested) running = false;
@@ -474,6 +506,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
             .particle_systems = particle_systems[0..particle_count],
         };
         selection.syncWithWindows(objects);
+        const mouse_down = (sdl.SDL_GetMouseState(null, null) & sdl.SDL_BUTTON_LMASK) != 0;
+        hist.track(&app_ui, now_ticks, timeline.playing or play_active, mouse_down);
         stampPostEffects(&gpu_ctx, &fractal, render_parts, instances[0..instance_count], screen_shaders[0..screen_shader_count], shaftFor(render_parts, lights[0..light_count], fog_emitters[0..fog_count], sky, camera));
         perf.mark("ui");
 
@@ -600,7 +634,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
         const stereo_half_sep = stereo.eye_separation * 0.5;
         const eye_left = camera_mod.stereoEyeBasis(cam, camera.mode_2d, stereo.convergence_distance, -stereo_half_sep);
         const eye_right = camera_mod.stereoEyeBasis(cam, camera.mode_2d, stereo.convergence_distance, stereo_half_sep);
-        if (stereo_preview) uniforms.adapt_enabled = 0;
+        if (stereo_preview or render_parts.diagnosticView()) uniforms.adapt_enabled = 0;
 
         var diff_uniforms = uniforms;
         if (stereo_preview) export_image.stampEyeBasis(&diff_uniforms, eye_left);
@@ -629,6 +663,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
         diff_uniforms.photon_path_offset = 0;
         diff_uniforms.debug_parts = render_parts.maskUniform();
         diff_uniforms.hotspot_scale = render_parts.hotspotScaleUniform();
+        diff_uniforms.hotspot_sources = render_parts.hotspotSourcesUniform();
+        diff_uniforms.overstep_scale = render_parts.overstepScaleUniform();
         const scene_changed = !has_last_uniforms or !std.mem.eql(u8, std.mem.asBytes(&diff_uniforms), std.mem.asBytes(&last_render_uniforms));
         last_render_uniforms = diff_uniforms;
         has_last_uniforms = true;
@@ -703,6 +739,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
         uniforms.debug_parts = render_parts.maskUniform();
         uniforms.hotspot_scale = render_parts.hotspotScaleUniform();
+        uniforms.hotspot_sources = render_parts.hotspotSourcesUniform();
+        uniforms.overstep_scale = render_parts.overstepScaleUniform();
         const render_mode: fractal_gpu.RenderMode = if (camera.mode_2d)
             .slice
         else if (fast_render)
@@ -717,7 +755,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
         const march_needed = scene_changed or mc_advanced or !offscreen_current;
         if (march_needed) drawn_generation = null;
 
-        preview_denoise_wanted = mc.denoise_preview and render_mode == .march and !stereo_preview and oidn.available();
+        preview_denoise_wanted = mc.denoise_preview and render_mode == .march and !stereo_preview and !render_parts.diagnosticView() and oidn.available();
         preview_denoiser.update(&gpu_ctx, &fractal, preview_denoise_wanted);
         if (march_needed) preview_denoiser.noteDraw(&fractal, !load_existing, now_ticks);
 
@@ -774,7 +812,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
             }},
             .depthStencilAttachment = null,
             .occlusionQuerySet = null,
-            .timestampWrites = null,
+            .timestampWrites = gpu_timer.pass(.present),
         }).?;
 
         fractal.blit(pass);
@@ -815,6 +853,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
         wgpu.wgpuRenderPassEncoderEnd(pass);
         wgpu.wgpuRenderPassEncoderRelease(pass);
         gpu_ctx.endFrame(frame);
+        gpu_timer.global.endFrame(&gpu_ctx, march_needed);
         const lens_noisy_aux = mc_active and camera.dof_enabled and camera.aperture > 0.0001;
         preview_denoiser.maybeCapture(&gpu_ctx, &fractal, preview_denoise_wanted, !lens_noisy_aux, sdl.SDL_GetTicks());
         perf.renderEnd();

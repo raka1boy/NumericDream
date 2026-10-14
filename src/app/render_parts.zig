@@ -77,8 +77,43 @@ pub fn lite(part: Part) bool {
     };
 }
 
+pub const HotSource = enum(u4) {
+    primary,
+    normals,
+    materials,
+    shadows,
+    ambient_occlusion,
+    fog,
+    secondary,
+    subsurface,
+    mc_indirect,
+    depth_of_field,
+
+    pub const count = @typeInfo(HotSource).@"enum".field_names.len;
+
+    pub fn bit(self: HotSource) u32 {
+        return @as(u32, 1) << @backingInt(self);
+    }
+
+    pub fn label(self: HotSource) [:0]const u8 {
+        return switch (self) {
+            .primary => "Primary ray",
+            .normals => "Normals",
+            .materials => "Materials",
+            .shadows => "Shadows",
+            .ambient_occlusion => "Ambient occlusion",
+            .fog => "Fog",
+            .secondary => "Reflection and refraction",
+            .subsurface => "Subsurface scattering",
+            .mc_indirect => "MC indirect light",
+            .depth_of_field => "Depth of field probe",
+        };
+    }
+};
+
 const geometry_only_bit: u32 = 1 << 16;
 const hotspots_bit: u32 = 1 << 17;
+const overstep_bit: u32 = 1 << 18;
 
 pub const RenderParts = struct {
     enabled: bool = false,
@@ -87,19 +122,65 @@ pub const RenderParts = struct {
     on: [Part.count]bool = @splat(true),
     approx: Approximations = .{},
     hotspots: bool = false,
+    hot_sources: [HotSource.count]bool = initialSources(),
     hotspot_scale: f32 = 128,
-    hotspot_scale_range: SliderRange = .{ .min = 8, .max = 1024 },
+    hotspot_scale_range: SliderRange = .{ .min = 8, .max = 4096 },
+    overstep: bool = false,
+    overstep_scale: f32 = 0.5,
+    overstep_scale_range: SliderRange = .{ .min = 0.05, .max = 1 },
+
+    fn initialSources() [HotSource.count]bool {
+        var sources: [HotSource.count]bool = @splat(false);
+        sources[@backingInt(HotSource.primary)] = true;
+        return sources;
+    }
 
     pub fn geometryOnly(self: RenderParts) bool {
         return self.enabled and self.geometry_only;
     }
 
     pub fn plainView(self: RenderParts) bool {
-        return self.hotspots or self.geometryOnly();
+        return self.hotspots or self.overstep or self.geometryOnly();
+    }
+
+    pub fn diagnosticView(self: RenderParts) bool {
+        return self.hotspots or self.overstep;
+    }
+
+    pub fn hotSourceOn(self: RenderParts, src: HotSource) bool {
+        return self.hot_sources[@backingInt(src)];
+    }
+
+    pub fn setHotSource(self: *RenderParts, src: HotSource, value: bool) void {
+        self.hot_sources[@backingInt(src)] = value;
+    }
+
+    pub fn hotSourceMask(self: RenderParts) u32 {
+        var bits: u32 = 0;
+        for (std.enums.values(HotSource)) |src| {
+            if (self.hotSourceOn(src)) bits |= src.bit();
+        }
+        return bits;
+    }
+
+    pub fn hotspotsPrimaryOnly(self: RenderParts) bool {
+        return self.hotSourceMask() & ~HotSource.primary.bit() == 0;
+    }
+
+    fn hotspotsShown(self: RenderParts) bool {
+        return self.hotspots and !self.overstep;
     }
 
     pub fn hotspotScaleUniform(self: RenderParts) f32 {
-        return if (self.hotspots) @max(self.hotspot_scale, 1) else 0;
+        return if (self.hotspotsShown()) @max(self.hotspot_scale, 1) else 0;
+    }
+
+    pub fn hotspotSourcesUniform(self: RenderParts) f32 {
+        return if (self.hotspotsShown()) @floatFromInt(self.hotSourceMask()) else 0;
+    }
+
+    pub fn overstepScaleUniform(self: RenderParts) f32 {
+        return if (self.overstep) @max(self.overstep_scale, 0.001) else 0;
     }
 
     pub fn liteOnly(self: RenderParts) bool {
@@ -110,7 +191,8 @@ pub const RenderParts = struct {
     }
 
     pub fn fastPath(self: RenderParts, ft_view: bool) bool {
-        if (self.hotspots) return true;
+        if (self.overstep) return true;
+        if (self.hotspots) return self.hotspotsPrimaryOnly();
         if (!self.enabled) return false;
         return self.geometry_only or (!ft_view and self.liteOnly());
     }
@@ -127,10 +209,7 @@ pub const RenderParts = struct {
         self.on = @splat(value);
     }
 
-    pub fn mask(self: RenderParts) u32 {
-        if (self.hotspots) return hotspots_bit;
-        if (!self.enabled) return 0;
-        if (self.geometry_only) return geometry_only_bit;
+    fn offBits(self: RenderParts) u32 {
         var bits: u32 = 0;
         for (std.enums.values(Part)) |part| {
             if (!self.isOn(part)) bits |= part.bit();
@@ -138,8 +217,19 @@ pub const RenderParts = struct {
         return bits;
     }
 
+    pub fn mask(self: RenderParts) u32 {
+        if (self.overstep) return overstep_bit;
+        if (self.hotspots) {
+            if (self.hotspotsPrimaryOnly() or !self.enabled or self.geometry_only) return hotspots_bit;
+            return hotspots_bit | (self.offBits() & (Part.screen_shaders.bit() - 1));
+        }
+        if (!self.enabled) return 0;
+        if (self.geometry_only) return geometry_only_bit;
+        return self.offBits();
+    }
+
     pub fn shaderMask(self: RenderParts) u32 {
-        if (self.geometry_only or self.hotspots) return 0;
+        if (self.geometry_only or self.diagnosticView()) return 0;
         return self.mask() & (Part.screen_shaders.bit() - 1);
     }
 
@@ -189,5 +279,31 @@ test "hotspots override every other view and need no Simple render" {
     parts.geometry_only = false;
     parts.set(.shadows, false);
     try std.testing.expectEqual(hotspots_bit, parts.mask());
+    try std.testing.expectEqual(@as(u32, 0), parts.shaderMask());
+}
+
+test "hotspots beyond the primary ray take the full path and keep the unticked parts" {
+    var parts = RenderParts{ .hotspots = true };
+    parts.setHotSource(.shadows, true);
+    try std.testing.expect(!parts.fastPath(false));
+    try std.testing.expectEqual(hotspots_bit, parts.mask());
+    try std.testing.expectEqual(HotSource.primary.bit() | HotSource.shadows.bit(), parts.hotSourceMask());
+    parts.enabled = true;
+    parts.geometry_only = false;
+    parts.set(.fog, false);
+    parts.set(.screen_shaders, false);
+    try std.testing.expectEqual(hotspots_bit | Part.fog.bit(), parts.mask());
+    try std.testing.expectEqual(@as(u32, 0), parts.shaderMask());
+    try std.testing.expect(parts.hotspotSourcesUniform() > 0);
+}
+
+test "overstep view wins over hotspots and always takes the fast path" {
+    var parts = RenderParts{ .hotspots = true, .overstep = true };
+    parts.setHotSource(.fog, true);
+    try std.testing.expect(parts.fastPath(false));
+    try std.testing.expectEqual(overstep_bit, parts.mask());
+    try std.testing.expectEqual(@as(f32, 0), parts.hotspotSourcesUniform());
+    try std.testing.expectEqual(@as(f32, 0), parts.hotspotScaleUniform());
+    try std.testing.expect(parts.overstepScaleUniform() > 0);
     try std.testing.expectEqual(@as(u32, 0), parts.shaderMask());
 }

@@ -235,6 +235,7 @@ pub const Context = struct {
     height: u32,
     limits: wgpu.WGPULimits,
     float32_accum: bool = false,
+    timestamps: bool = false,
 
     last_acquire_status: wgpu.WGPUSurfaceGetCurrentTextureStatus = wgpu.WGPUSurfaceGetCurrentTextureStatus_SuccessOptimal,
     reconfigure_count: u32 = 0,
@@ -274,6 +275,7 @@ pub const Context = struct {
             .limits = limits,
             .float32_accum = wgpu.wgpuDeviceHasFeature(device, wgpu.WGPUFeatureName_Float32Blendable) != 0 and
                 wgpu.wgpuDeviceHasFeature(device, wgpu.WGPUFeatureName_Float32Filterable) != 0,
+            .timestamps = wgpu.wgpuDeviceHasFeature(device, wgpu.WGPUFeatureName_TimestampQuery) != 0,
         };
         std.debug.print("[stage] MC accumulation format: {s}\n", .{if (ctx.float32_accum) "rgba32float" else "rgba16float (float32-blendable/filterable unavailable)"});
         ctx.configure();
@@ -454,13 +456,18 @@ fn requestDevice(instance: wgpu.WGPUInstance, adapter: wgpu.WGPUAdapter) !wgpu.W
         .{ adapter_limits.maxTextureDimension2D, adapter_limits.maxBufferSize, adapter_limits.maxComputeWorkgroupStorageSize },
     );
 
-    var features: [2]wgpu.WGPUFeatureName = undefined;
+    var features: [3]wgpu.WGPUFeatureName = undefined;
     var feature_count: usize = 0;
     if (wgpu.wgpuAdapterHasFeature(adapter, wgpu.WGPUFeatureName_Float32Blendable) != 0 and
         wgpu.wgpuAdapterHasFeature(adapter, wgpu.WGPUFeatureName_Float32Filterable) != 0)
     {
-        features = .{ wgpu.WGPUFeatureName_Float32Blendable, wgpu.WGPUFeatureName_Float32Filterable };
+        features[0] = wgpu.WGPUFeatureName_Float32Blendable;
+        features[1] = wgpu.WGPUFeatureName_Float32Filterable;
         feature_count = 2;
+    }
+    if (wgpu.wgpuAdapterHasFeature(adapter, wgpu.WGPUFeatureName_TimestampQuery) != 0) {
+        features[feature_count] = wgpu.WGPUFeatureName_TimestampQuery;
+        feature_count += 1;
     }
 
     const descriptor = wgpu.WGPUDeviceDescriptor{

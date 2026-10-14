@@ -922,12 +922,18 @@ pub fn buildRenderPartsWindow(ctx: *nk.nk_context, ws: layout.Workspace, parts: 
 
     const title = "Simple render";
     if (layout.begin(ctx, ws, title, .{ .floating = .{ 300, 640 } })) {
+        if (widgets.beginSection(ctx, "Hotspots", .closed)) {
+            defer widgets.endSection(ctx);
+            buildHotspotsSection(ctx, parts);
+        }
+
         nk.nk_layout_row_dynamic(ctx, 22, 1);
-        const hot_now: nk.nk_bool = if (parts.hotspots) 1 else 0;
-        parts.hotspots = nk.nk_check_label(ctx, "Marcher hotspots", hot_now) != 0;
-        if (parts.hotspots) {
-            widgets.hint(ctx, "Colours each pixel by how many distance estimates its primary ray took: blue is cheap, yellow a third of the scale, red the scale or more. Replaces every other view below.", nk.nk_rgb(120, 180, 220));
-            widgets.sliderInt(ctx, "Red at estimates", &parts.hotspot_scale, &parts.hotspot_scale_range);
+        const over_was = parts.overstep;
+        parts.overstep = nk.nk_check_label(ctx, "Overstep view", if (parts.overstep) 1 else 0) != 0;
+        if (parts.overstep and !over_was) parts.hotspots = false;
+        if (parts.overstep) {
+            widgets.hint(ctx, "Checks every primary-ray step against the next sample. Red pixels are where the distance estimate claimed more empty space than there was, so the ray could have stepped through the surface; blue is a slight overestimate, grey is clean. Replaces every other view.", nk.nk_rgb(120, 180, 220));
+            widgets.sliderFloat(ctx, "Red at overestimate", &parts.overstep_scale, &parts.overstep_scale_range);
         }
         widgets.separator(ctx);
 
@@ -976,6 +982,33 @@ pub fn buildRenderPartsWindow(ctx: *nk.nk_context, ws: layout.Workspace, parts: 
         }
     }
     layout.end(ctx, title, &parts.window_open);
+}
+
+fn buildHotspotsSection(ctx: *nk.nk_context, parts: *RenderParts) void {
+    nk.nk_layout_row_dynamic(ctx, 22, 1);
+    const hot_was = parts.hotspots;
+    parts.hotspots = nk.nk_check_label(ctx, "Show hotspots", if (parts.hotspots) 1 else 0) != 0;
+    if (parts.hotspots and !hot_was) parts.overstep = false;
+    widgets.hint(ctx, "Colours each pixel by how many distance estimates the ticked parts took: blue is cheap, yellow a third of the scale, red the scale or more. Replaces every other view.", widgets.dim);
+
+    nk.nk_layout_row_dynamic(ctx, 22, 2);
+    if (nk.nk_button_label(ctx, "All") != 0) parts.hot_sources = @splat(true);
+    if (nk.nk_button_label(ctx, "Primary only") != 0) {
+        parts.hot_sources = @splat(false);
+        parts.setHotSource(.primary, true);
+    }
+    for (std.enums.values(render_parts_mod.HotSource)) |src| {
+        nk.nk_layout_row_dynamic(ctx, 22, 1);
+        const now: nk.nk_bool = if (parts.hotSourceOn(src)) 1 else 0;
+        parts.setHotSource(src, nk.nk_check_label(ctx, src.label().ptr, now) != 0);
+    }
+    widgets.sliderInt(ctx, "Red at estimates", &parts.hotspot_scale, &parts.hotspot_scale_range);
+
+    if (parts.hotSourceMask() == 0) {
+        widgets.hint(ctx, "Nothing ticked, so every pixel shows as cheap.", widgets.warn);
+    } else if (!parts.hotspotsPrimaryOnly()) {
+        widgets.hint(ctx, "Counts the full render, so it runs at full-render speed. With MC Render on, samples average; Depth of field lens rays add up. Parts switched off under Simple render stay off here.", nk.nk_rgb(120, 180, 220));
+    }
 }
 
 fn buildApproximationsSection(ctx: *nk.nk_context, approx: *Approximations) void {

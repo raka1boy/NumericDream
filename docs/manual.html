@@ -625,6 +625,10 @@
         <p>Every row except a mixin's starts with a checkbox. Clearing it hides that object, and the row's name gains <em>(hidden)</em>. A hidden object is not deleted and keeps all its settings. It is just left out of everything that draws or simulates the scene: the viewport, still and animation exports, mesh export, the photon map, the accelerator grid, click-to-select and play-mode collision. A hidden light casts nothing, a hidden warp deforms nothing, and a hidden fog emitter is not there. This is the quick way to answer "what is this one contributing?" without losing its settings.</p>
         <p>On a screen-shader row the same checkbox is that effect's <strong>Enabled</strong> switch (<a href="#ch17">Chapter 17</a>), and a disabled effect is labelled <em>(off)</em>. Hiding is saved with the scene. It is not keyframed.</p>
 
+        <h3>GPU timings</h3>
+        <p>The last section of the Scene window, folded by default, shows how long the GPU spends on each part of a frame, in milliseconds: <em>Fractal render</em>, <em>Selection mask</em>, <em>Post chain</em>, <em>Display + UI</em> and <em>Particle sim</em>, then <em>Last timed frame</em> as their total. Under <em>Rebuilds, last run</em> it lists the jobs that only run when the scene changes (<em>Accelerator build</em>, <em>Photon trace</em>, <em>FT View volume</em>, <em>Denoise guides</em>) with how long their most recent run took. These are GPU times measured with timestamp queries, not the time the app waits, so they show which pass is actually slow.</p>
+        <p>Timing runs only while the section is unfolded, and only frames that re-render the fractal are timed, so the numbers update while you move the camera or MC Render converges and hold still otherwise. Every-frame rows are smoothed; a grey row did not run in the last timed frame. If the GPU or driver cannot take timestamps, the section says so instead.</p>
+
         <h3>Selecting in the viewport</h3>
         <p>A left click on the picture (press and release without dragging) selects whatever is under the pointer. Its editor window opens, any previously selected object's editor closes, and the selection is drawn with a contrasting outline in the viewport. Clicking where nothing is, or pressing <strong>Esc</strong>, clears the selection. Opening an editor from its list row selects that object too, and closing the editor deselects it.</p>
         <p>What a click can land on, nearest first:</p>
@@ -737,6 +741,10 @@
             <p>Ambient light becomes the sky colour in the direction the surface faces, plus the sky's sun, darkened by how many march steps the ray needed to reach the surface. Rays that squeeze into crevices take many steps, so creases come out dark for free. This replaces both MC Render's bounce ray and the five-sample ambient occlusion.</p>
           </div>
           <div class="param">
+            <div class="param-head"><span class="param-name">Sky reflections</span><span class="chip">default off</span></div>
+            <p>A reflected ray shows the sky in the mirror direction and stops, instead of marching back into the scene. Creases and cavities are darkened by how many march steps the ray needed to reach the surface. Mirrors and glossy surfaces reflect only the environment, so other objects and the fractal itself never appear in reflections, but no secondary march is paid for them.</p>
+          </div>
+          <div class="param">
             <div class="param-head"><span class="param-name">Thin glass</span><span class="chip">default off</span></div>
             <p>A ray refracts once as it enters glass, then shows the sky in that bent direction and stops. Nothing behind or inside the glass is traced, so glass looks like a lens onto the environment rather than onto the scene. Combined with <em>Tint approximation</em>, the glass is also tinted by its thickness.</p>
           </div>
@@ -763,13 +771,46 @@
           <p>With <em>Simple fog</em>, <em>Fake caustics</em> and <em>Fake bounce light</em> all on, nothing reads the photon map any more, so it is not traced at all, in the viewport or for exports. The window says so in green when this happens.</p>
         </div>
 
-        <h3>Marcher hotspots</h3>
-        <p>The first checkbox in the <strong>Simple render</strong> window swaps the viewport for a cost map of the ray marcher, using Inigo Quilez's palette from his comparison of ray marching and binary search. Each pixel is coloured by how many distance estimates its camera ray needed, hit or miss, including the refinement steps from <em>Ray march precision</em>. Steps the empty-space accelerator skipped cost no estimate, so it shows up as calmer blue background. Dark blue is cheap, yellow is about a third of the scale and red is the scale or more. Edges, grazing angles and thin gaps are where rays crawl, so that is where the colour heats up.</p>
+        <h3>Hotspots</h3>
+        <p>The <em>Hotspots</em> section at the top of the <strong>Simple render</strong> window (folded by default) swaps the viewport for a cost map of the renderer, using Inigo Quilez's palette from his comparison of ray marching and binary search. Each pixel is coloured by how many distance estimates the parts you tick needed for it, hit or miss. Dark blue is cheap, yellow is about a third of the scale and red is the scale or more.</p>
         <div class="params">
           <div class="param">
-            <div class="param-head"><span class="param-name">Marcher hotspots</span><span class="chip">default off</span><span class="chip">preview only</span></div>
-            <p>Replaces every other view, whether or not <strong>Simple render</strong> is ticked, and draws through the quick shader, so MC Render, the photon map, the denoiser and screen-space shaders are all paused while it is on. Not saved with the scene, and exports ignore it.</p>
-            <p><em>Red at estimates</em> (default 128, range 8–1024) is the count that shows as full red. Set it near <strong>Max march steps</strong> to see which rays come close to running out (refinement can push a ray's count past that number), or lower it to separate the cheap areas from each other.</p>
+            <div class="param-head"><span class="param-name">Show hotspots</span><span class="chip">default off</span><span class="chip">preview only</span></div>
+            <p>Replaces every other view, whether or not <strong>Simple render</strong> is ticked. The denoiser, adaptive sampling and screen-space shaders are paused while it is on. Not saved with the scene, and exports ignore it. Ticking it switches the overstep view off.</p>
+          </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">Parts to count</span><span class="chip">default Primary ray only</span></div>
+            <p>One checkbox per source of distance estimates. <strong>All</strong> ticks every one; <strong>Primary only</strong> goes back to the default.</p>
+            <ul>
+              <li><strong>Primary ray</strong>: the camera ray's march, including the refinement steps from <em>Ray march precision</em>. Steps the empty-space accelerator skipped cost nothing, so it shows up as calmer blue background. Edges, grazing angles and thin gaps are where rays crawl.</li>
+              <li><strong>Normals</strong>: the four estimates per surface hit that find which way it faces.</li>
+              <li><strong>Materials</strong>: one per hit, to read the orbit trap and pick the colour strip.</li>
+              <li><strong>Shadows</strong>: shadow rays from surfaces towards every light, including what they spend passing through glass.</li>
+              <li><strong>Ambient occlusion</strong>: the five probes per surface hit.</li>
+              <li><strong>Fog</strong>: everything a fog march costs, including its own shadow rays towards the lights.</li>
+              <li><strong>Reflection and refraction</strong>: every march after the first along the path, inside glass and out.</li>
+              <li><strong>Subsurface scattering</strong>: the thickness probe of translucent materials.</li>
+              <li><strong>MC indirect light</strong>: the whole bounce ray of MC Render, its own normals and shading included.</li>
+              <li><strong>Depth of field probe</strong>: the extra march that finds how blurred a pixel is.</li>
+            </ul>
+            <p>With only <strong>Primary ray</strong> ticked, the map draws through the quick shader. With anything else ticked, it runs the full render to count it, at full-render speed, and parts switched off under <strong>Simple render</strong> stay off, so you can see what removing one saves. With MC Render on, the samples average into the map. Depth of field lens rays add up, because each one is a whole extra path.</p>
+          </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">Red at estimates</span><span class="chip">default 128</span><span class="chip">range 8–4096</span></div>
+            <p>The count that shows as full red. For the primary ray alone, set it near <strong>Max march steps</strong> to see which rays come close to running out (refinement can push a ray's count past that number). With more parts ticked, the counts are much larger, so raise it.</p>
+          </div>
+        </div>
+
+        <h3>Overstep view</h3>
+        <p>The <strong>Overstep view</strong> checkbox below the Hotspots section checks whether the distance estimate can be trusted. Every step of the camera ray is checked against a second sample halfway along it. If the second sample finds the surface closer than the first one allowed, the estimate claimed more empty space than there was, and a ray could step straight through thin detail. This is how warps, non-uniform scale or a hand-written formula with a wrong derivative give themselves away.</p>
+        <div class="params">
+          <div class="param">
+            <div class="param-head"><span class="param-name">Overstep view</span><span class="chip">default off</span><span class="chip">preview only</span></div>
+            <p>Clean pixels show the plain grey geometry view. Pixels where any step overestimated are coloured by the worst one: blue for a slight overestimate, red for a severe one. A miss can be coloured too, which means the ray may have passed through something. The check always runs at least one refinement sample per step, even if <em>Ray march precision</em> asks for none. Replaces every other view and switches hotspots off. Not saved with the scene.</p>
+          </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">Red at overestimate</span><span class="chip">default 0.5</span><span class="chip">range 0.05–1</span></div>
+            <p>How bad an overestimate has to be to show as full red. 0.5 means the estimate claimed twice the real free space; 1 means the surface was right at the second sample.</p>
           </div>
         </div>
 

@@ -15,6 +15,7 @@ pub const Approx = enum(u5) {
     cheap_dispersion,
     coarse_secondary,
     distance_lod,
+    sky_reflections,
 
     pub fn bit(self: Approx) u32 {
         return @as(u32, 1) << @backingInt(self);
@@ -37,6 +38,7 @@ pub fn info(a: Approx) Info {
         .cheap_dispersion => .{ .label = "Cheap dispersion", .hint = "Only the last refraction before the sky splits into red, green and blue. Rainbow fringes come out clean, but colour does not separate through several walls." },
         .coarse_secondary => .{ .label = "Low-precision secondary marches", .hint = "Reflected, refracted and bounce rays march with half the steps, a 4x looser hit distance and no refinement." },
         .distance_lod => .{ .label = "Distance LOD", .hint = "Fractals lose iterations with distance from the camera, blended between levels. Far detail softens and can bulge slightly." },
+        .sky_reflections => .{ .label = "Sky reflections", .hint = "Reflected rays show the sky in the mirror direction instead of marching the scene, darkened in crevices by the march step count. Other objects never appear in reflections." },
     };
 }
 
@@ -50,6 +52,7 @@ pub const Approximations = struct {
     cheap_dispersion: bool = false,
     coarse_secondary: bool = false,
     distance_lod: bool = false,
+    sky_reflections: bool = false,
 
     shaft_strength: f32 = 1.0,
     shaft_strength_range: SliderRange = .{ .min = 0.0, .max = 4.0 },

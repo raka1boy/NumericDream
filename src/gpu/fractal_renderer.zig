@@ -19,6 +19,7 @@ pub const particles = @import("particles.zig");
 const ParticleGpu = particles.ParticleGpu;
 const PostChain = post_process.PostChain;
 const PartsPipelines = @import("parts_pipelines.zig").PartsPipelines;
+pub const gpu_timer = @import("gpu_timer.zig");
 const photon_state = @import("../app/photon_state.zig");
 const accel_state = @import("../app/accel_state.zig");
 const sky_state = @import("../app/sky.zig");
@@ -289,8 +290,8 @@ pub const Uniforms = extern struct {
     photon_aim: f32 = 0,
     carve_count: f32 = 0,
     hotspot_scale: f32 = 0,
-    _pad_carve1: f32 = 0,
-    _pad_carve2: f32 = 0,
+    hotspot_sources: f32 = 0,
+    overstep_scale: f32 = 0,
     carves: [max_carves][4]f32 = @splat(.{ 0, 0, 0, 0 }),
     particle_systems: [max_particle_systems]ParticleSystem = @splat(.{}),
     approx_flags: f32 = 0,
@@ -843,6 +844,7 @@ const ComputeBindGroup = struct { index: u32, group: wgpu.WGPUBindGroup };
 
 fn runComputePass(
     ctx: *const Context,
+    lane: gpu_timer.Lane,
     label: []const u8,
     pipeline: wgpu.WGPUComputePipeline,
     bind_groups: []const ComputeBindGroup,
@@ -853,7 +855,7 @@ fn runComputePass(
     const pass = wgpu.wgpuCommandEncoderBeginComputePass(encoder, &wgpu.WGPUComputePassDescriptor{
         .nextInChain = null,
         .label = sv(label),
-        .timestampWrites = null,
+        .timestampWrites = gpu_timer.pass(lane),
     }).?;
     wgpu.wgpuComputePassEncoderSetPipeline(pass, pipeline);
     for (bind_groups) |bg| {
@@ -2123,7 +2125,7 @@ pub const FractalRenderer = struct {
         const pass = wgpu.wgpuCommandEncoderBeginComputePass(encoder, &wgpu.WGPUComputePassDescriptor{
             .nextInChain = null,
             .label = sv(label),
-            .timestampWrites = null,
+            .timestampWrites = gpu_timer.pass(.particles),
         }) orelse {
             wgpu.wgpuCommandEncoderRelease(encoder);
             return error.EncoderCreationFailed;
@@ -2534,19 +2536,19 @@ pub const FractalRenderer = struct {
         };
 
         self.updateUniforms(ctx, build_uniforms);
-        try runComputePass(ctx, "fft voxelize pass", self.pipelines.build_fft_voxelize, &binds, .{ groups3d, groups3d, groups3d }, false);
-        try runComputePass(ctx, "fft axis-x pass", self.pipelines.build_fft_axis_seed, &binds, .{ groups2d, groups2d, 1 }, false);
+        try runComputePass(ctx, .fft, "fft voxelize pass", self.pipelines.build_fft_voxelize, &binds, .{ groups3d, groups3d, groups3d }, false);
+        try runComputePass(ctx, .fft, "fft axis-x pass", self.pipelines.build_fft_axis_seed, &binds, .{ groups2d, groups2d, 1 }, false);
 
         build_uniforms.fft_axis = 1;
         self.updateUniforms(ctx, build_uniforms);
-        try runComputePass(ctx, "fft axis-y pass", self.pipelines.build_fft_axis_complex, &binds, .{ groups2d, groups2d, 1 }, false);
+        try runComputePass(ctx, .fft, "fft axis-y pass", self.pipelines.build_fft_axis_complex, &binds, .{ groups2d, groups2d, 1 }, false);
 
         build_uniforms.fft_axis = 2;
         self.updateUniforms(ctx, build_uniforms);
-        try runComputePass(ctx, "fft axis-z pass", self.pipelines.build_fft_axis_complex, &binds, .{ groups2d, groups2d, 1 }, false);
+        try runComputePass(ctx, .fft, "fft axis-z pass", self.pipelines.build_fft_axis_complex, &binds, .{ groups2d, groups2d, 1 }, false);
 
-        try runComputePass(ctx, "fft magnitude pass", self.pipelines.build_fft_magnitude, &binds, .{ groups3d, groups3d, groups3d }, false);
-        try runComputePass(ctx, "fft finalize pass", self.pipelines.build_fft_finalize, &binds, .{ groups3d, groups3d, groups3d }, true);
+        try runComputePass(ctx, .fft, "fft magnitude pass", self.pipelines.build_fft_magnitude, &binds, .{ groups3d, groups3d, groups3d }, false);
+        try runComputePass(ctx, .fft, "fft finalize pass", self.pipelines.build_fft_finalize, &binds, .{ groups3d, groups3d, groups3d }, true);
 
         self.fft.valid = true;
         self.content_generation +%= 1;
@@ -2586,7 +2588,7 @@ pub const FractalRenderer = struct {
             build_uniforms.accel_z_offset = @floatFromInt(z);
             self.updateUniforms(ctx, build_uniforms);
 
-            try runComputePass(ctx, "accel build pass", self.pipelines.build_accel, &.{
+            try runComputePass(ctx, .accel, "accel build pass", self.pipelines.build_accel, &.{
                 .{ .index = 0, .group = self.bind_group },
                 .{ .index = 1, .group = self.accel.compute_bind_group },
             }, .{ groups_xy, groups_xy, groups_z }, z + slab >= total_layers);
@@ -2694,7 +2696,7 @@ pub const FractalRenderer = struct {
 
         {
             self.updateUniforms(ctx, trace_uniforms);
-            try runComputePass(ctx, "photon clear pass", self.pipelines.clear_photons, &binds, .{ bucket_groups, 1, 1 }, false);
+            try runComputePass(ctx, .photons, "photon clear pass", self.pipelines.clear_photons, &binds, .{ bucket_groups, 1, 1 }, false);
         }
 
         for ([_]f32{ 0, 1 }) |pass| {
@@ -2708,6 +2710,7 @@ pub const FractalRenderer = struct {
 
                 try runComputePass(
                     ctx,
+                    .photons,
                     if (pass == 0) "photon count pass" else "photon retrace pass",
                     self.pipelines.trace_photons,
                     &binds,
@@ -2719,8 +2722,8 @@ pub const FractalRenderer = struct {
             if (pass == 0) {
                 trace_uniforms.photon_path_offset = 0;
                 self.updateUniforms(ctx, trace_uniforms);
-                try runComputePass(ctx, "photon alloc pass", self.pipelines.alloc_photons, &binds, .{ bucket_groups, 1, 1 }, false);
-                try runComputePass(ctx, "photon scatter pass", self.pipelines.scatter_photons, &binds, .{ staging_groups, 1, 1 }, false);
+                try runComputePass(ctx, .photons, "photon alloc pass", self.pipelines.alloc_photons, &binds, .{ bucket_groups, 1, 1 }, false);
+                try runComputePass(ctx, .photons, "photon scatter pass", self.pipelines.scatter_photons, &binds, .{ staging_groups, 1, 1 }, false);
             }
         }
 
@@ -2760,7 +2763,7 @@ pub const FractalRenderer = struct {
         const cells = light_count * photons.aim_cells;
 
         self.updateUniforms(ctx, scene);
-        try runComputePass(ctx, "photon aim pilot", self.pipelines.aim_photons, binds, .{ (cells + photons.workgroup_dim - 1) / photons.workgroup_dim, 1, 1 }, false);
+        try runComputePass(ctx, .photons, "photon aim pilot", self.pipelines.aim_photons, binds, .{ (cells + photons.workgroup_dim - 1) / photons.workgroup_dim, 1, 1 }, false);
 
         const size: u64 = @as(u64, cells) * @sizeOf(f32);
         const encoder = wgpu.wgpuDeviceCreateCommandEncoder(ctx.device, null) orelse return error.EncoderCreationFailed;
@@ -3216,7 +3219,7 @@ pub const FractalRenderer = struct {
             .colorAttachments = &attachments,
             .depthStencilAttachment = null,
             .occlusionQuerySet = null,
-            .timestampWrites = null,
+            .timestampWrites = gpu_timer.pass(.denoise_aov),
         }).?;
         if (scissor) |r| wgpu.wgpuRenderPassEncoderSetScissorRect(pass, r.x, r.y, r.w, r.h);
         wgpu.wgpuRenderPassEncoderSetPipeline(pass, self.pipelines.aov);
@@ -3422,7 +3425,7 @@ pub const FractalRenderer = struct {
             .colorAttachments = &attachments,
             .depthStencilAttachment = null,
             .occlusionQuerySet = null,
-            .timestampWrites = null,
+            .timestampWrites = gpu_timer.pass(.march),
         }).?;
     }
 
@@ -3569,7 +3572,7 @@ pub const FractalRenderer = struct {
             }},
             .depthStencilAttachment = null,
             .occlusionQuerySet = null,
-            .timestampWrites = null,
+            .timestampWrites = gpu_timer.pass(.select_mask),
         }) orelse return false;
         wgpu.wgpuRenderPassEncoderSetPipeline(pass, self.pipelines.select);
         self.bindSceneGroups(pass);
