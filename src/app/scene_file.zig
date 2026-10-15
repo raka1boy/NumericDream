@@ -530,6 +530,7 @@ pub fn applyScene(
     mode: ApplyMode,
 ) void {
     const undo = mode == .undo;
+    scene_state.drainPendingCompile(fractal, allocator);
 
     const old_count = instance_count.*;
     var old_instances: [max_instances]FractalInstanceState = undefined;
@@ -538,7 +539,6 @@ pub fn applyScene(
     var kept_mixin: [max_instances][max_mixins]bool = @splat(@splat(false));
 
     const new_instance_count = @min(scene.instances.len, max_instances);
-    var needs_rebuild = !undo or new_instance_count != old_count;
     for (0..new_instance_count) |i| {
         const src = scene.instances[i];
         instances[i] = scene_state.newInstance();
@@ -590,9 +590,6 @@ pub fn applyScene(
         }
 
         instances[i].mixin_count = @min(src.mixins.len, max_mixins);
-        if (old) |o| {
-            if (instances[i].mixin_count != o.mixin_count) needs_rebuild = true;
-        }
         for (0..instances[i].mixin_count) |j| {
             const msrc = src.mixins[j];
             instances[i].mixins[j].iterations = msrc.iterations;
@@ -631,7 +628,6 @@ pub fn applyScene(
     for (0..new_instance_count) |i| {
         const src = scene.instances[i];
         if (!kept_formula[i]) {
-            needs_rebuild = true;
             if (src.formula.path.len > 0) scene_state.loadFormulaBodyOnly(allocator, &instances[i].formula);
         }
         applyParamDtos(&instances[i].formula, src.formula.params);
@@ -639,7 +635,6 @@ pub fn applyScene(
         for (0..instances[i].mixin_count) |j| {
             const msrc = src.mixins[j];
             if (!kept_mixin[i][j]) {
-                needs_rebuild = true;
                 if (msrc.formula.path.len > 0) scene_state.loadFormulaBodyOnly(allocator, &instances[i].mixins[j].formula);
             }
             applyParamDtos(&instances[i].mixins[j].formula, msrc.formula.params);
@@ -688,14 +683,6 @@ pub fn applyScene(
                 if (sel < particle_systems[i].color_count) particle_systems[i].selected_color = sel;
             }
         }
-    }
-
-    if (!undo) {
-        const needs = particles_mod.shaderNeeds(particle_systems[0..particle_count.*]);
-        fractal.variant = .{ .warps = scene.warps.len > 0, .particles_lit = needs.lit, .particles_dots = needs.dots };
-    }
-    if (needs_rebuild) {
-        scene_state.rebuildAllAsync(gpu_ctx, fractal, allocator, instances[0..instance_count.*], instance_count.*);
     }
 
     const old_light_count = light_count.*;

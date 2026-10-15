@@ -13,7 +13,8 @@ const max_mixins = fractal_gpu.max_mixins;
 const max_color_stops = fractal_gpu.max_color_stops;
 const max_params = fractal_gpu.max_params;
 const builtin_formula_source = fractal_gpu.builtin_formula_source;
-const filler_formula_source = fractal_gpu.filler_formula_source;
+const SceneFormulas = fractal_gpu.SceneFormulas;
+const ShaderVariant = fractal_gpu.ShaderVariant;
 
 const SliderRange = @import("slider_range.zig").SliderRange;
 const camera = @import("camera.zig");
@@ -369,28 +370,41 @@ pub fn freeInstanceOwned(allocator: std.mem.Allocator, inst: *const FractalInsta
     for (0..inst.mixin_count) |j| inst.mixins[j].formula.deinit(allocator);
 }
 
-pub fn buildFormulaSources(instances: []const FractalInstanceState, instance_count: usize) [max_instances][]const u8 {
-    var sources: [max_instances][]const u8 = undefined;
-    for (0..max_instances) |i| {
-        sources[i] = if (i < instance_count) (instances[i].formula.formula_body orelse builtin_formula_source) else filler_formula_source;
-    }
-    return sources;
+fn targetSource(formula: *const FormulaState) []const u8 {
+    return formula.formula_body orelse builtin_formula_source;
 }
 
-pub fn buildMixinSources(instances: []const FractalInstanceState, instance_count: usize) [max_instances][max_mixins][]const u8 {
-    var sources: [max_instances][max_mixins][]const u8 = undefined;
-    for (0..max_instances) |i| {
-        const mixin_count = if (i < instance_count) instances[i].mixin_count else 0;
-        for (0..max_mixins) |j| {
-            sources[i][j] = if (j < mixin_count) (instances[i].mixins[j].formula.formula_body orelse builtin_formula_source) else filler_formula_source;
-        }
+fn liveSource(formula: *const FormulaState) []const u8 {
+    if (formula.compile_pending) return formula.pending_old_body orelse builtin_formula_source;
+    return targetSource(formula);
+}
+
+fn collectFormulas(instances: []const FractalInstanceState, comptime source: fn (*const FormulaState) []const u8) SceneFormulas {
+    var scene = SceneFormulas{ .instance_count = @min(instances.len, max_instances) };
+    for (instances[0..scene.instance_count], 0..) |*inst, i| {
+        scene.base[i] = source(&inst.formula);
+        scene.mixin_count[i] = @min(inst.mixin_count, max_mixins);
+        for (0..scene.mixin_count[i]) |j| scene.mixins[i][j] = source(&inst.mixins[j].formula);
     }
-    return sources;
+    return scene;
+}
+
+pub fn sceneFormulas(instances: []const FractalInstanceState) SceneFormulas {
+    return collectFormulas(instances, liveSource);
+}
+
+pub fn syncShader(ctx: *Context, fractal: *FractalRenderer, allocator: std.mem.Allocator, instances: []const FractalInstanceState, variant: ShaderVariant) void {
+    fractal.syncShader(ctx, allocator, sceneFormulas(instances), variant);
 }
 
 pub fn drainPendingCompile(fractal: *FractalRenderer, allocator: std.mem.Allocator) void {
     if (!fractal.isCompiling()) return;
     if (fractal.pollRebuild(true)) |outcome| resolveOutcome(outcome, allocator);
+}
+
+pub fn finishCompileFor(fractal: *FractalRenderer, allocator: std.mem.Allocator, instances: []const FractalInstanceState) void {
+    drainPendingCompile(fractal, allocator);
+    fractal.noteScene(sceneFormulas(instances));
 }
 
 fn resolveOutcome(outcome: fractal_gpu.RebuildOutcome, allocator: std.mem.Allocator) void {
@@ -402,28 +416,10 @@ fn resolveOutcome(outcome: fractal_gpu.RebuildOutcome, allocator: std.mem.Alloca
     }
 }
 
-pub fn pollPendingCompile(fractal: *FractalRenderer, allocator: std.mem.Allocator) void {
-    const outcome = fractal.pollRebuild(false) orelse return;
+pub fn pollPendingCompile(fractal: *FractalRenderer, allocator: std.mem.Allocator) bool {
+    const outcome = fractal.pollRebuild(false) orelse return false;
     resolveOutcome(outcome, allocator);
-}
-
-pub fn rebuildAll(ctx: *Context, fractal: *FractalRenderer, allocator: std.mem.Allocator, instances: []const FractalInstanceState, instance_count: usize) void {
-    drainPendingCompile(fractal, allocator);
-    fractal.rebuild(ctx, allocator, buildFormulaSources(instances, instance_count), buildMixinSources(instances, instance_count)) catch |err| {
-        std.log.err("Failed to rebuild fractal shader: {s}: {s}", .{ @errorName(err), webgpu_context.g_error_sink.message() });
-    };
-}
-
-pub fn rebuildAllChecked(ctx: *Context, fractal: *FractalRenderer, allocator: std.mem.Allocator, instances: []const FractalInstanceState, instance_count: usize) !void {
-    drainPendingCompile(fractal, allocator);
-    try fractal.rebuild(ctx, allocator, buildFormulaSources(instances, instance_count), buildMixinSources(instances, instance_count));
-}
-
-pub fn rebuildAllAsync(ctx: *Context, fractal: *FractalRenderer, allocator: std.mem.Allocator, instances: []const FractalInstanceState, instance_count: usize) void {
-    drainPendingCompile(fractal, allocator);
-    _ = fractal.rebuildAsync(ctx, allocator, buildFormulaSources(instances, instance_count), buildMixinSources(instances, instance_count), null) catch |err| {
-        std.log.err("Failed to start fractal shader rebuild: {s}", .{@errorName(err)});
-    };
+    return true;
 }
 
 const LoadedFormula = struct {
@@ -489,8 +485,8 @@ pub fn compileFormulaInto(
     const start = fractal.rebuildAsync(
         ctx,
         allocator,
-        buildFormulaSources(instances, instance_count),
-        buildMixinSources(instances, instance_count),
+        collectFormulas(instances[0..instance_count], targetSource),
+        fractal.table.variant,
         @ptrCast(formula),
     ) catch |err| {
         formula.formula_body = old_body;

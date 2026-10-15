@@ -412,7 +412,6 @@ fn buildSceneWindow(ctx: *nk.nk_context, app: *const App, ws: layout.Workspace) 
                     removeAt(FractalInstanceState, app.instances, app.instance_count, idx);
                     formula_library.noteListChanged();
                     app.selection.noteRemoved(.fractal, idx);
-                    scene_state.rebuildAll(app.gpu_ctx, app.fractal, app.allocator, app.instances[0..app.instance_count.*], app.instance_count.*);
                 }
             }
         }

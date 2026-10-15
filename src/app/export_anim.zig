@@ -87,7 +87,7 @@ pub fn renderAnimation(
     const folder = folder_buf[0..folder_len];
 
     export_image.cancel_requested = false;
-    scene_state.drainPendingCompile(fractal, allocator);
+    scene_state.finishCompileFor(fractal, allocator, instances);
 
     const safe_fps = @max(fps, 1.0);
     const frame_count: u32 = @intFromFloat(@floor(timeline.duration * safe_fps) + 1);

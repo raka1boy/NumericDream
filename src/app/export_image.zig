@@ -209,6 +209,7 @@ pub fn combineStereoRows(allocator: std.mem.Allocator, left: []const u8, right: 
 }
 
 pub fn prepareParticles(gpu_ctx: *const Context, fractal: *FractalRenderer, particle_systems: []const ParticleSystemState, uniforms: *Uniforms) void {
+    fractal.stampFormulaCodes(uniforms);
     const jobs = particles_mod.buildJobs(particle_systems, accel_state.geometryHash(uniforms));
     _ = fractal.updateParticles(gpu_ctx, &jobs, uniforms.*) catch |err| {
         std.debug.print("[particles] update failed: {s} -- particles may look stale\n", .{@errorName(err)});
@@ -305,7 +306,7 @@ pub fn exportImage(
 
     cancel_requested = false;
 
-    scene_state.drainPendingCompile(fractal, allocator);
+    scene_state.finishCompileFor(fractal, allocator, instances);
 
     const eye_width: u32 = @intCast(@max(export_width, 1));
     const height: u32 = @intCast(@max(export_height, 1));

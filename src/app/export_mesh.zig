@@ -627,9 +627,8 @@ fn startJob(
     progress: RenderProgress,
 ) !Job {
     export_image.cancel_requested = false;
-    scene_state.drainPendingCompile(fractal, allocator);
-    const n = scene.instances.len;
-    const gpu = try fractal.meshGpu(gpu_ctx, allocator, scene_state.buildFormulaSources(scene.instances, n), scene_state.buildMixinSources(scene.instances, n));
+    scene_state.finishCompileFor(fractal, allocator, scene.instances);
+    const gpu = try fractal.meshGpu(gpu_ctx, allocator);
     const uniforms = export_image.buildUniforms(scene.instances, &.{}, &.{}, scene.warps, &.{}, scene.camera, scene.camera.basis(), 1, 100, 0, .{}, .{}, .{}, 1, 1, 1);
     fractal.updateUniforms(gpu_ctx, uniforms);
     return .{ .allocator = allocator, .ctx = gpu_ctx, .fractal = fractal, .gpu = gpu, .progress = progress };

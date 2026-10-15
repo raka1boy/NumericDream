@@ -142,14 +142,12 @@ pub const PlayState = struct {
         ctx: *Context,
         fractal: *FractalRenderer,
         allocator: std.mem.Allocator,
-        instances: []const FractalInstanceState,
         cam: *FreeCamera,
         keys: ?[*c]const bool,
         dt: f32,
         now_ms: u64,
     ) void {
-        const n = instances.len;
-        const gpu = fractal.meshGpu(ctx, allocator, scene_state.buildFormulaSources(instances, n), scene_state.buildMixinSources(instances, n)) catch |err| return self.fail(err);
+        const gpu = fractal.meshGpu(ctx, allocator) catch |err| return self.fail(err);
         const probe = Probe{ .ctx = ctx, .gpu = gpu, .uniforms_group = fractal.bind_group };
         self.tick(cam, probe, keys, dt) catch |err| return self.fail(err);
         self.updateCarves(probe, now_ms) catch |err| return self.fail(err);

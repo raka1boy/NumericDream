@@ -178,7 +178,7 @@ pub fn buildFractalEditorWindow(
 
         if (widgets.beginSection(ctx, "Mixins", .closed)) {
             defer widgets.endSection(ctx);
-            buildMixinList(ctx, gpu_ctx, fractal, allocator, inst, instances, instance_count);
+            buildMixinList(ctx, fractal, allocator, inst);
         }
 
         if (widgets.beginSection(ctx, "Material", .open)) {
@@ -216,12 +216,9 @@ pub fn buildFractalEditorWindow(
 
 fn buildMixinList(
     ctx: *nk.nk_context,
-    gpu_ctx: *Context,
     fractal: *FractalRenderer,
     allocator: std.mem.Allocator,
     inst: *FractalInstanceState,
-    instances: []FractalInstanceState,
-    instance_count: usize,
 ) void {
     var remove_mixin_index: ?usize = null;
     for (0..inst.mixin_count) |j| {
@@ -239,20 +236,14 @@ fn buildMixinList(
             while (j + 1 < inst.mixin_count) : (j += 1) inst.mixins[j] = inst.mixins[j + 1];
             inst.mixin_count -= 1;
             formula_library.noteListChanged();
-            scene_state.rebuildAllChecked(gpu_ctx, fractal, allocator, instances, instance_count) catch |err| {
-                std.log.err("Failed to rebuild shader: {s}: {s}", .{ @errorName(err), webgpu_context.g_error_sink.message() });
-            };
         }
     }
 
     nk.nk_layout_row_dynamic(ctx, 22, 1);
     if (inst.mixin_count < max_mixins) {
-        if (nk.nk_button_label(ctx, "Add mixin") != 0 and !fractal.isCompiling()) {
+        if (nk.nk_button_label(ctx, "Add mixin") != 0) {
             inst.mixins[inst.mixin_count] = scene_state.newMixin();
             inst.mixin_count += 1;
-            scene_state.rebuildAllChecked(gpu_ctx, fractal, allocator, instances, instance_count) catch |err| {
-                std.log.err("Failed to rebuild shader: {s}: {s}", .{ @errorName(err), webgpu_context.g_error_sink.message() });
-            };
         }
     } else {
         nk.nk_label(ctx, "Max mixins reached", @intCast(nk.NK_TEXT_CENTERED));

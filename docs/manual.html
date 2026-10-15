@@ -532,12 +532,13 @@
               <tr><td>A / D</td><td>Strafe left / right</td></tr>
               <tr><td>Arrow keys</td><td>Turn — left/right yaw, up/down pitch, unlimited in both</td></tr>
               <tr><td>Q / E</td><td>Roll right / left around the view axis</td></tr>
-              <tr><td>Z / C</td><td>Halve / multiply move speed by 1.5, once per press</td></tr>
+              <tr><td>Z / C</td><td>Halve / multiply move speed by 1.5, once per press. Ignored while Ctrl is held, so undo never changes your speed</td></tr>
               <tr><td>F / R</td><td>Zoom in / out — <strong>2D mode only</strong> (<a href="#ch18">Chapter 18</a>); no effect otherwise</td></tr>
               <tr><td>Mouse drag</td><td>Look around (same as the arrow keys)</td></tr>
               <tr><td>Scroll wheel</td><td>Dolly forward / back, 0.3 units per notch</td></tr>
               <tr><td>Left click (no drag)</td><td>Select the object under the pointer (<a href="#ch3">Chapter 3</a>)</td></tr>
               <tr><td>Esc</td><td>Cancel a render in progress; otherwise clear the selection, or free the mouse in play mode</td></tr>
+              <tr><td>Ctrl+Z / Ctrl+Alt+Z</td><td>Undo / redo a scene edit (<a href="#ch3">Chapter 3</a>). Camera moves are not part of the history</td></tr>
             </tbody>
           </table>
         </div>
@@ -559,7 +560,7 @@
         <p>Gizmos draw in 2D mode too, projected orthographically onto the cutting plane instead of in perspective (<a href="#ch18">Chapter 18</a>).</p>
 
         <h3>Play mode</h3>
-        <p><strong>Play mode</strong>, the first checkbox in the Camera window, swaps the free-fly camera for a body that walks on the fractal. Ticking it captures the mouse straight away and hides the pointer behind a small crosshair. <strong>Esc</strong> gives the mouse back without leaving play mode, and clicking the view captures it again. The status line under the checkbox reads <em>Walking</em>, <em>Falling</em> or <em>Flying</em>.</p>
+        <p><strong>Play mode</strong>, the first checkbox in the Camera window, swaps the free-fly camera for a body that walks on the fractal. Ticking it captures the mouse straight away and hides the pointer behind a small crosshair. <strong>Esc</strong> gives the mouse back without leaving play mode, and clicking the view captures it again. Undo and redo are ignored while the mouse is captured.</p>
 
         <div class="table-scroll">
           <table>
@@ -606,7 +607,7 @@
           </div>
           <div class="param">
             <div class="param-head"><span class="param-name">Add</span><span class="chip">max 4 / 8 / 4 / 4 / 2 / 8</span></div>
-            <p>Fractal, Light, Fog emitter, Warp, Particle system or Screen shader: appends a new object with default settings and opens its editor. An entry is greyed out once its list is full. Adding a fractal recompiles the shader; adding a light or fog emitter does not. Adding the <em>first</em> warp recompiles, and so does removing the last one — see <a href="#ch14">Chapter 14</a>. The first particle system of each look recompiles in the same way (<a href="#ch15">Chapter 15</a>).</p>
+            <p>Fractal, Light, Fog emitter, Warp, Particle system or Screen shader: appends a new object with default settings and opens its editor. An entry is greyed out once its list is full. Adding a fractal recompiles the shader only when its formula is not already in the scene; a new fractal starts as a Mandelbulb, so if one is already there it appears instantly. Lights and fog emitters never recompile. Adding the <em>first</em> warp recompiles — see <a href="#ch14">Chapter 14</a>. The first particle system of each look recompiles in the same way (<a href="#ch15">Chapter 15</a>). Removing objects never recompiles.</p>
           </div>
           <div class="param">
             <div class="param-head"><span class="param-name">Windows</span></div>
@@ -652,8 +653,15 @@
         <h3>Two independent quality sets</h3>
         <p>The marching quality you see in the viewport and the marching quality used for a final render are separate settings that never influence each other. They sit side by side in the <strong>Quality</strong> section of the Render window: the <em>Preview</em> column tunes the live viewport, and the <em>Final render</em> column tunes stills and animation renders. Getting a clean preview does not automatically get you a clean export, and vice versa. See chapters <a href="#ch4">4</a>, <a href="#ch5">5</a>, and <a href="#ch19">19</a>.</p>
 
-        <h3>Compiling blocks everything</h3>
-        <p>While a formula is compiling, the window stays responsive but stops drawing new frames, and the <strong>Compile</strong> button is replaced by a "Compiling…" label. Adding or removing a fractal or a mixin also recompiles, and those two block the app outright until they finish. This is a hard constraint of talking to the GPU driver safely, not a queue you can jump.</p>
+        <h3>Compiling happens in the background</h3>
+        <p>While the shader compiles, the app keeps drawing the old one: the camera, sliders and windows all stay live, and the new or changed fractal appears the moment its code is ready. Meanwhile every <strong>Compile</strong> button reads <em>Compiling</em> (an effect's reads <em>Busy</em>), the formula being compiled says <em>Compiling shader in the background</em> under it, and the <strong>×</strong> on a fractal or mixin row does nothing until the compile finishes. Exporting, loading a scene or undoing during a compile first waits for it to finish.</p>
+        <p>The shader holds one copy of each <em>distinct</em> formula the scene uses, not one per fractal, so two fractals sharing a formula share its code and differ only in their parameters. A compile is needed only when the scene uses a formula the current shader does not contain. Switching a fractal to a formula another fractal already uses, adding a mixin whose formula is already present, and removing anything are all instant. The one catch is a formula that so far appears only as a mixin, or as the base of a fractal that has mixins: a fractal using it on its own needs one compile to add the plain, unmixed version. Formulas that stop being used stay in the shader, unused, until the next compile that happens for another reason drops them.</p>
+
+        <h3>Undo and redo</h3>
+        <p><strong>Ctrl+Z</strong> undoes the last edit to the scene and <strong>Ctrl+Alt+Z</strong> redoes it. The history covers everything a scene file stores (<a href="#ch21">Chapter 21</a>): objects added or removed, every slider, checkbox and dropdown, colour stops, formula and effect files, keyframes, slider ranges, the sky and the photon map settings. It holds the last 100 steps each way, in memory only; it is not saved, and loading a scene does not clear it, so a load can be undone too.</p>
+        <p>A step is recorded once the scene has held still for about a third of a second with no mouse button down, so a whole slider drag, or a quick run of edits, undoes as one step. Making a new edit after undoing throws away what you could have redone.</p>
+        <p>Some things are deliberately left out. The camera's position, direction, move speed and 2D zoom never change on undo, so flying around between edits is not undone and an undo does not jerk the view. Depth of field, the 2D mode checkbox and the rest of the camera's settings are included. Which windows are open, the selection, the <strong>Simple render</strong> part switches, the diagnostic views and play mode are not part of the scene and are left alone. Nothing is recorded while the timeline is playing or play mode is on.</p>
+        <p>The keys do nothing while you are typing in a text field or a slider's value box, where Ctrl+Z undoes your typing instead. Undoing a formula change reloads the earlier file from disk, so if you have edited the file since, you get the file as it is now. Undoing a slider on a fractal never recompiles, but undoing a change of formula file can, the same way choosing it did.</p>
       </section>
 
       <section class="chapter" id="ch4">
@@ -665,8 +673,8 @@
         <div class="params">
           <div class="param">
             <div class="param-head"><span class="param-name">Simple render</span><span class="chip">default off</span></div>
-            <p>A diagnostic view of the scene. The viewport follows whatever the <strong>Simple render</strong> window says, which opens from the <strong>Parts &amp; approx...</strong> button next to the checkbox (or Windows → Simple render &amp; approximations) and carries the same checkbox at its top. It never touches an export, an animation render or the scene file — untick it and the full image is back.</p>
-            <p><strong>Geometry only (fast)</strong>, the window's first switch and its default, is the shape and nothing else: flat grey under one lamp mounted on the camera, with no lights, shadows, fog, reflections, refraction or photon gather anywhere in it. It runs from a separate, much smaller shader, so it is far faster than the full render with everything turned off would be — use it to frame a camera, check a silhouette, or hunt for the parameter value where a shape stops being a blob. The photon map is not traced while it is on.</p>
+            <p>A diagnostic view of the scene. The viewport follows whatever the <strong>Simple render</strong> window says, which opens from the <strong>Parts &amp; approx...</strong> button next to the checkbox (or Windows → Simple render &amp; approximations) and carries the same checkbox, below its Hotspots and Overstep view diagnostics. It never touches an export, an animation render or the scene file — untick it and the full image is back.</p>
+            <p><strong>Geometry only (fast)</strong>, the switch under the checkbox and its default, is the shape and nothing else: flat grey under one lamp mounted on the camera, with no lights, shadows, fog, reflections, refraction or photon gather anywhere in it. It runs from a separate, much smaller shader, so it is far faster than the full render with everything turned off would be — use it to frame a camera, check a silhouette, or hunt for the parameter value where a shape stops being a blob. The photon map is not traced while it is on.</p>
             <p>Untick <strong>Geometry only</strong> and the window becomes a list of the full render's parts, in folding groups, each part with its own switch: <em>Colour strips</em>, <em>Specular highlights</em>, <em>Subsurface scattering</em> and <em>Iridescence</em> under Surface; <em>Direct lights</em>, <em>Shadows</em>, <em>Ambient occlusion</em>, <em>Photon map</em> and <em>Sky</em> under Light; <em>Fog</em>, <em>Reflections</em>, <em>Refraction</em>, <em>Dispersion</em> and <em>MC indirect light</em> under Transport; <em>Depth of field</em> and <em>Screen space shaders</em> under Camera. With everything ticked the image is exactly the normal one; each switch you clear removes that one contribution and nothing else, and a note under the switch says what is left in its place. <strong>All on</strong> and <strong>All off</strong> reset the list. This is for finding things: whether a dark patch is shadow or occlusion, what the fog alone is adding, whether the photon map is responsible for a speckle.</p>
             <p>Two things to know. Switching parts off does more than skip their work: a moment after the list changes, the viewport moves to a copy of the full shader compiled with the unticked parts left out entirely, which the GPU runs noticeably faster than the full shader with the same parts merely skipped. Until that copy is ready the note under <strong>Geometry only</strong> says it is compiling and the view uses the full shader, so the picture is the same either way, only slower; the last few part lists you used stay compiled, so going back to one is instant. The fastest case is the <em>fast path</em>: when the only parts left on are <em>Colour strips</em>, <em>Direct lights</em>, <em>Specular highlights</em>, <em>Ambient occlusion</em>, <em>Sky</em> and <em>Screen space shaders</em>, nothing in the picture needs a second ray, and the view switches straight away to the same small shader Geometry only uses, running at close to its speed. A green note under <strong>Geometry only</strong> says when you are on it. The fast path shades in plain RGB rather than across wavelengths, so strongly coloured lights on strongly coloured surfaces can differ very slightly from the full path, and rough surfaces lose their per-pixel grain. MC Render does not accumulate on the fast path (there is no noise to average), the photon map is not traced, and an FT View cloud forces the full path. And the switches are a view of the scene, not a change to it — the photon map is still traced with glass in the scene even while <em>Refraction</em> is off, so caustics can remain after the glass that threw them has gone opaque. While <em>Photon map</em> itself is off the map is not traced at all, so ticking it again takes a moment before the light reappears. <strong>MC Render</strong> accumulates as usual under the part switches and restarts whenever one changes.</p>
           </div>
@@ -720,7 +728,7 @@
         </div>
 
         <h3>Approximations</h3>
-        <p>Below the parts list, the <strong>Simple render</strong> window has a second list: cheaper stand-ins for the most expensive parts of the full render. Unlike the parts switches, these are part of the scene. They are saved in the <code>.dream</code> file, and stills and animation renders use them too, so a heavy scene can be finished in a fraction of the time when the realism is not needed. They work whether or not <strong>Simple render</strong> is ticked, and the Render window shows <em>Approximations on: n</em> under the Simple render checkbox while any are active.</p>
+        <p>At the bottom, below the parts list, the <strong>Simple render</strong> window has a second list: cheaper stand-ins for the most expensive parts of the full render. Unlike the parts switches, these are part of the scene. They are saved in the <code>.dream</code> file, and stills and animation renders use them too, so a heavy scene can be finished in a fraction of the time when the realism is not needed. They work whether or not <strong>Simple render</strong> is ticked, and the Render window shows <em>Approximations on: n</em> under the Simple render checkbox while any are active.</p>
 
         <div class="params">
           <div class="param">
@@ -741,10 +749,6 @@
             <p>Ambient light becomes the sky colour in the direction the surface faces, plus the sky's sun, darkened by how many march steps the ray needed to reach the surface. Rays that squeeze into crevices take many steps, so creases come out dark for free. This replaces both MC Render's bounce ray and the five-sample ambient occlusion.</p>
           </div>
           <div class="param">
-            <div class="param-head"><span class="param-name">Sky reflections</span><span class="chip">default off</span></div>
-            <p>A reflected ray shows the sky in the mirror direction and stops, instead of marching back into the scene. Creases and cavities are darkened by how many march steps the ray needed to reach the surface. Mirrors and glossy surfaces reflect only the environment, so other objects and the fractal itself never appear in reflections, but no secondary march is paid for them.</p>
-          </div>
-          <div class="param">
             <div class="param-head"><span class="param-name">Thin glass</span><span class="chip">default off</span></div>
             <p>A ray refracts once as it enters glass, then shows the sky in that bent direction and stops. Nothing behind or inside the glass is traced, so glass looks like a lens onto the environment rather than onto the scene. Combined with <em>Tint approximation</em>, the glass is also tinted by its thickness.</p>
           </div>
@@ -763,6 +767,10 @@
           <div class="param">
             <div class="param-head"><span class="param-name">Distance LOD</span><span class="chip">default off</span></div>
             <p>Fractals lose iterations as they get further from the camera, blending smoothly between iteration counts, and never drop below a quarter of their own count. Beyond <em>LOD start distance</em> (default 2.0, range 0.1–20) the fractal loses <em>Iterations lost per doubling</em> (default 1.5, range 0–6) iterations each time the distance doubles. Far detail softens, and because a fractal with fewer iterations is usually a little fatter, distant parts can bulge slightly.</p>
+          </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">Sky reflections</span><span class="chip">default off</span></div>
+            <p>A reflected ray shows the sky in the mirror direction and stops, instead of marching back into the scene. Creases and cavities are darkened by how many march steps the ray needed to reach the surface. Mirrors and glossy surfaces reflect only the environment, so other objects and the fractal itself never appear in reflections, but no secondary march is paid for them.</p>
           </div>
         </div>
 
@@ -935,7 +943,7 @@
         <span class="chapter-num">Chapter 6</span>
         <h2 class="chapter-title">Shaping a fractal</h2>
 
-        <p>Each fractal instance has a placement in the world, a formula, optional mixins, and a color strip. This chapter covers placement; the rest follow.</p>
+        <p>Each fractal instance has a placement in the world, a formula, optional mixins, and a color strip. Its editor shows them as folding sections: <em>Formula</em>, <em>Transform</em>, <em>Combine</em> (from Fractal 2 on), <em>Mixins</em>, <em>Material</em>, <em>Orbit trap</em> and <em>FT View</em>. This chapter covers the Transform section and FT View; the rest follow.</p>
 
         <p>The transform is applied in the order <strong>scale, then rotation, then offset</strong>. A fractal is grown or squashed along its own local axes, spun around its own centre, and then moved into place.</p>
 
@@ -963,7 +971,7 @@
         </div>
 
         <h3>FT View</h3>
-        <p>Below the transform sliders, <strong>FT View (Fourier magnitude cloud)</strong> swaps the fractal for a picture of its 3D Fourier spectrum: which spatial frequencies its shape is made of, and in which directions. The solid disappears and in its place, at the same offset, rotation and scale, hangs a glowing cloud tinted with the strip's first colour. A fractal's symmetries show up as symmetries of the cloud, and its repeated scales show up as shells and lattices of bright points, often far more legibly than in the shape itself.</p>
+        <p>In the <em>FT View</em> section at the bottom of the fractal editor (folded by default), <strong>FT View (Fourier magnitude cloud)</strong> swaps the fractal for a picture of its 3D Fourier spectrum: which spatial frequencies its shape is made of, and in which directions. The solid disappears and in its place, at the same offset, rotation and scale, hangs a glowing cloud tinted with the strip's first colour. A fractal's symmetries show up as symmetries of the cloud, and its repeated scales show up as shells and lattices of bright points, often far more legibly than in the shape itself.</p>
         <p>The spectrum is drawn unshifted, in the raw order the transform produces. The lowest frequencies (the broad overall mass, and usually the brightest part) sit at the cube's <em>eight corners</em>, each corner holding a piece of them, and frequency rises towards the <em>centre</em> of the cube, which holds the very finest detail the grid can resolve.</p>
         <p>To build the cloud, the fractal is sampled on a 64&times;64&times;64 grid filling a cube around its own origin. The grid stores a soft shell around the surface, about one and a half cells thick, and the cloud is the logarithm of the Fourier transform's magnitude, computed on the GPU. It rebuilds automatically about 180&nbsp;ms after the formula, its parameters, its mixins or the settings below stop changing.</p>
 
@@ -1042,7 +1050,7 @@
           </div>
           <div class="param">
             <div class="param-head"><span class="param-name">Compile</span></div>
-            <p>Reads the file, checks it defines the three required functions, parses its <code>// @param</code> declarations into sliders, and rebuilds the shader with it in place. On failure the previous formula stays loaded and the error appears in red underneath.</p>
+            <p>Reads the file, checks it defines the three required functions, parses its <code>// @param</code> declarations into sliders, and rebuilds the shader with it in place. The rebuild runs in the background: the fractal keeps showing its old formula until the new one is ready, and if the formula is already in the shader (another fractal uses it) there is nothing to rebuild and the change is instant (<a href="#ch3">Chapter 3</a>). On failure the previous formula stays loaded and the error appears in red underneath.</p>
           </div>
           <div class="param">
             <div class="param-head"><span class="param-name">Parameters</span><span class="chip">up to 8</span></div>
@@ -1070,7 +1078,7 @@
 
         <p>Normally a fractal iterates its own formula a set number of times and then converts the result into a distance. With mixins active, a single shared trajectory is built by cycling: the base formula runs for a few iterations, then each mixin in turn runs for its own count, then back to the base, repeating until the total iteration budget is spent. Only the <em>base</em> formula converts the result into a distance, which is why a mixed shape keeps the base's overall character while the mixins etch their folds into its surface. A Mandelbulb base with a Menger mixin reads as a Mandelbulb whose surface follows a Menger lattice.</p>
 
-        <p>Add up to three mixins per fractal with <strong>Add mixin</strong>, in the fractal editor's <em>Mixins</em> section (folded by default). Each appears as a list row; clicking it opens an editor holding just that mixin's formula section, with its own file and its own parameter sliders. Adding or removing a mixin recompiles the shader and blocks until done.</p>
+        <p>Add up to three mixins per fractal with <strong>Add mixin</strong>, in the fractal editor's <em>Mixins</em> section (folded by default). Each appears as a list row; clicking it opens an editor holding just that mixin's formula section, with its own file and its own parameter sliders. Adding a mixin recompiles only if its formula is not already in the shader; removing one never does.</p>
 
         <div class="params">
           <div class="param">
@@ -1366,7 +1374,7 @@
         </div>
 
         <h3>Ambient occlusion</h3>
-        <p>Creases and enclosed pockets darken automatically. The renderer probes outward along the surface normal and compares how far it walked against how much clearance it actually finds, at a radius that scales with camera distance so the effect tracks whatever detail level is currently visible. There is nothing to configure — it is on always, and it is what keeps deep fractal structure legible without lighting every crevice individually.</p>
+        <p>Creases and enclosed pockets darken automatically. The renderer probes outward along the surface normal and compares how far it walked against how much clearance it actually finds, at a radius that scales with camera distance so the effect tracks whatever detail level is currently visible. There is nothing to configure — it is always on, and it is what keeps deep fractal structure legible without lighting every crevice individually. Only the <em>Ambient occlusion</em> switch in Simple render's parts list (<a href="#ch4">Chapter 4</a>) removes it, for comparison, and the <em>Indirect light</em> approximation replaces it with a cheaper step-count darkening.</p>
       </section>
 
       <section class="chapter" id="ch12">
@@ -1457,7 +1465,7 @@
           <div class="param">
             <div class="param-head"><span class="param-name">Sky photons</span><span class="chip">default off</span></div>
             <p>Adds the environment to the photon prepass as an emitter, so sky light that bounces off the fractal — or refracts through it — is carried the same way a light's is (<a href="#ch11">Chapter 11</a>). The sky always lights the scene directly; this is only about the indirect half.</p>
-            <p>It takes a share of the existing <strong>Photon paths</strong> budget rather than adding to it, and a large fraction of sky photons cross the scene without touching anything, so on a scene lit mainly by its own lights it makes the caustics noisier in exchange for very little. It earns its cost on a scene whose sky <em>is</em> the light. With the photon map switched off it does nothing at all, and the panel says as much.</p>
+            <p>It takes a share of the existing <strong>Photon paths</strong> budget rather than adding to it, and a large fraction of sky photons cross the scene without touching anything, so on a scene lit mainly by its own lights it makes the caustics noisier in exchange for very little. It earns its cost on a scene whose sky <em>is</em> the light. With the photon map switched off in the Render window it does nothing at all.</p>
           </div>
         </div>
 
@@ -1538,7 +1546,7 @@
 
         <div class="note">
           <span class="tag">The first warp costs a recompile</span>
-          <p>Adding the first warp to a scene — or removing the last one — rebuilds the shader, the same way loading a formula does. Editing a warp you already have never does: warps are otherwise pure uniform data, so every slider here is instant.</p>
+          <p>Adding the first warp to a scene rebuilds the shader, the same way loading a formula does. Removing the last one does not: the warp code stays in, idle, until the next compile drops it. Editing a warp you already have never recompiles: warps are otherwise pure uniform data, so every slider here is instant.</p>
           <p>The reason is compile time. Warp evaluation sits inside <code>scene_de</code>, which is inlined at around thirty places, and carrying it unconditionally measured at +5.1 seconds on a cold compile (13.9s → 19.0s on an AMD 780M) — a tax every scene would pay whether or not it had a warp in it. So the evaluators are spliced in only when the scene has one, and a scene with none compiles exactly what it did before warps existed. See <a href="#ch22">Chapter 22</a>.</p>
         </div>
 
@@ -1647,7 +1655,7 @@
           </div>
           <div class="param">
             <div class="param-head"><span class="param-name">Velocity</span><span class="chip">default Direction + cone</span></div>
-            <p><strong>Direction + cone</strong> sends every particle roughly one way, within <strong>Cone spread</strong> degrees of <strong>Direction</strong>. <strong>Radial</strong> sends each one straight out from the spawn centre (from a point emitter that means random directions). <strong>Random</strong> picks any direction. Speeds are spread between <strong>Speed min</strong> and <strong>Speed max</strong>.</p>
+            <p><strong>Direction + cone</strong> sends every particle roughly one way, within <strong>Cone spread</strong> degrees of <strong>Direction</strong>. <strong>Radial from centre</strong> sends each one straight out from the spawn centre (from a point emitter that means random directions). <strong>Random</strong> picks any direction. Speeds are spread between <strong>Speed min</strong> and <strong>Speed max</strong>.</p>
           </div>
         </div>
 
@@ -1664,7 +1672,7 @@
         <p>Each particle takes its colour from the strip (<a href="#ch10">Chapter 10</a>), either at a <strong>Random per particle</strong> position or by its <strong>Distance from spawn centre</strong> over <strong>Strip span</strong>. <strong>Strip offset</strong> shifts both.</p>
         <div class="note">
           <span class="tag">Switching the look recompiles</span>
-          <p>Like warps, each look is spliced into the shader only while some system uses it, so a scene without particles compiles exactly what it did before. Switching between lit spheres and flat dots, or showing the first system of a kind, costs a recompile. The first particle system after each formula compile also takes a moment to build its simulation pipelines.</p>
+          <p>Like warps, each look is spliced into the shader only while some system uses it, so a scene without particles compiles exactly what it did before. Showing the first system of a kind (lit spheres or flat dots) costs a recompile; removing the last one does not. The first particle system after each formula compile also takes a moment to build its simulation pipelines.</p>
         </div>
 
         <h3>Animating a system</h3>
@@ -1681,7 +1689,7 @@
         <h3>Depth of field</h3>
         <p>A thin-lens simulation: instead of every ray starting from a single pinhole, several rays start from random points on a disc-shaped lens and are re-aimed at the same point on the focus plane. The preview takes 8 lens samples, an export takes 32 — so DOF reads as a soft grain live and a clean blur when rendered. With MC Render on, DOF converges along with everything else as frames accumulate.</p>
 
-        <p>Both effects need rays to work on, so neither does anything in 2D mode (<a href="#ch18">Chapter 18</a>). The panel says as much next to the depth-of-field sliders rather than hiding them, so the settings are visibly still there when you switch back.</p>
+        <p>Both effects need rays to work on, so neither does anything in 2D mode (<a href="#ch18">Chapter 18</a>). Their controls stay visible and keep their values, so they take effect again as soon as you switch back.</p>
 
         <div class="params">
           <div class="param">
@@ -1792,7 +1800,7 @@
         <h3>The list</h3>
         <p><strong>Add → Screen shader</strong> appends an empty slot and opens its editor. Each row shows its position, the effect's name, and <em>(off)</em> if it is disabled; the checkbox at the start of the row is the same <strong>Enabled</strong> switch as in the editor, and clicking the name toggles its editor window. The up and down arrow buttons move an entry up or down the chain, and <strong>×</strong> deletes it.</p>
 
-        <p>Reordering is a real edit, not a cosmetic one: each effect sees what the one before it produced. Sharpening before grain sharpens geometry; sharpening after grain sharpens the grain. The shipped effects say in their header comments where they want to sit, and two of them care a great deal — see below.</p>
+        <p>Reordering is a real edit, not a cosmetic one: each effect sees what the one before it produced. Sharpening before grain sharpens geometry; sharpening after grain sharpens the grain. The table of shipped effects below says where each one wants to sit, and three of them care a great deal.</p>
 
         <h3>The editor window</h3>
         <div class="params">
@@ -1825,7 +1833,7 @@
         </div>
 
         <h3>The shipped effects</h3>
-        <p>Twelve files in <code>screen_shaders/</code>, each with its reasoning in a header comment worth reading before you change one. Every parameter listed here is a slider.</p>
+        <p>Sixteen effects in <code>screen_shaders/</code>, plus <code>anothershader_testshaders.wgsl</code>, a scratch file for trying the pipeline out that is not meant as an effect. The files carry no comments apart from their <code>@param</code> lines, so this table is where their reasoning lives. Every parameter listed here is a slider.</p>
 
         <div class="table-scroll">
           <table>
@@ -1833,10 +1841,14 @@
             <tbody>
               <tr><td>bloom</td><td>Threshold bloom on a golden-angle disc of taps.</td><td>Thresholds pre-tonemap, so it finds highlights that were genuinely brighter than white rather than ones that merely clipped.</td></tr>
               <tr><td>tonemap</td><td>Exposure, saturation and contrast in linear light, then Reinhard, Reinhard with a white point, ACES, or Uncharted 2.</td><td><strong>Put it last.</strong> It ends by pre-inverting the engine's fixed Reinhard so that pass undoes itself exactly, leaving the chosen operator in control — anything after it sees reshaped values, not radiance.</td></tr>
+              <tr><td>dreamgrade</td><td>A soft, pastel grade: exposure, a lifted black level (<em>Fade</em>), lowered contrast, pastel desaturation, split toning with separate shadow and highlight hues, and fine grain.</td><td><strong>Put it last</strong>, like tonemap: it does its own tone curve and ends by pre-inverting the engine's Reinhard, so anything after it sees display values rather than radiance. Use it instead of tonemap, not as well as.</td></tr>
+              <tr><td>dreamglow</td><td>A dreamy soft glow: an Orton-style wide blur added back over the image, tinted halation around highlights above a threshold, and an optional slight soft focus.</td><td>Reads the HDR range, so put it before tonemap or dreamgrade. <em>Drift</em> slowly varies the glow's size and strength across the frame and over time, which needs <em>Animated</em> to move in the viewport. <em>Taps</em> is the cost dial.</td></tr>
               <tr><td>fxaa</td><td>FXAA 3.11 edge antialiasing.</td><td><strong>Put it before any noise effect</strong> — it smooths geometry, and given grain it will happily smooth that instead. Its luma is taken through a Reinhard and square-rooted first, because in raw linear HDR everything above 1.0 reads as flat white and bright edges go undetected.</td></tr>
               <tr><td>vignette</td><td>Exposure, saturation, soft vignette.</td><td>Colour only; the cheapest thing here and a reasonable default finisher.</td></tr>
               <tr><td>filmgrain</td><td>Animated grain plus corner-weighted chromatic aberration.</td><td>Grain is keyed off time <em>and</em> the MC sample index, so an accumulating still does not freeze one noise pattern.</td></tr>
               <tr><td>outline</td><td>Ink outline from g-buffer discontinuities — depth jumps give silhouettes, normal swings give creases.</td><td>Needs depth and normal. <em>Fill fade</em> pushes it towards a flat cel look.</td></tr>
+              <tr><td>contours</td><td>Contour lines over the surface, like a topographic map: <em>Bands</em> lines across a value read from the normal, either how directly the surface faces the camera (<em>Source</em> 0) or the normal's X, Y or Z (1–3).</td><td>Needs the normal. <em>Min width (px)</em> keeps lines visible where the bands crowd together. With the default <em>Scene mix</em> of 0 the surface is replaced by a near-black fill; raise it to draw the lines over the render. The sky is left alone.</td></tr>
+              <tr><td>ascii</td><td>Redraws the picture as text: each cell becomes a character from a brightness ramp, and cells across a strong depth or brightness edge become <code>/ | - \</code> along the edge.</td><td>Reads depth for the edges. <em>Font size</em> is the cell height in pixels. <em>Colour</em> blends the characters from a single <em>Tint hue</em> to each cell's own colour, <em>Cell fill</em> paints the background with the cell colour, and <em>ASCII background</em> 0 leaves the sky as blank cells. It tone-maps what it reads itself, through <em>Exposure</em>, and <em>Brightness</em> sets how bright the characters come out.</td></tr>
               <tr><td>depthfade</td><td>Distance haze straight off the depth buffer.</td><td>Pixels the ray missed read depth 0 and are treated as infinitely far, so the sky fades fully.</td></tr>
               <tr><td>lensdistort</td><td>Two-term Brown–Conrady radial distortion, transverse chromatic aberration, cos⁴ falloff.</td><td>Positive <em>k1</em> barrels, negative pincushions. Samples from outside the frame — see the tiling note below. Its aberration is radius-proportional and works with distortion at zero.</td></tr>
               <tr><td>heathaze</td><td>Two bands of rising fbm turbulence displacing where each pixel reads from.</td><td>Needs <em>Animated</em>. Shimmer grows with depth, because it is the hot air in between that bends the ray; <em>Sky shimmer</em> dials back the infinitely-far background.</td></tr>
@@ -2224,6 +2236,8 @@
         <p>An environment image is stored the same way, as a path rather than as pixels, and decoded off disk when the scene opens (<a href="#ch12">Chapter 12</a>). A path that no longer resolves — a scene authored on another machine, or an HDRI since moved — reports the failure in the Sky panel's status line and renders the procedural gradient instead, rather than refusing to open the scene.</p>
 
         <p>Files carry a version number. Missing fields take their defaults; a file written by a newer build is refused rather than loaded partially.</p>
+
+        <p>Undo and redo (<a href="#ch3">Chapter 3</a>) are built on the same format: each step is an in-memory copy of what a save would write, minus the camera's position, direction, move speed and 2D zoom. So anything a scene file leaves out, the history leaves out too.</p>
       </section>
 
       <section class="chapter" id="ch22">
@@ -2233,17 +2247,18 @@
         <p><code>src/gpu/shaders/template.wgsl</code> is the renderer itself: the camera, the marcher, the lighting, the fog, the materials. It is a <em>template</em>, not a shader — it is never compiled as written. Everything specific to your scene is spliced into it at runtime, and the result is what the GPU actually receives.</p>
 
         <h3>How the shader is assembled</h3>
-        <p>The template carries four kinds of marker. There are always exactly four <code>@@FORMULA_N@@</code> and four <code>@@MIXINS_N@@</code> markers, matching the four fractal slots, plus one <code>@@DISPATCHERS@@</code> and one <code>@@WARPS@@</code>. Assembly does five things:</p>
+        <p>The template carries three markers: <code>@@FORMULAS@@</code>, <code>@@WARPS@@</code> and <code>@@PARTICLES@@</code>. Before assembly, the app collects the <em>code table</em>: every distinct formula source the scene uses, as a base or as a mixin, each listed once however many fractals share it, and sorted by a hash of its text so the same set of formulas always produces the same shader. A formula's position in that table is its <em>code</em>, and each fractal and mixin is told which code to run through a uniform, so pointing a fractal at a formula that is already in the table changes a number, not the shader (<a href="#ch3">Chapter 3</a>). Assembly then does four things:</p>
 
         <ol>
-          <li><strong>Splices each formula's source</strong> into its numbered marker. Slot <em>i</em> is fractal <em>i</em>'s own formula; slots <code>4 + i×3 + j</code> are its three mixins. Sixteen slots exist in every compiled shader whether you use them or not.</li>
-          <li><strong>Renames every top-level function</strong> in each spliced file. The three contract functions get a <code>_slot</code> suffix; any other helper the file declares gets <code>_fslot</code>. This is what lets two formulas that both define a helper called <code>fold</code>, or the same file loaded into two slots at once, coexist without colliding.</li>
-          <li><strong>Wraps each base formula</strong> in a generated <code>formula_N</code> function implementing the ordinary non-mixed behaviour: iterate <code>de_iterations</code> times, track the orbit trap, finalize.</li>
-          <li><strong>Generates the dispatchers</strong> at <code>@@DISPATCHERS@@</code> — <code>eval_step</code> and <code>eval_finalize</code>, static sixteen-armed switches over the slot number. WGSL has no function pointers, so slot dispatch has to be a switch, and it has to be generated because the arm count follows the instance and mixin limits.</li>
-          <li><strong>Chooses the warp evaluators</strong> at <code>@@WARPS@@</code> — the real <code>warp_domain</code> and <code>warp_step_limit</code> when the scene has a warp in it, and an identity pair of stubs when it does not, so every <code>scene_de</code>, <code>hit_material</code> and <code>march</code> call site folds back to exactly what it compiled to before warps existed. That is worth about five seconds of cold compile, which is why it is a splice rather than template text (<a href="#ch14">Chapter 14</a>).</li>
+          <li><strong>Splices each formula's source</strong> at <code>@@FORMULAS@@</code>, once per code. There are at most sixteen (four fractals, three mixins each), and only as many as the scene has distinct formulas.</li>
+          <li><strong>Renames every top-level function and constant</strong> in each spliced file. The three contract functions get a <code>_N</code> suffix for code <em>N</em> (<code>de_step_2</code>); every other function and module-scope <code>const</code> the file declares gets <code>_fN</code>. This is what lets two formulas that both define a helper called <code>fold</code> coexist without colliding.</li>
+          <li><strong>Wraps each formula used as a plain base</strong> in a generated <code>formula_N</code> function implementing the ordinary non-mixed behaviour: iterate <code>de_iterations</code> times, track the orbit trap, finalize. A formula that only ever appears as a mixin, or as the base of a mixed fractal, gets no wrapper, since only the mixin cycle calls it.</li>
+          <li><strong>Generates the dispatchers</strong> right after them: <code>eval_formula</code>, <code>eval_step</code> and <code>eval_finalize</code>, chains of <code>if (code == N)</code> arms over the codes present. WGSL has no function pointers, so dispatch has to be written out, and it has to be generated because the arms follow the table. A code of −1, which unused slots get, and so does a newly added fractal whose formula is not in the shader yet, falls through to "no surface". That is why such a fractal is simply absent until its compile lands.</li>
         </ol>
 
-        <p>Slots you are not using are filled with a deliberately trivial filler formula — zero iterations, a huge constant distance — rather than a real one. Since dispatch happens on a slot number only known at runtime, the compiler cannot prove an unused arm is dead and compiles it anyway.</p>
+        <p>The other two markers choose between real code and stubs. <code>@@WARPS@@</code> gets the real <code>warp_domain</code> and <code>warp_step_limit</code> when the scene has a warp, and an identity pair of stubs when it does not, so every <code>scene_de</code>, <code>hit_material</code> and <code>march</code> call site folds back to exactly what it compiled to before warps existed. That is worth about five seconds of cold compile, which is why it is a splice rather than template text (<a href="#ch14">Chapter 14</a>). <code>@@PARTICLES@@</code> does the same for lit particle spheres and flat particle dots, separately (<a href="#ch15">Chapter 15</a>).</p>
+
+        <p>A shader that holds more than the scene needs still works: a compile is skipped whenever the current table already covers every formula in use and every warp or particle look. That is why removing things never recompiles. The table is rebuilt to exactly what the scene needs the next time something forces a compile, and the last few compiled shaders are kept, so going back to a combination you just had is a cache hit rather than a compile.</p>
 
         <div class="note">
           <span class="tag">Consequence for you</span>
@@ -2333,7 +2348,7 @@ fn de_finalize(carry: IterCarry) -&gt; f32</code></pre>
         <h3>Why the code looks the way it does</h3>
         <p>Three structural oddities in the file are load-bearing, and worth understanding before editing it.</p>
 
-        <p><strong>Every duplicated call site multiplies the whole shader.</strong> GPU compilers do not emit real function calls in a fragment shader — they inline the entire call graph into one flat entry point and then optimise that. <code>scene_de</code> expands to every one of the sixteen compiled formula slots, and it is itself inlined at around thirty places. So writing the four normal-estimation taps as four straight-line calls instead of a loop means four more copies of every formula, thirty times over. The loops in <code>estimate_normal</code>, <code>calc_ao</code>, <code>visibility_march</code>, and the single <code>trace_path</code> call in <code>fs_main</code> all exist for this reason.</p>
+        <p><strong>Every duplicated call site multiplies the whole shader.</strong> GPU compilers do not emit real function calls in a fragment shader — they inline the entire call graph into one flat entry point and then optimise that. <code>scene_de</code> expands to every formula in the code table, up to sixteen, and it is itself inlined at around thirty places. So writing the four normal-estimation taps as four straight-line calls instead of a loop means four more copies of every formula, thirty times over. The loops in <code>estimate_normal</code>, <code>calc_ao</code>, <code>visibility_march</code>, and the single <code>trace_path</code> call in <code>fs_main</code> all exist for this reason.</p>
 
         <p><strong>2D mode is a separate entry point for occupancy, not for tidiness.</strong> A GPU allocates a shader's registers for its worst path, not the one a given draw takes, and how many waves can run concurrently per SIMD falls out of that allocation. As a branch inside <code>fs_main</code> the slice would inherit the register footprint of the whole march-and-shade tree and run at a fraction of its occupancy. Compiled alone it needs a fraction of those registers, and it expands the formula tree once against <code>fs_main</code>'s thirty-odd.</p>
 
@@ -2355,7 +2370,9 @@ fn de_finalize(carry: IterCarry) -&gt; f32</code></pre>
               <tr><td>MAX_LIGHTS</td><td class="num">8</td><td>Lights per scene</td></tr>
               <tr><td>MAX_FOG_EMITTERS</td><td class="num">4</td><td>Fog emitters per scene</td></tr>
               <tr><td>MAX_WARPS</td><td class="num">4</td><td>Warps per scene</td></tr>
-              <tr><td>Screen-space effects</td><td class="num">4</td><td>Links in the post chain (<a href="#ch17">Chapter 17</a>)</td></tr>
+              <tr><td>MAX_PARTICLE_SYSTEMS</td><td class="num">2</td><td>Particle systems per scene, up to 16,384 particles each (<a href="#ch15">Chapter 15</a>)</td></tr>
+              <tr><td>Formula codes</td><td class="num">16</td><td>Distinct formulas one shader can hold: four fractals with three mixins each</td></tr>
+              <tr><td>Screen-space effects</td><td class="num">8</td><td>Links in the post chain (<a href="#ch17">Chapter 17</a>)</td></tr>
               <tr><td>Single-tile post budget</td><td class="num">16 Mpx</td><td>Largest export a neighbour-sampling effect renders seamlessly</td></tr>
               <tr><td>Sky image edge</td><td class="num">4096</td><td>Environment maps above it are halved until they fit</td></tr>
               <tr><td>Formula params</td><td class="num">8</td><td><code>p[0]</code>…<code>p[7]</code> per formula</td></tr>
@@ -2381,13 +2398,30 @@ fn de_finalize(carry: IterCarry) -&gt; f32</code></pre>
         <span class="chapter-num">Chapter 23</span>
         <h2 class="chapter-title">Writing a formula</h2>
 
-        <p>A formula file is a small standalone <code>.wgsl</code> file. It can declare its own helper functions freely — they get uniquified per slot — but module-scope constants are <em>not</em> renamed, so keep constants inside the functions that use them, and do not declare anything the template already provides (<code>IterCarry</code>, the uniform block, the smooth-min family, and so on are all already in scope). <a href="#ch24">Chapter 24</a> walks through building a formula from nothing and lists every helper you can call.</p>
+        <p>A formula file is a small standalone <code>.wgsl</code> file. It can declare its own helper functions and module-scope constants freely — both get a unique suffix when the shader is assembled — but a module-scope <code>var</code> or <code>struct</code> keeps its name, so avoid those, and do not declare anything the template already provides (<code>IterCarry</code>, the uniform block, the smooth-min family, and so on are all already in scope). <a href="#ch24">Chapter 24</a> walks through building a formula from nothing and lists every helper you can call.</p>
 
         <h3>A minimal, complete example</h3>
-        <p>This is the built-in Mandelbulb, which is also a good starting skeleton:</p>
+        <p>This is the built-in Mandelbulb, the whole file:</p>
 
         <pre><code>// @param Power min=2 max=16 default=8
-// @param Iterations min=2 max=16 default=6
+// @param Iterations min=2 max=16 default=6 int
+fn de_iterations(p: array&lt;f32, 8&gt;) -&gt; i32 {
+    return i32(p[1]);
+}
+
+fn de_step(carry: IterCarry, pos: vec3f, p: array&lt;f32, 8&gt;) -&gt; IterCarry {
+    return bulb_power_step(carry, pos, p[0]);
+}
+
+fn de_finalize(carry: IterCarry) -&gt; f32 {
+    return bulb_log_escape(carry);
+}</code></pre>
+        <p class="caption">src/gpu/shaders/mandelbrot.wgsl</p>
+
+        <p>The two helpers it calls come from the template (<a href="#ch24">Chapter 24</a>). Written out in full, which makes a better starting skeleton for a formula of your own, it is:</p>
+
+        <pre><code>// @param Power min=2 max=16 default=8
+// @param Iterations min=2 max=16 default=6 int
 fn de_iterations(p: array&lt;f32, 8&gt;) -&gt; i32 {
     return i32(p[1]);
 }
@@ -2413,7 +2447,7 @@ fn de_finalize(carry: IterCarry) -&gt; f32 {
     let log_est = 0.5 * log(max(r, 1e-6)) * r / max(carry.dr, 1e-6);
     return min(log_est, r);        // capped: see below
 }</code></pre>
-        <p class="caption">src/gpu/shaders/mandelbrot.wgsl</p>
+        <p class="caption">The same formula with bulb_power_step and bulb_log_escape expanded</p>
 
         <h3>Rules that matter</h3>
         <ul>
@@ -2422,7 +2456,7 @@ fn de_finalize(carry: IterCarry) -&gt; f32 {
           <li><strong>Fold from <code>carry.z</code>, not from <code>pos</code>.</strong> <code>pos</code> is the original sample point (the "c" of an escape-time formula); <code>carry.z</code> is whatever the previous iteration — possibly another formula's — produced. A formula that recomputes each level from <code>pos</code> cannot be mixed; the shipped Menger sponge is written as a genuine iterative fold specifically so that it can be.</li>
           <li><strong>Never return a distance larger than the true one.</strong> Overestimating lets the marcher step straight through your surface, which is what patchy or missing geometry looks like. Underestimating is always safe, just slower. The Mandelbulb's <code>min(log_est, r)</code> cap exists for exactly this: the log-escape estimate grows faster than the shape's own radius at large <code>r</code>, and would let the marcher tunnel through distant parts of the fractal.</li>
           <li><strong>Bounded folds need a different finalize.</strong> An escape-time formula diverges, so <code>length(z)/dr</code> is a real distance. A fold like the Menger sponge never diverges, so the same expression is small nearly everywhere and starves the marcher — those formulas should return the distance to a bounding shape instead, scaled down by <code>dr</code>.</li>
-          <li><strong>Keep it cheap.</strong> Your file is compiled into up to sixteen slots and inlined at roughly thirty call sites. Trigonometry and branches multiply accordingly.</li>
+          <li><strong>Keep it cheap.</strong> Your file is compiled once per shader however many fractals use it, but it is inlined at roughly thirty call sites. Trigonometry and branches multiply accordingly.</li>
         </ul>
 
         <h3>The workflow</h3>
@@ -2433,7 +2467,7 @@ fn de_finalize(carry: IterCarry) -&gt; f32 {
           <li>Expect the first compile of a new formula to take a few seconds. Subsequent compiles of the same combination are cached by the driver.</li>
         </ol>
 
-        <p>Common error messages: <em>"File must define `fn de_step(…)`"</em> means one of the three contract functions is missing or spelled differently. <em>"Could not read file"</em> is a path problem. <em>"A shader is already compiling"</em> means you clicked Compile while another was in flight — wait and click again. Anything else in red is the GPU driver's own WGSL compiler message, quoted verbatim.</p>
+        <p>Common error messages: <em>"File must define `fn de_step(…)`"</em> means one of the three contract functions is missing or spelled differently. <em>"Could not read file"</em> is a path problem. <em>"A shader is already compiling"</em> means you picked a formula from the library while another compile was in flight — wait and pick it again. Anything else in red is the GPU driver's own WGSL compiler message, quoted verbatim.</p>
       </section>
 
       <section class="chapter" id="ch24">
@@ -2448,18 +2482,23 @@ fn de_finalize(carry: IterCarry) -&gt; f32 {
 
         <h3>Where your formula runs</h3>
         <p><code>pos</code> arrives in the instance's <em>local</em> space. The instance's Offset has already been subtracted, its Rotation undone and its per-axis Scale divided out, so a formula never needs position, rotation or size parameters of its own — the instance supplies them. The distance you return is in local units; the renderer scales it back up and applies the Step-size safety factor afterwards (<code>instance_de_trap</code>, <a href="#ch22">Chapter 22</a>).</p>
-        <p>When the instance has no mixins, this is the wrapper that calls you, generated once per slot:</p>
+        <p>When the instance has no mixins, this is the wrapper that calls you, generated once per formula and shared by every fractal using it:</p>
         <pre><code>var carry = IterCarry(pos, 1.0);          // z starts at the point, dr at 1
-let trap_spec = orbit_trap(slot);         // the instance's Orbit trap settings
+let trap_spec = orbit_trap(slot);         // the calling instance's Orbit trap settings
 var trap = orbit_trap_begin(trap_spec);
-let iters = de_iterations(p);
+let lod = lod_iterations(de_iterations(p));   // Distance LOD; otherwise your count unchanged
+let iters = i32(lod.x);
+var carry_lo = carry;
 for (var it = 0; it &lt; iters; it++) {
     let z_prev = carry.z;
+    carry_lo = carry;
     carry = de_step(carry, pos, p);
     trap = orbit_trap_update(trap, trap_spec, carry.z, z_prev, it);   // for the colour strip
 }
-return vec2f(de_finalize(carry), orbit_trap_finish(trap, trap_spec, iters));</code></pre>
+return vec2f(de_finalize(lod_blend(carry_lo, carry, lod.y)),
+             orbit_trap_finish(trap, trap_spec, iters));</code></pre>
         <p class="caption">The generated formula_N wrapper</p>
+        <p>With the <em>Distance LOD</em> approximation off (<a href="#ch4">Chapter 4</a>), <code>lod_iterations</code> returns your own count and <code>lod_blend</code> returns the last carry, so the wrapper is the plain loop. With it on, a distant fractal runs fewer iterations and the finalize sees a blend of the last two carries, which is why your finalize must make sense on any carry, not only the final one.</p>
         <p>Two things to take from it. <code>de_iterations</code> is consulted only here — in a mixin cycle the three sliders in <a href="#ch9">Chapter 9</a> decide how often your step runs, and it may be more often than you asked for. And the orbit trap is not yours to define: it is measured on <code>z</code> after every step by whatever the user picked in the fractal's Orbit trap section (<a href="#ch10">Chapter 10</a>). By default that is the smallest <code>length(z)</code> seen across the iterations, divided by 1.5 and clamped to 0–1 to pick a position along the colour strip. A formula whose iterates linger near the origin colours from the left end of the strip; one whose iterates fly outward early colours from the right. You steer it only through what your fold does to <code>z</code>.</p>
 
         <h3>Step 1 — a shape with no iterations</h3>
@@ -2580,7 +2619,7 @@ fn de_finalize(carry: IterCarry) -&gt; f32 {
         </ul>
 
         <h3>Step 4 — your own helpers</h3>
-        <p>Anything you find yourself writing twice belongs in a helper function above the contract functions. The assembler renames every function and every module-scope <code>const</code> your file declares with a per-slot suffix, so two files can both define a <code>fold</code> or a <code>FOLD_ANGLE</code>, and one file can sit in all sixteen slots at once, without a clash. Here is a polar wedge fold — the one <code>prismkifs_box_boxfold_wedgefold.wgsl</code> writes inline — as a helper:</p>
+        <p>Anything you find yourself writing twice belongs in a helper function above the contract functions. The assembler renames every function and every module-scope <code>const</code> your file declares with a suffix unique to that file, so two files can both define a <code>fold</code> or a <code>FOLD_ANGLE</code> without a clash. One file used by several fractals or mixins is only spliced in once, so it never clashes with itself. Here is a polar wedge fold — the one <code>prismkifs_box_boxfold_wedgefold.wgsl</code> writes inline — as a helper:</p>
         <pre><code>// Fold the XY plane into one wedge of angle 2π/n, mirrored about the wedge's centre line.
 fn wedge_fold(z: vec3f, n: f32) -&gt; vec3f {
     let period = TAU / n;                       // TAU comes from the template
@@ -2594,7 +2633,7 @@ fn wedge_fold(z: vec3f, n: f32) -&gt; vec3f {
         <p>Drop it into Step 2's file and call it on the first line of the step — <code>var z = wedge_fold(carry.z, 5.0);</code> — for five-fold symmetry. A wedge fold is rotations and one mirror, so <code>dr</code> is untouched.</p>
         <div class="note">
           <span class="tag">Three renaming traps</span>
-          <p><strong>Only functions and constants are renamed.</strong> A module-scope <code>const</code> gets the same per-slot suffix as a function, so <code>FOLD_ANGLE</code> becomes <code>FOLD_ANGLE_f2</code> in slot 2 and every use in your file follows it. A module-scope <code>var</code> or <code>struct</code> keeps its name, so the moment the file is loaded into a second slot — or another file happens to declare the same name — the shader fails with a redeclaration error. The template's own constants, such as <code>PI</code>, <code>TAU</code>, <code>EPSILON</code> and <code>BULB_BAILOUT</code>, are visible to every formula without being declared.</p>
+          <p><strong>Only functions and constants are renamed.</strong> A module-scope <code>const</code> gets the same suffix as a function, so <code>FOLD_ANGLE</code> becomes <code>FOLD_ANGLE_f2</code> when the file is formula code 2, and every use in your file follows it. A module-scope <code>var</code> or <code>struct</code> keeps its name, so the moment another formula in the scene declares the same name, or the name matches one of the template's own, the shader fails with a redeclaration error. The template's own constants, such as <code>PI</code>, <code>TAU</code>, <code>EPSILON</code> and <code>BULB_BAILOUT</code>, are visible to every formula without being declared.</p>
           <p><strong>The renamer reads comments.</strong> It finds names by scanning the whole file for the word <code>fn</code>, or a top-level <code>const</code>, followed by an identifier. A comment such as <code>// like fn sphere_fold but…</code> registers <code>sphere_fold</code> as one of <em>your</em> functions and renames every call to it, which then points at a function that does not exist. Write "like sphere_fold" instead.</p>
           <p><strong>Shadowing works, on purpose.</strong> If you declare your own <code>box_fold</code>, every call in your file is renamed along with it and reaches yours, not the template's. Handy for trying a variant of a helper — just do not name a helper after a WGSL built-in such as <code>clamp</code> or <code>mix</code>, for the same reason.</p>
         </div>
@@ -2647,7 +2686,7 @@ fn wedge_fold(z: vec3f, n: f32) -&gt; vec3f {
         <h3>Testing and debugging</h3>
         <p>The app is the only validator: WGSL is compiled by the GPU driver at Compile time, and a syntax error appears in red under the button with the driver's own message. Once it compiles, the shape is the diagnostic.</p>
         <ul>
-          <li><strong>Geometry only</strong> (<a href="#ch4">Chapter 4</a>) is where to iterate. It runs from a much smaller shader, so compiles and frames are both fast, and nothing but the distance estimate is on screen.</li>
+          <li><strong>Geometry only</strong> (<a href="#ch4">Chapter 4</a>) is where to iterate. It runs from a much smaller entry point, so frames are fast, and nothing but the distance estimate is on screen. It is compiled along with the rest of the shader, so it does not shorten a compile.</li>
           <li><strong>2D mode</strong> (<a href="#ch18">Chapter 18</a>) shows your distance <em>field</em>, not just its surface. The glow around the cross-section is drawn from the estimate itself: with an honest estimate it is an even band about 24 pixels wide hugging the outline. Where the band fattens, your estimate is too small there (slow, but safe); where it thins away before the outline, your estimate is too large, and the marcher will tunnel through that face in 3D.</li>
           <li><strong>Step-size safety factor</strong> is the knob that tells you whether a problem is yours. If speckle clears at 0.5, the formula over-estimates somewhere; if it does not, something else is wrong.</li>
         </ul>
@@ -2660,7 +2699,7 @@ fn wedge_fold(z: vec3f, n: f32) -&gt; vec3f {
               <tr><td>Black pixels or whole black regions</td><td>NaN: <code>acos</code> of a value outside [−1, 1], <code>normalize</code> of a zero vector, <code>pow</code> of a negative base, division by a <code>dr</code> that reached 0, or a power map with no bail-out</td></tr>
               <tr><td>Shape vanishes as Iterations rises</td><td>Escape-time step without a bail-out has overflowed to infinity; or the estimate is under-flowing and the ray runs out of steps — raise Max march steps to tell them apart</td></tr>
               <tr><td>Sliders missing or in the wrong order</td><td>A malformed <code>@param</code> line is skipped silently and the ones after it shift down an index</td></tr>
-              <tr><td>Fine in one slot, fails when loaded twice</td><td>A module-scope <code>const</code> or <code>struct</code> — see the renaming traps above</td></tr>
+              <tr><td>Fine alone, fails next to another formula</td><td>A module-scope <code>var</code> or <code>struct</code> whose name the other file also declares — see the renaming traps above</td></tr>
               <tr><td>Everything is the same colour</td><td>The orbit trap saturates: with the default trap, <code>length(z)</code> never drops below 1.5. Lower the Strip span, or try a Sphere shell trap at a radius the orbits do pass through. Folds that pull points toward the origin colour better than ones that only push outward</td></tr>
             </tbody>
           </table>
@@ -2828,8 +2867,8 @@ fn de_finalize(carry: IterCarry) -&gt; f32</code></pre>
         <h4>The image is grainy with MC Render on</h4>
         <p>It has not converged. Watch the <em>Samples: n / target</em> readout and let it settle; any change to the scene restarts it. For renders, raise <strong>Export samples</strong> — remembering that its slider maximum clamps the default down, so you likely need to widen the range first.</p>
 
-        <h4>Everything freezes for many seconds after a formula change</h4>
-        <p>That is a cold shader compile, and it is expected. The app deliberately stops rendering while compiling because it is not safe to talk to the GPU from two places at once. If it never finishes and the app exits reporting a lost device, the compile took long enough for the driver to decide the GPU had hung — simplify the formula, or reduce the number of active fractals and mixins, since every slot is compiled whether it is used or not.</p>
+        <h4>A formula change takes seconds to show up</h4>
+        <p>That is a cold shader compile, and it is expected. It runs in the background while the old shader keeps drawing (<a href="#ch3">Chapter 3</a>), so the app stays usable, but a new fractal stays invisible and a changed one keeps its old shape until it finishes. If it never finishes and the app exits reporting a lost device, the compile took long enough for the driver to decide the GPU had hung — simplify the formula, or reduce the number of <em>different</em> formulas in the scene, since each distinct formula and mixin adds its own code to the shader. Several fractals sharing one formula cost no more to compile than one.</p>
 
         <h4>Renders are extremely slow</h4>
         <p>In rough order of impact: fog samples × fog emitters, MC render samples, shadow-casting lights, resolution, stereo (doubles everything), motion blur samples, march steps. Turning off <strong>Cast shadows</strong> on fill lights and dropping fog samples usually recovers the most time for the least visible loss.</p>

@@ -338,15 +338,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
             continue;
         }
 
-        if (fractal.isCompiling()) {
-            var event: sdl.SDL_Event = undefined;
-            while (sdl.SDL_PollEvent(&event)) {
-                if (event.type == sdl.SDL_EVENT_QUIT) running = false;
-            }
-            scene_state.pollPendingCompile(&fractal, allocator);
-            sdl.SDL_Delay(5);
-            continue;
-        }
+        if (fractal.isCompiling() and scene_state.pollPendingCompile(&fractal, allocator)) redraw_pending = true;
 
         const keys_for_wait = sdl.SDL_GetKeyboardState(null);
         preview_denoiser.strength = std.math.clamp(mc.denoise_strength, 0.0, 1.0);
@@ -361,7 +353,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
                 (photon_settings.enabled and photonsShown(render_parts, instances[0..instance_count]) and photon_state.debounce_state.dirty) or
                 (if (ftViewSlot(instances[0..instance_count])) |slot| instances[slot].fft_state.debounce_state.dirty else false));
         const continuous_input = (!uiHasMouse(&ui, &play) and (dragging or anyMovementKeyDown(keys_for_wait))) or
-            hist.settling() or mc_converging or timeline.playing or redraw_pending or screen_shaders_animating or play_active or rebuild_waiting or fractal.parts.compiling() or
+            hist.settling() or mc_converging or timeline.playing or redraw_pending or screen_shaders_animating or play_active or rebuild_waiting or fractal.parts.compiling() or fractal.isCompiling() or
             preview_denoiser.busy(preview_denoise_wanted) or gpu_timer.global.busy();
         redraw_pending = false;
 
@@ -467,7 +459,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
         const keys = sdl.SDL_GetKeyboardState(null);
         if (play_active) {
-            play.step(&gpu_ctx, &fractal, allocator, instances[0..instance_count], &camera, if (uiHasMouse(&ui, &play)) null else keys, dt, now_ticks);
+            play.step(&gpu_ctx, &fractal, allocator, &camera, if (uiHasMouse(&ui, &play)) null else keys, dt, now_ticks);
         } else if (!uiHasMouse(&ui, &play)) {
             camera.tick(keys, dt);
         }
@@ -511,23 +503,12 @@ pub fn main(init: std.process.Init.Minimal) !void {
         stampPostEffects(&gpu_ctx, &fractal, render_parts, instances[0..instance_count], screen_shaders[0..screen_shader_count], shaftFor(render_parts, lights[0..light_count], fog_emitters[0..fog_count], sky, camera));
         perf.mark("ui");
 
-        if (fractal.isCompiling()) {
-            ui.discardFrame();
-            continue;
-        }
-
         const particle_needs = particles_mod.shaderNeeds(particle_systems[0..particle_count]);
-        const wanted_variant = fractal_gpu.ShaderVariant{
+        scene_state.syncShader(&gpu_ctx, &fractal, allocator, instances[0..instance_count], .{
             .warps = warp_count > 0,
             .particles_lit = particle_needs.lit,
             .particles_dots = particle_needs.dots,
-        };
-        if (!std.meta.eql(wanted_variant, fractal.variant)) {
-            fractal.variant = wanted_variant;
-            scene_state.rebuildAllAsync(&gpu_ctx, &fractal, allocator, instances[0..instance_count], instance_count);
-            ui.discardFrame();
-            continue;
-        }
+        });
 
         const cam = camera.basis();
         const elapsed_ms = sdl.SDL_GetTicks() - start_ticks;

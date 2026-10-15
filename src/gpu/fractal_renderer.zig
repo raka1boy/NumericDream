@@ -43,6 +43,8 @@ pub const max_fog_emitters = 4;
 pub const max_warps = 4;
 pub const max_carves = 16;
 pub const max_particle_systems = particles.max_systems;
+pub const max_codes = max_instances + max_instances * max_mixins;
+pub const no_code: f32 = -1;
 
 pub const uniform_ring_slots: u32 = 32;
 
@@ -65,18 +67,6 @@ const aov_max_samples: u32 = 16;
 const aov_sub_side: u32 = 512;
 
 pub const builtin_formula_source = @embedFile("shaders/mandelbrot.wgsl");
-
-pub const filler_formula_source =
-    \\fn de_iterations(p: array<f32, 8>) -> i32 {
-    \\    return 0;
-    \\}
-    \\fn de_step(carry: IterCarry, pos: vec3f, p: array<f32, 8>) -> IterCarry {
-    \\    return carry;
-    \\}
-    \\fn de_finalize(carry: IterCarry) -> f32 {
-    \\    return NO_SURFACE_DE;
-    \\}
-;
 
 pub const ColorStop = extern struct {
     color: [3]f32,
@@ -109,9 +99,9 @@ pub const MixinParams = extern struct {
     params0: [4]f32 = .{ 0, 0, 0, 0 },
     params1: [4]f32 = .{ 0, 0, 0, 0 },
     iterations: f32 = 1,
+    code: f32 = no_code,
+    formula_key: f32 = 0,
     _pad0: f32 = 0,
-    _pad1: f32 = 0,
-    _pad2: f32 = 0,
 };
 
 pub const FractalInstance = extern struct {
@@ -122,9 +112,9 @@ pub const FractalInstance = extern struct {
     step_safety: f32 = 1.0,
     hidden: f32 = 0,
     scale: [3]f32 = .{ 1, 1, 1 },
-    _pad_scale: f32 = 0,
+    code: f32 = no_code,
     rotation: [3]f32 = .{ 0, 0, 0 },
-    _pad_rot: f32 = 0,
+    formula_key: f32 = 0,
     params0: [4]f32,
     params1: [4]f32,
     mixin_count: f32 = 0,
@@ -423,12 +413,12 @@ fn appendRenamedFormula(allocator: std.mem.Allocator, out: *std.ArrayList(u8), s
     }
 }
 
-fn appendFormulaWrapper(allocator: std.mem.Allocator, out: *std.ArrayList(u8), slot: usize) !void {
+fn appendFormulaWrapper(allocator: std.mem.Allocator, out: *std.ArrayList(u8), code: usize) !void {
     const wrapper = try std.fmt.allocPrint(allocator,
         \\
-        \\fn formula_{0}(pos: vec3f, p: array<f32, 8>) -> vec2f {{
+        \\fn formula_{0}(pos: vec3f, p: array<f32, 8>, slot: i32) -> vec2f {{
         \\    var carry = IterCarry(pos, 1.0);
-        \\    let trap_spec = orbit_trap({0});
+        \\    let trap_spec = orbit_trap(slot);
         \\    var trap = orbit_trap_begin(trap_spec);
         \\    let lod = lod_iterations(de_iterations_{0}(p));
         \\    let iters = i32(lod.x);
@@ -442,42 +432,159 @@ fn appendFormulaWrapper(allocator: std.mem.Allocator, out: *std.ArrayList(u8), s
         \\    return vec2f(de_finalize_{0}(lod_blend(carry_lo, carry, lod.y)), orbit_trap_finish(trap, trap_spec, iters));
         \\}}
         \\
-    , .{slot});
+    , .{code});
     defer allocator.free(wrapper);
     try out.appendSlice(allocator, wrapper);
 }
 
-const total_formula_slots = max_instances + max_instances * max_mixins;
-
-fn mixinSlot(instance: usize, mixin: usize) usize {
-    return max_instances + instance * max_mixins + mixin;
-}
-
-fn appendDispatchers(allocator: std.mem.Allocator, out: *std.ArrayList(u8)) !void {
-    try out.appendSlice(allocator, "\nfn eval_step(slot: i32, carry: IterCarry, pos: vec3f, p: array<f32, 8>) -> IterCarry {\n");
-    for (0..total_formula_slots) |slot| {
-        const branch = try std.fmt.allocPrint(
-            allocator,
-            "    {s} (slot == {d}) {{ return de_step_{d}(carry, pos, p); }}\n",
-            .{ if (slot == 0) "if" else "else if", slot, slot },
-        );
+fn appendDispatch(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    table: *const CodeTable,
+    header: []const u8,
+    comptime arm: []const u8,
+    wrappers_only: bool,
+    fallback: []const u8,
+) !void {
+    try out.appendSlice(allocator, header);
+    for (table.entries[0..table.len], 0..) |entry, code| {
+        if (wrappers_only and !entry.wrapper) continue;
+        const branch = try std.fmt.allocPrint(allocator, "    if (code == {0d}) {{ return " ++ arm ++ "; }}\n", .{code});
         defer allocator.free(branch);
         try out.appendSlice(allocator, branch);
     }
-    try out.appendSlice(allocator, "    return carry;\n}\n");
-
-    try out.appendSlice(allocator, "\nfn eval_finalize(slot: i32, carry: IterCarry) -> f32 {\n");
-    for (0..total_formula_slots) |slot| {
-        const branch = try std.fmt.allocPrint(
-            allocator,
-            "    {s} (slot == {d}) {{ return de_finalize_{d}(carry); }}\n",
-            .{ if (slot == 0) "if" else "else if", slot, slot },
-        );
-        defer allocator.free(branch);
-        try out.appendSlice(allocator, branch);
-    }
-    try out.appendSlice(allocator, "    return 0.0;\n}\n");
+    try out.appendSlice(allocator, fallback);
 }
+
+fn appendDispatchers(allocator: std.mem.Allocator, out: *std.ArrayList(u8), table: *const CodeTable) !void {
+    try appendDispatch(allocator, out, table, "\nfn eval_formula(code: i32, slot: i32, pos: vec3f, p: array<f32, 8>) -> vec2f {\n", "formula_{0d}(pos, p, slot)", true, "    return vec2f(NO_SURFACE_DE, 0.0);\n}\n");
+    try appendDispatch(allocator, out, table, "\nfn eval_step(code: i32, carry: IterCarry, pos: vec3f, p: array<f32, 8>) -> IterCarry {\n", "de_step_{0d}(carry, pos, p)", false, "    return carry;\n}\n");
+    try appendDispatch(allocator, out, table, "\nfn eval_finalize(code: i32, carry: IterCarry) -> f32 {\n", "de_finalize_{0d}(carry)", false, "    return NO_SURFACE_DE;\n}\n");
+}
+
+pub fn sourceHash(source: []const u8) u64 {
+    return std.hash.Wyhash.hash(0, source);
+}
+
+fn formulaKey(hash: u64) f32 {
+    return @floatFromInt(@as(u24, @truncate(hash)));
+}
+
+pub const SceneFormulas = struct {
+    instance_count: usize = 0,
+    base: [max_instances][]const u8 = @splat(""),
+    mixin_count: [max_instances]usize = @splat(0),
+    mixins: [max_instances][max_mixins][]const u8 = @splat(@splat("")),
+};
+
+const SceneHashes = struct {
+    instance_count: usize = 0,
+    base: [max_instances]u64 = @splat(0),
+    mixin_count: [max_instances]usize = @splat(0),
+    mixins: [max_instances][max_mixins]u64 = @splat(@splat(0)),
+
+    fn of(scene: SceneFormulas) SceneHashes {
+        var out = SceneHashes{ .instance_count = @min(scene.instance_count, max_instances) };
+        for (0..out.instance_count) |i| {
+            out.base[i] = sourceHash(scene.base[i]);
+            out.mixin_count[i] = @min(scene.mixin_count[i], max_mixins);
+            for (0..out.mixin_count[i]) |j| out.mixins[i][j] = sourceHash(scene.mixins[i][j]);
+        }
+        return out;
+    }
+};
+
+const CodeEntry = struct {
+    hash: u64,
+    wrapper: bool,
+    source: []const u8,
+};
+
+pub const CodeTable = struct {
+    len: usize = 0,
+    entries: [max_codes]CodeEntry = undefined,
+    variant: ShaderVariant = .{},
+    owner: ?std.mem.Allocator = null,
+
+    fn find(self: *const CodeTable, hash: u64) ?usize {
+        for (self.entries[0..self.len], 0..) |e, i| {
+            if (e.hash == hash) return i;
+        }
+        return null;
+    }
+
+    fn put(self: *CodeTable, source: []const u8, wrapper: bool) void {
+        const hash = sourceHash(source);
+        if (self.find(hash)) |i| {
+            self.entries[i].wrapper = self.entries[i].wrapper or wrapper;
+            return;
+        }
+        self.entries[self.len] = .{ .hash = hash, .wrapper = wrapper, .source = source };
+        self.len += 1;
+    }
+
+    fn forScene(scene: SceneFormulas, variant: ShaderVariant) CodeTable {
+        var t = CodeTable{ .variant = variant };
+        for (0..@min(scene.instance_count, max_instances)) |i| {
+            const mixin_count = @min(scene.mixin_count[i], max_mixins);
+            t.put(scene.base[i], mixin_count == 0);
+            for (0..mixin_count) |j| t.put(scene.mixins[i][j], false);
+        }
+        std.mem.sort(CodeEntry, t.entries[0..t.len], {}, struct {
+            fn lessThan(_: void, a: CodeEntry, b: CodeEntry) bool {
+                return a.hash < b.hash;
+            }
+        }.lessThan);
+        return t;
+    }
+
+    fn key(self: *const CodeTable) u64 {
+        var h = std.hash.Wyhash.init(0);
+        inline for (.{ self.variant.warps, self.variant.particles_lit, self.variant.particles_dots }) |flag| h.update(std.mem.asBytes(&flag));
+        h.update(std.mem.asBytes(&self.len));
+        for (self.entries[0..self.len]) |e| {
+            h.update(std.mem.asBytes(&e.hash));
+            h.update(std.mem.asBytes(&e.wrapper));
+        }
+        return h.final();
+    }
+
+    fn codeOf(self: *const CodeTable, hash: u64, needs_wrapper: bool) f32 {
+        const i = self.find(hash) orelse return no_code;
+        if (needs_wrapper and !self.entries[i].wrapper) return no_code;
+        return @floatFromInt(i);
+    }
+
+    fn covers(self: *const CodeTable, scene: SceneHashes, variant: ShaderVariant) bool {
+        if ((variant.warps and !self.variant.warps) or
+            (variant.particles_lit and !self.variant.particles_lit) or
+            (variant.particles_dots and !self.variant.particles_dots)) return false;
+        for (0..scene.instance_count) |i| {
+            if (self.codeOf(scene.base[i], scene.mixin_count[i] == 0) == no_code) return false;
+            for (0..scene.mixin_count[i]) |j| {
+                if (self.codeOf(scene.mixins[i][j], false) == no_code) return false;
+            }
+        }
+        return true;
+    }
+
+    fn dupe(self: CodeTable, allocator: std.mem.Allocator) !CodeTable {
+        var out = self;
+        out.owner = allocator;
+        var done: usize = 0;
+        errdefer for (out.entries[0..done]) |e| allocator.free(e.source);
+        for (out.entries[0..out.len]) |*e| {
+            e.source = try allocator.dupe(u8, e.source);
+            done += 1;
+        }
+        return out;
+    }
+
+    fn free(self: *const CodeTable) void {
+        const allocator = self.owner orelse return;
+        for (self.entries[0..self.len]) |e| allocator.free(e.source);
+    }
+};
 
 const warp_impl_source =
     \\fn warp_domain(p: vec3f) -> Warped {
@@ -539,33 +646,21 @@ const particles_dots_stub_source =
     \\
 ;
 
-pub fn assembleShaderSource(allocator: std.mem.Allocator, formula_sources: [max_instances][]const u8, mixin_sources: [max_instances][max_mixins][]const u8, variant: ShaderVariant) ![]u8 {
+pub fn assembleShaderSource(allocator: std.mem.Allocator, table: *const CodeTable) ![]u8 {
+    const variant = table.variant;
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
 
     var rest: []const u8 = shader_template;
-    inline for (0..max_instances) |i| {
-        const marker = std.fmt.comptimePrint("@@FORMULA_{d}@@", .{i});
-        const idx = std.mem.indexOf(u8, rest, marker) orelse return error.MissingFormulaMarker;
-        try out.appendSlice(allocator, rest[0..idx]);
-        try appendRenamedFormula(allocator, &out, formula_sources[i], i);
-        try appendFormulaWrapper(allocator, &out, i);
-        rest = rest[idx + marker.len ..];
-    }
-    inline for (0..max_instances) |i| {
-        const marker = std.fmt.comptimePrint("@@MIXINS_{d}@@", .{i});
-        const idx = std.mem.indexOf(u8, rest, marker) orelse return error.MissingFormulaMarker;
-        try out.appendSlice(allocator, rest[0..idx]);
-        inline for (0..max_mixins) |j| {
-            try appendRenamedFormula(allocator, &out, mixin_sources[i][j], mixinSlot(i, j));
-        }
-        rest = rest[idx + marker.len ..];
-    }
     {
-        const marker = "@@DISPATCHERS@@";
+        const marker = "@@FORMULAS@@";
         const idx = std.mem.indexOf(u8, rest, marker) orelse return error.MissingFormulaMarker;
         try out.appendSlice(allocator, rest[0..idx]);
-        try appendDispatchers(allocator, &out);
+        for (table.entries[0..table.len], 0..) |entry, code| {
+            try appendRenamedFormula(allocator, &out, entry.source, code);
+            if (entry.wrapper) try appendFormulaWrapper(allocator, &out, code);
+        }
+        try appendDispatchers(allocator, &out, table);
         rest = rest[idx + marker.len ..];
     }
     {
@@ -877,22 +972,6 @@ fn runComputePass(
     if (wait) try waitForQueueIdle(ctx);
 }
 
-pub fn hashSources(formula_sources: [max_instances][]const u8, mixin_sources: [max_instances][max_mixins][]const u8, variant: ShaderVariant) u64 {
-    var h = std.hash.Wyhash.init(0);
-    inline for (.{ variant.warps, variant.particles_lit, variant.particles_dots }) |flag| h.update(std.mem.asBytes(&flag));
-    for (formula_sources) |s| {
-        h.update(std.mem.asBytes(&s.len));
-        h.update(s);
-    }
-    for (mixin_sources) |per_instance| {
-        for (per_instance) |s| {
-            h.update(std.mem.asBytes(&s.len));
-            h.update(s);
-        }
-    }
-    return h.final();
-}
-
 const pipeline_cache_capacity = 12;
 
 const ParticleEntry = enum {
@@ -1155,9 +1234,15 @@ fn groupNames(groups: GroupSet, buf: []u8) []const u8 {
 pub const RenderMode = enum { march, slice, simple };
 
 const PipelineCacheEntry = struct {
-    hash: u64,
+    key: u64,
     pipelines: PipelinePair,
+    table: CodeTable,
     last_used: u64,
+
+    fn release(self: *const PipelineCacheEntry) void {
+        self.pipelines.release();
+        self.table.free();
+    }
 };
 
 const PendingRebuild = struct {
@@ -1169,11 +1254,9 @@ const Shared = struct {
     allocator: std.mem.Allocator,
     ctx: *const Context,
     layouts: Layouts,
-    formula_sources: [max_instances][]u8,
-    mixin_sources: [max_instances][max_mixins][]u8,
-    variant: ShaderVariant,
+    table: CodeTable,
     groups: GroupSet,
-    hash: u64,
+    key: u64,
     requester: ?*anyopaque,
     done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     ok: bool = false,
@@ -1182,13 +1265,6 @@ const Shared = struct {
     err_len: usize = 0,
     total_ms: u64 = 0,
     source_len: usize = 0,
-
-    fn freeSources(self: *Shared) void {
-        for (self.formula_sources) |s| self.allocator.free(s);
-        for (self.mixin_sources) |per_instance| {
-            for (per_instance) |s| self.allocator.free(s);
-        }
-    }
 };
 
 pub const RebuildOutcome = struct {
@@ -1247,14 +1323,7 @@ fn compileWorker(shared: *Shared) void {
     defer shared.done.store(true, .release);
     const started = sdl.SDL_GetTicks();
 
-    var formula_sources: [max_instances][]const u8 = undefined;
-    for (0..max_instances) |i| formula_sources[i] = shared.formula_sources[i];
-    var mixin_sources: [max_instances][max_mixins][]const u8 = undefined;
-    for (0..max_instances) |i| {
-        for (0..max_mixins) |j| mixin_sources[i][j] = shared.mixin_sources[i][j];
-    }
-
-    const source = assembleShaderSource(shared.allocator, formula_sources, mixin_sources, shared.variant) catch |err| {
+    const source = assembleShaderSource(shared.allocator, &shared.table) catch |err| {
         shared.err_len = copyErr(shared, @errorName(err));
         return;
     };
@@ -1415,7 +1484,9 @@ pub const FractalRenderer = struct {
     sky: SkyTexture,
     sky_settings: sky_state.SkyState = .{},
 
-    variant: ShaderVariant = .{},
+    table: CodeTable = .{},
+    scene_hashes: SceneHashes = .{},
+    failed_key: ?u64 = null,
 
     approx_settings: approximations.Approximations = .{},
     shaft_pipeline: wgpu.WGPURenderPipeline = null,
@@ -1821,29 +1892,24 @@ pub const FractalRenderer = struct {
         _ = self.photon_map.ensureSize(ctx, photons.default_grid_log2);
         _ = self.fft.ensureAllocated(ctx);
 
-        var default_sources: [max_instances][]const u8 = undefined;
-        default_sources[0] = builtin_formula_source;
-        for (default_sources[1..]) |*s| s.* = filler_formula_source;
-        var default_mixin_sources: [max_instances][max_mixins][]const u8 = undefined;
-        for (0..max_instances) |i| {
-            for (0..max_mixins) |j| default_mixin_sources[i][j] = filler_formula_source;
-        }
-        try self.rebuild(ctx, allocator, default_sources, default_mixin_sources);
+        var default_scene = SceneFormulas{ .instance_count = 1 };
+        default_scene.base[0] = builtin_formula_source;
+        try self.rebuild(ctx, allocator, default_scene, .{});
         return self;
     }
 
     pub fn deinit(self: *FractalRenderer) void {
         if (self.pending) |*p| {
             p.thread.join();
-            p.shared.freeSources();
+            p.shared.table.free();
             p.shared.pipelines.release();
             p.shared.allocator.destroy(p.shared);
             self.pending = null;
         }
         self.parts.deinit();
 
-        for (self.pipeline_cache) |slot| {
-            if (slot) |entry| entry.pipelines.release();
+        for (&self.pipeline_cache) |*slot| {
+            if (slot.*) |*entry| entry.release();
         }
         wgpu.wgpuPipelineLayoutRelease(self.pipeline_layout);
         wgpu.wgpuPipelineLayoutRelease(self.accel_pipeline_layout);
@@ -2244,24 +2310,26 @@ pub const FractalRenderer = struct {
         });
     }
 
-    fn findCachedPipeline(self: *FractalRenderer, hash: u64) ?PipelinePair {
+    fn useCached(self: *FractalRenderer, key: u64) bool {
         for (&self.pipeline_cache) |*slot| {
             if (slot.*) |*entry| {
-                if (entry.hash == hash) {
+                if (entry.key == key) {
                     self.cache_clock += 1;
                     entry.last_used = self.cache_clock;
-                    return entry.pipelines;
+                    self.usePipelines(entry.pipelines, entry.table);
+                    return true;
                 }
             }
         }
-        return null;
+        return false;
     }
 
-    fn cachePipeline(self: *FractalRenderer, hash: u64, pipelines: PipelinePair) void {
+    fn cachePipeline(self: *FractalRenderer, key: u64, pipelines: PipelinePair, table: CodeTable) void {
         self.cache_clock += 1;
+        const fresh = PipelineCacheEntry{ .key = key, .pipelines = pipelines, .table = table, .last_used = self.cache_clock };
         for (&self.pipeline_cache) |*slot| {
             if (slot.* == null) {
-                slot.* = .{ .hash = hash, .pipelines = pipelines, .last_used = self.cache_clock };
+                slot.* = fresh;
                 return;
             }
         }
@@ -2275,16 +2343,17 @@ pub const FractalRenderer = struct {
                 }
             }
         }
-        if (self.pipeline_cache[victim_idx]) |old| old.pipelines.release();
-        self.pipeline_cache[victim_idx] = .{ .hash = hash, .pipelines = pipelines, .last_used = self.cache_clock };
+        if (self.pipeline_cache[victim_idx]) |*old| old.release();
+        self.pipeline_cache[victim_idx] = fresh;
     }
 
     pub fn imageGeneration(self: *const FractalRenderer) u32 {
         return self.content_generation +% self.sky.generation;
     }
 
-    fn usePipelines(self: *FractalRenderer, pipelines: PipelinePair) void {
+    fn usePipelines(self: *FractalRenderer, pipelines: PipelinePair, table: CodeTable) void {
         self.pipelines = pipelines;
+        self.table = table;
         self.failed_groups = GroupSet.empty;
         self.content_generation +%= 1;
     }
@@ -2307,74 +2376,88 @@ pub const FractalRenderer = struct {
         return groups;
     }
 
-    pub fn rebuild(self: *FractalRenderer, ctx: *const Context, allocator: std.mem.Allocator, formula_sources: [max_instances][]const u8, mixin_sources: [max_instances][max_mixins][]const u8) !void {
-        self.parts.waitIdle();
-        const hash = hashSources(formula_sources, mixin_sources, self.variant);
-        if (self.findCachedPipeline(hash)) |pipelines| {
-            std.debug.print("[stage] rebuild: cache hit (hash={x})\n", .{hash});
-            self.usePipelines(pipelines);
+    pub fn noteScene(self: *FractalRenderer, scene: SceneFormulas) void {
+        self.scene_hashes = SceneHashes.of(scene);
+    }
+
+    pub fn stampFormulaCodes(self: *const FractalRenderer, uniforms: *Uniforms) void {
+        const s = &self.scene_hashes;
+        for (&uniforms.instances, 0..) |*inst, i| {
+            const live = i < s.instance_count;
+            inst.code = if (live) self.table.codeOf(s.base[i], s.mixin_count[i] == 0) else no_code;
+            inst.formula_key = if (live) formulaKey(s.base[i]) else 0;
+            for (&inst.mixins, 0..) |*m, j| {
+                const used = live and j < s.mixin_count[i];
+                m.code = if (used) self.table.codeOf(s.mixins[i][j], false) else no_code;
+                m.formula_key = if (used) formulaKey(s.mixins[i][j]) else 0;
+            }
+        }
+    }
+
+    pub fn syncShader(self: *FractalRenderer, ctx: *const Context, allocator: std.mem.Allocator, scene: SceneFormulas, variant: ShaderVariant) void {
+        self.noteScene(scene);
+        if (self.table.covers(self.scene_hashes, variant) or self.isCompiling() or self.parts.compiling()) return;
+        const key = CodeTable.forScene(scene, variant).key();
+        if (self.failed_key) |failed| {
+            if (failed == key) return;
+        }
+        _ = self.rebuildAsync(ctx, allocator, scene, variant, null) catch |err| {
+            std.log.err("Failed to start fractal shader rebuild: {s}", .{@errorName(err)});
+            self.failed_key = key;
+        };
+    }
+
+    pub fn rebuild(self: *FractalRenderer, ctx: *const Context, allocator: std.mem.Allocator, scene: SceneFormulas, variant: ShaderVariant) !void {
+        if (self.pipelines.module != null and self.table.covers(SceneHashes.of(scene), variant)) return;
+        const wanted = CodeTable.forScene(scene, variant);
+        const key = wanted.key();
+        if (self.useCached(key)) {
+            std.debug.print("[stage] rebuild: cache hit (key={x})\n", .{key});
             return;
         }
 
+        self.parts.waitIdle();
         const started = sdl.SDL_GetTicks();
-        const source = try assembleShaderSource(allocator, formula_sources, mixin_sources, self.variant);
+        const table = try wanted.dupe(allocator);
+        errdefer table.free();
+        const source = try assembleShaderSource(allocator, &table);
         defer allocator.free(source);
         const groups = self.rebuildGroups();
         const built = try buildPipelines(ctx, self.pipelineLayouts(), source, groups);
         var names_buf: [96]u8 = undefined;
-        std.debug.print("[stage] rebuild: compiled {d} bytes ({s}) in {d}ms\n", .{ source.len, groupNames(groups, &names_buf), sdl.SDL_GetTicks() -| started });
-        self.usePipelines(built);
-        self.cachePipeline(hash, built);
+        std.debug.print("[stage] rebuild: compiled {d} formulas, {d} bytes ({s}) in {d}ms\n", .{ table.len, source.len, groupNames(groups, &names_buf), sdl.SDL_GetTicks() -| started });
+        self.usePipelines(built, table);
+        self.cachePipeline(key, built, table);
     }
 
-    pub fn rebuildAsync(self: *FractalRenderer, ctx: *const Context, allocator: std.mem.Allocator, formula_sources: [max_instances][]const u8, mixin_sources: [max_instances][max_mixins][]const u8, requester: ?*anyopaque) !RebuildStart {
-        self.parts.waitIdle();
-        const hash = hashSources(formula_sources, mixin_sources, self.variant);
-        if (self.findCachedPipeline(hash)) |pipelines| {
-            std.debug.print("[stage] rebuildAsync: cache hit (hash={x})\n", .{hash});
-            self.usePipelines(pipelines);
+    pub fn rebuildAsync(self: *FractalRenderer, ctx: *const Context, allocator: std.mem.Allocator, scene: SceneFormulas, variant: ShaderVariant, requester: ?*anyopaque) !RebuildStart {
+        if (self.table.covers(SceneHashes.of(scene), variant)) return .cache_hit;
+        const wanted = CodeTable.forScene(scene, variant);
+        const key = wanted.key();
+        if (self.useCached(key)) {
+            std.debug.print("[stage] rebuildAsync: cache hit (key={x})\n", .{key});
             return .cache_hit;
         }
+        if (self.pending != null) return error.AlreadyCompiling;
 
-        if (self.pending != null) _ = self.pollRebuild(true);
-
+        self.parts.waitIdle();
         const shared = try allocator.create(Shared);
         errdefer allocator.destroy(shared);
+        const table = try wanted.dupe(allocator);
+        errdefer table.free();
         shared.* = .{
             .allocator = allocator,
             .ctx = ctx,
             .layouts = self.pipelineLayouts(),
-            .formula_sources = undefined,
-            .mixin_sources = undefined,
-            .variant = self.variant,
+            .table = table,
             .groups = self.rebuildGroups(),
-            .hash = hash,
+            .key = key,
             .requester = requester,
         };
-        var formula_dup_count: usize = 0;
-        errdefer for (shared.formula_sources[0..formula_dup_count]) |s| allocator.free(s);
-        for (0..max_instances) |i| {
-            shared.formula_sources[i] = try allocator.dupe(u8, formula_sources[i]);
-            formula_dup_count = i + 1;
-        }
-
-        var mixin_instances_done: usize = 0;
-        errdefer for (shared.mixin_sources[0..mixin_instances_done]) |per_instance| {
-            for (per_instance) |s| allocator.free(s);
-        };
-        for (0..max_instances) |i| {
-            var mixin_dup_count: usize = 0;
-            errdefer for (shared.mixin_sources[i][0..mixin_dup_count]) |s| allocator.free(s);
-            for (0..max_mixins) |j| {
-                shared.mixin_sources[i][j] = try allocator.dupe(u8, mixin_sources[i][j]);
-                mixin_dup_count = j + 1;
-            }
-            mixin_instances_done = i + 1;
-        }
 
         const thread = try std.Thread.spawn(.{}, compileWorker, .{shared});
         self.pending = .{ .thread = thread, .shared = shared };
-        std.debug.print("[stage] rebuildAsync: spawned background compile (hash={x})\n", .{hash});
+        std.debug.print("[stage] rebuildAsync: spawned background compile of {d} formulas (key={x})\n", .{ table.len, key });
         return .started;
     }
 
@@ -2394,8 +2477,12 @@ pub const FractalRenderer = struct {
         @memcpy(self.last_err_buf[0..self.last_err_len], shared.err_buf[0..self.last_err_len]);
 
         if (shared.ok) {
-            self.usePipelines(shared.pipelines);
-            self.cachePipeline(shared.hash, shared.pipelines);
+            self.usePipelines(shared.pipelines, shared.table);
+            self.cachePipeline(shared.key, shared.pipelines, shared.table);
+            self.failed_key = null;
+        } else {
+            shared.table.free();
+            self.failed_key = shared.key;
         }
 
         const outcome = RebuildOutcome{
@@ -2404,16 +2491,15 @@ pub const FractalRenderer = struct {
             .requester = shared.requester,
         };
         var names_buf: [96]u8 = undefined;
-        std.debug.print("[stage] pollRebuild: background compile {s} (hash={x}) {d}ms source={d} bytes groups={s} {s}\n", .{
+        std.debug.print("[stage] pollRebuild: background compile {s} (key={x}) {d}ms source={d} bytes groups={s} {s}\n", .{
             if (shared.ok) "succeeded" else "failed",
-            shared.hash,
+            shared.key,
             shared.total_ms,
             shared.source_len,
             groupNames(shared.groups, &names_buf),
             if (shared.ok) "" else outcome.err_message,
         });
 
-        shared.freeSources();
         shared.allocator.destroy(shared);
 
         return outcome;
@@ -2453,7 +2539,9 @@ pub const FractalRenderer = struct {
     }
 
     fn writeUniformSlot(self: *FractalRenderer, ctx: *const Context, slot: u32, uniforms: Uniforms) void {
-        wgpu.wgpuQueueWriteBuffer(ctx.queue, self.uniform_buffer, self.uniformOffset(slot), &uniforms, @sizeOf(Uniforms));
+        var stamped = uniforms;
+        self.stampFormulaCodes(&stamped);
+        wgpu.wgpuQueueWriteBuffer(ctx.queue, self.uniform_buffer, self.uniformOffset(slot), &stamped, @sizeOf(Uniforms));
     }
 
     pub fn uniformOffset(self: *const FractalRenderer, slot: u32) u32 {
@@ -2603,24 +2691,18 @@ pub const FractalRenderer = struct {
         );
     }
 
-    pub fn meshGpu(
-        self: *FractalRenderer,
-        ctx: *const Context,
-        allocator: std.mem.Allocator,
-        formula_sources: [max_instances][]const u8,
-        mixin_sources: [max_instances][max_mixins][]const u8,
-    ) !*mesher.MeshGpu {
+    pub fn meshGpu(self: *FractalRenderer, ctx: *const Context, allocator: std.mem.Allocator) !*mesher.MeshGpu {
         if (self.mesh == null) self.mesh = try mesher.MeshGpu.init(ctx, self.uniform_layout);
         const m = &self.mesh.?;
-        const hash = hashSources(formula_sources, mixin_sources, self.variant);
-        if (m.hasModule(hash)) return m;
+        const key = self.table.key();
+        if (m.hasModule(key)) return m;
 
         const started = sdl.SDL_GetTicks();
-        const template_part = try assembleShaderSource(allocator, formula_sources, mixin_sources, self.variant);
+        const template_part = try assembleShaderSource(allocator, &self.table);
         defer allocator.free(template_part);
         const source = try std.mem.concat(allocator, u8, &.{ template_part, mesher.shader_source });
         defer allocator.free(source);
-        try m.buildModule(ctx, source, hash);
+        try m.buildModule(ctx, source, key);
         std.debug.print("[mesh] compiled mesh module ({d} bytes) in {d}ms\n", .{ source.len, sdl.SDL_GetTicks() -| started });
         return m;
     }

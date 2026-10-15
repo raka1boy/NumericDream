@@ -96,9 +96,9 @@ struct MixinParams {
     params0: vec4f,
     params1: vec4f,
     iterations: f32,
+    code: f32,
+    formula_key: f32,
     _pad0: f32,
-    _pad1: f32,
-    _pad2: f32,
 }
 
 struct FractalInstance {
@@ -109,9 +109,9 @@ struct FractalInstance {
     step_safety: f32,
     hidden: f32,
     scale: vec3f,
-    _pad_scale: f32,
+    code: f32,
     rotation: vec3f,
-    _pad_rot: f32,
+    formula_key: f32,
     params0: vec4f,
     params1: vec4f,
     mixin_count: f32,
@@ -1035,42 +1035,23 @@ fn lod_blend(lo: IterCarry, hi: IterCarry, frac: f32) -> IterCarry {
     return IterCarry(mix(lo.z, hi.z, frac), mix(lo.dr, hi.dr, frac));
 }
 
-@@FORMULA_0@@
+@@FORMULAS@@
 
-@@FORMULA_1@@
-
-@@FORMULA_2@@
-
-@@FORMULA_3@@
-
-@@MIXINS_0@@
-
-@@MIXINS_1@@
-
-@@MIXINS_2@@
-
-@@MIXINS_3@@
-
-fn eval_formula(slot: i32, pos: vec3f, p: array<f32, 8>) -> vec2f {
-    if (slot == 0) {
-        return formula_0(pos, p);
-    } else if (slot == 1) {
-        return formula_1(pos, p);
-    } else if (slot == 2) {
-        return formula_2(pos, p);
-    } else {
-        return formula_3(pos, p);
-    }
+fn instance_code(slot: i32) -> i32 {
+    return i32(u.instances[slot].code);
 }
 
-@@DISPATCHERS@@
+fn mixin_code(slot: i32, idx: i32) -> i32 {
+    return i32(u.instances[slot].mixins[idx].code);
+}
 
-fn eval_mixed(pos: vec3f, base_slot: i32, mixin_slot0: i32) -> vec2f {
+fn eval_mixed(pos: vec3f, base_slot: i32) -> vec2f {
     var carry = IterCarry(pos, 1.0);
     let trap_spec = orbit_trap(base_slot);
     var trap = orbit_trap_begin(trap_spec);
 
     let base_p = instance_params(base_slot);
+    let base_code = instance_code(base_slot);
     let base_n = max(i32(u.instances[base_slot].hybrid_base_iters), 0);
     let mixin_count = min(i32(u.instances[base_slot].mixin_count), MAX_MIXINS);
 
@@ -1087,7 +1068,7 @@ fn eval_mixed(pos: vec3f, base_slot: i32, mixin_slot0: i32) -> vec2f {
         carry_lo = carry;
         var pos_in_cycle = it % cycle_len;
 
-        var slot = base_slot;
+        var code = base_code;
         var p = base_p;
         var have_step = true;
         if (pos_in_cycle >= base_n) {
@@ -1096,7 +1077,7 @@ fn eval_mixed(pos: vec3f, base_slot: i32, mixin_slot0: i32) -> vec2f {
             for (var j = 0; j < mixin_count; j++) {
                 let n_j = max(i32(u.instances[base_slot].mixins[j].iterations), 0);
                 if (pos_in_cycle < n_j) {
-                    slot = mixin_slot0 + j;
+                    code = mixin_code(base_slot, j);
                     p = instance_mixin_params(base_slot, j);
                     have_step = true;
                     break;
@@ -1106,13 +1087,13 @@ fn eval_mixed(pos: vec3f, base_slot: i32, mixin_slot0: i32) -> vec2f {
         }
         let z_prev = carry.z;
         if (have_step) {
-            carry = eval_step(slot, carry, pos, p);
+            carry = eval_step(code, carry, pos, p);
         }
 
         trap = orbit_trap_update(trap, trap_spec, carry.z, z_prev, it);
     }
 
-    return vec2f(eval_finalize(base_slot, lod_blend(carry_lo, carry, lod.y)), orbit_trap_finish(trap, trap_spec, total));
+    return vec2f(eval_finalize(base_code, lod_blend(carry_lo, carry, lod.y)), orbit_trap_finish(trap, trap_spec, total));
 }
 
 fn rot_x(a: f32) -> mat3x3f {
@@ -1324,9 +1305,9 @@ const MIN_STEP_SAFETY = 0.001;
 
 fn instance_local_de(local: vec3f, slot: i32) -> vec2f {
     if (u.instances[slot].mixin_count > 0.5) {
-        return eval_mixed(local, slot, MAX_INSTANCES + slot * MAX_MIXINS);
+        return eval_mixed(local, slot);
     }
-    return eval_formula(slot, local, instance_params(slot));
+    return eval_formula(instance_code(slot), slot, local, instance_params(slot));
 }
 
 fn instance_de_trap(pos: vec3f, slot: i32) -> vec2f {
