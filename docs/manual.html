@@ -957,8 +957,9 @@
             <p>A uniform multiplier on top of the three per-axis values. Use this to resize the whole object without disturbing an axis ratio you have already tuned.</p>
           </div>
           <div class="param">
-            <div class="param-head"><span class="param-name">Scale X / Y / Z</span><span class="chip">default 1.0</span><span class="chip">range 0.1–4.0</span></div>
+            <div class="param-head"><span class="param-name">Scale X / Y / Z</span><span class="chip">default 1.0</span><span class="chip">range −4.0–4.0</span></div>
             <p>Per-axis stretch along the fractal's own local axes. Non-uniform scale has no single correct distance correction, so the marcher uses the smallest axis — an underestimate, which is always safe but can make steps smaller than necessary along a heavily stretched axis. If a strongly non-uniform shape marches slowly, that is why.</p>
+            <p>A negative value mirrors the fractal across that local axis; −1 on X is a plain left–right flip. Mirroring changes no distances, so it costs nothing. Values very close to 0 squash the shape flat and slow marching down badly, so step over 0 rather than parking near it. Scenes saved before negative scale was allowed keep their old 0.1–4.0 slider range; right-click the slider to widen it (<a href="#ch3">Chapter 3</a>).</p>
           </div>
           <div class="param">
             <div class="param-head"><span class="param-name">Rotation X / Y / Z</span><span class="chip">default 0°</span><span class="chip">range −180…180°</span></div>
@@ -1061,13 +1062,76 @@
         <h3>The Formula Library browser</h3>
         <p>The library lists every <code>.wgsl</code> file in the <code>formulas/</code> folder next to the executable, non-recursively, up to 128 files. Each row shows a name and its labels.</p>
 
-        <p>Both come from the filename, using the convention <code>name_labelA_labelB.wgsl</code>: the first underscore-separated token is the display name, every token after it is a filter label. So <code>mandelboxtwist_box_boxfold_twist.wgsl</code> shows as <em>mandelboxtwist</em> carrying the labels <em>box</em>, <em>boxfold</em>, and <em>twist</em>.</p>
+        <p>Both come from the filename, using the convention <code>name_labelA_labelB.wgsl</code>: the first underscore-separated token is the display name, every token after it is a filter label. So <code>mandelboxtwist_box_twist.wgsl</code> shows as <em>mandelboxtwist</em> carrying the labels <em>box</em> and <em>twist</em>.</p>
+
+        <p>The shipped formulas use a small fixed vocabulary: one or more <em>family</em> labels saying what the formula is built from, then <em>variation</em> labels saying what was added to it.</p>
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th>Label</th><th>Kind</th><th>Meaning</th></tr></thead>
+          <tr><td><code>box</code></td><td>family</td><td>Mandelbox-style: box fold, sphere fold, scale, add the position back.</td></tr>
+          <tr><td><code>bulb</code></td><td>family</td><td>Power escape-time: the Mandelbulb and the quaternion Julia set.</td></tr>
+          <tr><td><code>ifs</code></td><td>family</td><td>Folding iterated function systems: Menger, Sierpinski, kaleidoscopic, branching and spiral IFS.</td></tr>
+          <tr><td><code>kleinian</code></td><td>family</td><td>Sphere-inversion limit sets: Apollonian, Kleinian, pseudo-Kleinian.</td></tr>
+          <tr><td><code>primitive</code></td><td>family</td><td>Plain solids and non-iterating shapes: sphere, cube, torus, noise, height map.</td></tr>
+          <tr><td><code>hybrid</code></td><td>family</td><td>Two steps fused into one iteration; carries the family labels of the halves.</td></tr>
+          <tr><td><code>julia</code></td><td>variation</td><td>Adds a fixed constant instead of the sample position.</td></tr>
+          <tr><td><code>twist</code></td><td>variation</td><td>Rotates space inside every iteration.</td></tr>
+          <tr><td><code>fold</code></td><td>variation</td><td>An extra fold beyond the family's own: mirror, diagonal, wedge, Mandalay, inversion, an absolute value on some axes.</td></tr>
+          <tr><td><code>carve</code></td><td>variation</td><td>Built by cutting detail out of a solid rather than by folding.</td></tr>
+          </table>
+        </div>
 
         <p>The chips above the list toggle those labels as filters, and the filter is an AND: selecting <em>box</em> and <em>twist</em> shows only formulas carrying both. <strong>Clear filters</strong> resets them. <strong>Rescan</strong> re-reads the folder, which you need after adding or renaming files while the app is running — the scan otherwise happens only once, the first time you open the browser.</p>
 
         <p>Naming your own formulas to this convention is all it takes to have them appear with working filter labels.</p>
 
         <p>The same browser serves screen-space shaders, pointed at <code>screen_shaders/</code> instead (<a href="#ch17">Chapter 17</a>). It is a separate window with its own scan and its own filter state, so opening one does not disturb the other.</p>
+
+        <h3>Height maps</h3>
+        <p><code>heightmap_primitive.wgsl</code> turns a picture into a solid: a plate the shape of the image, with its top pushed up (or its bottom pushed down) by each pixel's brightness. Load it like any other formula and an extra <strong>Height map</strong> block appears above the parameters. Any formula can ask for an image this way (<a href="#ch24">Chapter 24</a>); this is the one that ships.</p>
+
+        <div class="params">
+          <div class="param">
+            <div class="param-head"><span class="param-name">Path field + Browse</span></div>
+            <p>The image to extrude: PNG, JPEG, TGA, BMP or Radiance HDR. Unlike the formula path, setting this one loads it straight away. The path is saved with the scene, so keep the image somewhere it will still be when you reopen it.</p>
+          </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">Reload</span></div>
+            <p>Reads the file again, for when you have edited the image in another program.</p>
+          </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">Clear</span></div>
+            <p>Drops the image. With nothing loaded the formula renders a flat plate of thickness Base, so an empty slot is still visible.</p>
+          </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">Size</span></div>
+            <p>Half the width of the image's longer edge, in scene units. The other edge follows the image's aspect ratio, and Height and Base scale with it, so Size resizes the whole object uniformly.</p>
+          </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">Height</span></div>
+            <p>Overall amplitude: the pixel value built from the four channel scales below is multiplied by Height and Size to give the surface height. Negative values extrude downwards: the flat side is then on top and the relief hangs below it.</p>
+          </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">Base</span></div>
+            <p>Thickness of the plate on the flat side, under the height-0 level. At 0, areas of value 0 become a paper-thin sheet rather than holes.</p>
+          </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">Red scale / Green scale / Blue scale / Alpha scale</span><span class="chip">range −1–1</span></div>
+            <p>The pixel's value is <em>Red scale</em> × R + <em>Green scale</em> × G + <em>Blue scale</em> × B + <em>Alpha scale</em> × A. R, G and B are premultiplied by alpha, so a transparent pixel contributes nothing through them. The defaults (0.2126, 0.7152, 0.0722, 0) are luminance. Pack different layers into different channels and mix them live, for example terrain in red and a road mask in green with a negative Green scale to cut the roads in. A negative total digs below the height-0 level, and once it gets past Base it cuts clean through the plate.</p>
+          </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">Invert</span><span class="chip">0 or 1</span></div>
+            <p>Uses 1 − R, 1 − G and 1 − B in place of R, G and B, still multiplied by alpha. Transparent pixels therefore stay at height 0 either way: a black logo on a transparent background needs Invert on to stand up. Alpha scale is not inverted.</p>
+          </div>
+        </div>
+
+        <p>16-bit PNGs keep their full precision in every channel, which is worth having: an 8-bit image has only 256 levels, and a smooth gradient in one shows up as terraces once Height is large. An HDR file is stretched so its darkest color value is 0 and its brightest is 1, with alpha 1. Images larger than 2048 pixels on a side are box-filtered down by a whole-number factor; the status line under the buttons says when that happened. Each loaded image takes 16 bytes per pixel of GPU memory, so a full 2048 × 2048 one uses 64 MB.</p>
+
+        <p>To mirror the image, give the fractal a negative Scale X or Z (<a href="#ch6">Chapter 6</a>); a negative Scale Y flips it upside down.</p>
+
+        <p>The orbit trap sees the point's height in the plate, from 0 at the bottom of the object to 1 at its top, not its position. With the default Point trap the color strip therefore runs bottom to top, which makes terrain coloring a matter of arranging the stops (<a href="#ch10">Chapter 10</a>).</p>
+
+        <p><strong>Speed.</strong> A height field is not a true distance field, so the estimate is divided by how steep the image is nearby; the formula keeps two such slope bounds, over 8 and 64 pixels, and takes whichever lets the ray go furthest. Gentle images march about as fast as any primitive. Sharp edges are the expensive case: rays creep near a cliff, and grazing views along a logo's walls can run out of steps. Blurring the image by a pixel or two before loading it helps more than raising the step count.</p>
       </section>
 
       <section class="chapter" id="ch9">
@@ -1830,10 +1894,14 @@
             <div class="param-head"><span class="param-name">Parameters</span></div>
             <p>One slider per <code>@param</code>, in declaration order, up to eight — the same grammar, the same <code>int</code> keyword, the same right-click range editing as a formula's (<a href="#ch24">Chapter 24</a>). These are uniforms, so moving them is instant and never recompiles.</p>
           </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">Symbols</span><span class="chip">only for files with @text</span></div>
+            <p>One text box per <code>@text</code> line in the file, each with a strip under it showing the symbols exactly as the effect will draw them, plus a <em>Font</em> box. Type, paste with Ctrl+V, or use the Windows emoji panel (Win+.). The boxes draw anything outside ASCII as <code>?</code> because the interface font has nothing else; the strip is the truth, and hovering a symbol shows its code points. Editing the text never recompiles — the symbols are redrawn into a texture the effect reads. See <a href="#ch17-text">Text fields and Unicode symbols</a> below.</p>
+          </div>
         </div>
 
         <h3>The shipped effects</h3>
-        <p>Sixteen effects in <code>screen_shaders/</code>, plus <code>anothershader_testshaders.wgsl</code>, a scratch file for trying the pipeline out that is not meant as an effect. The files carry no comments apart from their <code>@param</code> lines, so this table is where their reasoning lives. Every parameter listed here is a slider.</p>
+        <p>Seventeen effects in <code>screen_shaders/</code>, plus <code>anothershader_testshaders.wgsl</code>, a scratch file for trying the pipeline out that is not meant as an effect. The files carry no comments apart from their <code>@param</code> lines, so this table is where their reasoning lives. Every parameter listed here is a slider.</p>
 
         <div class="table-scroll">
           <table>
@@ -1849,6 +1917,7 @@
               <tr><td>outline</td><td>Ink outline from g-buffer discontinuities — depth jumps give silhouettes, normal swings give creases.</td><td>Needs depth and normal. <em>Fill fade</em> pushes it towards a flat cel look.</td></tr>
               <tr><td>contours</td><td>Contour lines over the surface, like a topographic map: <em>Bands</em> lines across a value read from the normal, either how directly the surface faces the camera (<em>Source</em> 0) or the normal's X, Y or Z (1–3).</td><td>Needs the normal. <em>Min width (px)</em> keeps lines visible where the bands crowd together. With the default <em>Scene mix</em> of 0 the surface is replaced by a near-black fill; raise it to draw the lines over the render. The sky is left alone.</td></tr>
               <tr><td>ascii</td><td>Redraws the picture as text: each cell becomes a character from a brightness ramp, and cells across a strong depth or brightness edge become <code>/ | - \</code> along the edge.</td><td>Reads depth for the edges. <em>Font size</em> is the cell height in pixels. <em>Colour</em> blends the characters from a single <em>Tint hue</em> to each cell's own colour, <em>Cell fill</em> paints the background with the cell colour, and <em>ASCII background</em> 0 leaves the sky as blank cells. It tone-maps what it reads itself, through <em>Exposure</em>, and <em>Brightness</em> sets how bright the characters come out.</td></tr>
+              <tr><td>unicode</td><td>ascii with symbols you choose: any Unicode at all — block shades, box drawing, CJK, emoji, ZWJ sequences — typed into its <em>Ramp</em> and <em>Edge symbols</em> boxes.</td><td>The <em>Ramp</em> runs darkest to brightest, in the order you type it; the effect does not re-sort it. <em>Edge symbols</em> takes four, for vertical, rising diagonal, horizontal and falling diagonal edges, and an empty box turns edges off. Cells are as wide as the widest symbol, so a ramp with one emoji in it widens every cell. <em>Glyph colour</em> keeps colour symbols such as emoji in their own colours (0 inks them like the rest); single-colour symbols always take the <em>Colour</em>/<em>Tint hue</em> ink. The other sliders are ascii's, minus <em>ASCII background</em>: the sky is always drawn.</td></tr>
               <tr><td>depthfade</td><td>Distance haze straight off the depth buffer.</td><td>Pixels the ray missed read depth 0 and are treated as infinitely far, so the sky fades fully.</td></tr>
               <tr><td>lensdistort</td><td>Two-term Brown–Conrady radial distortion, transverse chromatic aberration, cos⁴ falloff.</td><td>Positive <em>k1</em> barrels, negative pincushions. Samples from outside the frame — see the tiling note below. Its aberration is radius-proportional and works with distortion at zero.</td></tr>
               <tr><td>heathaze</td><td>Two bands of rising fbm turbulence displacing where each pixel reads from.</td><td>Needs <em>Animated</em>. Shimmer grows with depth, because it is the hot air in between that bends the ray; <em>Sky shimmer</em> dials back the infinitely-far background.</td></tr>
@@ -1917,6 +1986,35 @@
           </table>
         </div>
 
+        <h3 id="ch17-text">Text fields and Unicode symbols</h3>
+        <p>An effect can ask for up to four lines of text the user types in, and draw with what they typed:</p>
+
+        <pre><code>// @text Ramp " .:-=+*#%@"
+// @text Edge symbols "|/-\"</code></pre>
+
+        <p>The label runs up to the first <code>"</code>; the default is everything between the first and the last <code>"</code> on the line, taken literally — no escapes, so <code>\</code> is a backslash and a quote inside the text needs nothing special. Fields are numbered 0 to 3 in the order they appear, and that number is how the shader refers to them. Each holds up to 255 bytes of UTF-8, and all the fields of one effect share 64 symbols between them; past that the rest are dropped with a warning.</p>
+
+        <p>A <em>symbol</em> is one user-perceived character, not one code point. <code>e</code> plus a combining accent is one symbol, so is a skin-toned emoji, a flag, and a ZWJ sequence such as 👨‍👩‍👧. The text is drawn by the operating system's own text engine — DirectWrite on Windows, Pango on Linux — so every installed font is a fallback: a symbol the chosen font lacks comes from whichever font has it, and colour fonts draw in colour. Nothing ships with NumericDream, and no font file is ever asked for. The flip side is that what renders depends on the machine. Windows draws flags as their two letters, because it has no flag artwork, and a code point that no installed font covers draws as an empty box or nothing. On Linux the text engine is loaded when first needed; without Pango and Cairo installed, the editor says so, every field reads as empty, and the shipped unicode effect passes the picture through unchanged.</p>
+
+        <p>The <em>Font</em> box picks the primary family by name (<code>Segoe UI</code>, <code>DejaVu Serif</code>…). Empty means Consolas on Windows and the system <code>monospace</code> on Linux. A name that does not exist falls back the same way a missing symbol does.</p>
+
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th>Helper</th><th>Gives you</th></tr></thead>
+            <tbody>
+              <tr><td><code>text_length(field: u32) -&gt; u32</code></td><td>How many symbols that field holds. 0 for an empty or undeclared field.</td></tr>
+              <tr><td><code>text_glyph(field: u32, i: u32) -&gt; u32</code></td><td>The glyph id of symbol <code>i</code> of the field. <code>i</code> past the end gives the last symbol, so a short edge field repeats rather than failing. An empty field gives <code>GLYPH_NONE</code>, which every other helper treats as blank.</td></tr>
+              <tr><td><code>glyph_sample(g: u32, uv: vec2f, size_px: f32) -&gt; vec4f</code></td><td>The glyph's picture: linear, <strong>premultiplied</strong> RGBA, so <code>.a</code> is coverage. <code>uv</code> covers a square box one line high, 0…1, y down, with the symbol centred horizontally; outside it the result is 0. <code>size_px</code> is how tall that box is on screen, and picks the mip level, so small text stays smooth instead of shimmering.</td></tr>
+              <tr><td><code>glyph_aspect() -&gt; f32</code></td><td>Width of the widest symbol across all fields, as a fraction of the line height. Multiply a cell's height by it for a cell nothing overflows.</td></tr>
+              <tr><td><code>glyph_ink(g: u32) -&gt; f32</code></td><td>The fraction of the box the symbol covers, 0…1. Enough to sort a ramp by density yourself.</td></tr>
+              <tr><td><code>glyph_is_colour(g: u32) -&gt; bool</code></td><td>Whether the symbol came out in colour. Single-colour symbols are drawn white, so their <code>rgb</code> equals <code>a</code>; tint them yourself.</td></tr>
+              <tr><td><code>glyph_count() -&gt; u32</code></td><td>Symbols across all fields together.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>Each glyph is rasterised once, at 64 pixels a line, whenever the text or font changes, then mipmapped in linear light — so a text edit costs a few milliseconds of CPU work, not a shader compile. An effect with no <code>@text</code> lines pays nothing.</p>
+
         <h3>The g-buffer</h3>
         <p>Depth and normal come from a two-target g-buffer the marcher fills alongside the colour, on the primary hit only, as part of the march it was doing anyway — so having effects available costs nothing when none are loaded, and an effect that reads depth does not cause a second trace.</p>
 
@@ -1942,7 +2040,7 @@
 
         <p>An animation render restamps the chain from the keyframed values for every frame, and puts the live values back when it finishes, so rendering does not leave the preview showing the last frame's settings.</p>
 
-        <p>Scene files store each effect's path, its parameter values, and its <em>Enabled</em> and <em>Animated</em> state, in list order. The path is stored rather than the file's contents, exactly as for formulas and HDRIs (<a href="#ch21">Chapter 21</a>).</p>
+        <p>Scene files store each effect's path, its parameter values, its <code>@text</code> fields and <em>Font</em>, and its <em>Enabled</em> and <em>Animated</em> state, in list order. Text is not keyframed — it is not a value that can sit halfway between two others. The path is stored rather than the file's contents, exactly as for formulas and HDRIs (<a href="#ch21">Chapter 21</a>).</p>
       </section>
 
       <section class="chapter" id="ch18">
@@ -2142,6 +2240,8 @@
 
         <p>Scrubbing or capturing pushes the interpolated scene onto the live scene; ordinary slider edits do not get stomped back, which is what lets you scrub to a time, adjust, and re-capture.</p>
 
+        <p>While the playhead sits exactly on a keyframe — right after creating it or clicking its marker — and playback is stopped, that marker turns yellow and every edit goes straight into it, camera moves included. So the natural sequence is: click the track at the new time, then set the values for that moment. Scrubbing between keyframes leaves the playhead parked on none, and edits there stay live-only until you capture them.</p>
+
         <div class="params">
           <div class="param">
             <div class="param-head"><span class="param-name">Duration (s)</span><span class="chip">default 10.0</span><span class="chip">range 0.5–600</span></div>
@@ -2226,7 +2326,7 @@
 
         <div class="note">
           <span class="tag">Scenes reference formulas by path</span>
-          <p>A <code>.dream</code> file stores each formula's file path, not its contents. Moving, renaming, or deleting a <code>.wgsl</code> file breaks every scene that used it — that instance loads with a compile error in its editor while the rest of the scene loads normally. Editing a formula file, on the other hand, changes every scene that references it the next time they are loaded.</p>
+          <p>A <code>.dream</code> file stores each formula's file path, not its contents. Changing only a file's labels is safe: when the saved path is missing, the formula with the same name (the first token) in the same folder is loaded instead, and the scene saves the new path from then on. Moving a <code>.wgsl</code> file, changing its name, or deleting it breaks every scene that used it — that instance loads with a compile error in its editor while the rest of the scene loads normally. Editing a formula file, on the other hand, changes every scene that references it the next time they are loaded.</p>
         </div>
 
         <p>Matching parameters by name has a useful consequence: adding a new <code>@param</code> to a formula does not invalidate existing scenes. The new parameter takes the file's default; the ones that still exist keep their saved values. Renaming a parameter, however, resets it.</p>
@@ -2502,7 +2602,7 @@ return vec2f(de_finalize(lod_blend(carry_lo, carry, lod.y)),
         <p>Two things to take from it. <code>de_iterations</code> is consulted only here — in a mixin cycle the three sliders in <a href="#ch9">Chapter 9</a> decide how often your step runs, and it may be more often than you asked for. And the orbit trap is not yours to define: it is measured on <code>z</code> after every step by whatever the user picked in the fractal's Orbit trap section (<a href="#ch10">Chapter 10</a>). By default that is the smallest <code>length(z)</code> seen across the iterations, divided by 1.5 and clamped to 0–1 to pick a position along the colour strip. A formula whose iterates linger near the origin colours from the left end of the strip; one whose iterates fly outward early colours from the right. You steer it only through what your fold does to <code>z</code>.</p>
 
         <h3>Step 1 — a shape with no iterations</h3>
-        <p>Start with the smallest file that renders, and keep it: it is the pattern for every primitive. Save this as <code>formulas/sphere_primitive_round.wgsl</code>.</p>
+        <p>Start with the smallest file that renders, and keep it: it is the pattern for every primitive. Save this as <code>formulas/sphere_primitive.wgsl</code>.</p>
         <pre><code>// Sphere: a unit sphere, scaled by Size.
 
 // @param Size min=0.02 max=8 default=1
@@ -2524,11 +2624,11 @@ fn de_finalize(carry: IterCarry) -&gt; f32 {
         <ul>
           <li>Torus: <code>let q = vec2f(length(carry.z.xz) - 1.0, carry.z.y); return (length(q) - 0.35) / max(abs(carry.dr), 1e-6);</code></li>
           <li>Octahedron: <code>return (abs(carry.z.x) + abs(carry.z.y) + abs(carry.z.z) - 1.0) * 0.57735 / max(abs(carry.dr), 1e-6);</code>. The <code>0.57735</code> (1/√3) turns a plane equation into a true distance; without it the estimate is up to √3 too large facing each face, and the marcher tunnels.</li>
-          <li>Open <code>cube_primitive_polyhedron.wgsl</code> for the inside-and-outside form that stays exact below the surface — which is what refraction and subsurface scattering march through.</li>
+          <li>Open <code>cube_primitive.wgsl</code> for the inside-and-outside form that stays exact below the surface — which is what refraction and subsurface scattering march through.</li>
         </ul>
 
         <h3>Step 2 — a fold</h3>
-        <p>Iterated function systems are the easiest real fractals to write, because the tally is trivial: every step multiplies space by one number. This is the Menger sponge's fold with its scale exposed and a twist added. Save it as <code>formulas/twistcube_ifs_cubic_twist.wgsl</code>.</p>
+        <p>Iterated function systems are the easiest real fractals to write, because the tally is trivial: every step multiplies space by one number. This is the Menger sponge's fold with its scale exposed and a twist added. Save it as <code>formulas/twistcube_ifs_twist.wgsl</code>.</p>
         <pre><code>// Twist cube: the Menger fold with adjustable scale and a per-iteration twist.
 
 // @param Scale min=1.2 max=4 default=3
@@ -2573,7 +2673,7 @@ fn de_finalize(carry: IterCarry) -&gt; f32 {
         </ul>
 
         <h3>Step 3 — an escape-time formula</h3>
-        <p>Escape-time formulas add the original point back in every iteration — <code>z ← f(z) + pos</code> — so where the sequence goes depends on where it started. The tally has to account for that, and the finalize changes, because the sequence diverges instead of settling into a shape. This is the Mandelbox fold with a switchable Julia constant; save it as <code>formulas/switchbox_box_boxfold_julia.wgsl</code>.</p>
+        <p>Escape-time formulas add the original point back in every iteration — <code>z ← f(z) + pos</code> — so where the sequence goes depends on where it started. The tally has to account for that, and the finalize changes, because the sequence diverges instead of settling into a shape. This is the Mandelbox fold with a switchable Julia constant; save it as <code>formulas/switchbox_box_julia.wgsl</code>.</p>
         <pre><code>// Switch box: the Mandelbox fold, iterated on the point or on a fixed Julia constant.
 
 // @param Scale min=-3 max=3 default=2
@@ -2619,7 +2719,7 @@ fn de_finalize(carry: IterCarry) -&gt; f32 {
         </ul>
 
         <h3>Step 4 — your own helpers</h3>
-        <p>Anything you find yourself writing twice belongs in a helper function above the contract functions. The assembler renames every function and every module-scope <code>const</code> your file declares with a suffix unique to that file, so two files can both define a <code>fold</code> or a <code>FOLD_ANGLE</code> without a clash. One file used by several fractals or mixins is only spliced in once, so it never clashes with itself. Here is a polar wedge fold — the one <code>prismkifs_box_boxfold_wedgefold.wgsl</code> writes inline — as a helper:</p>
+        <p>Anything you find yourself writing twice belongs in a helper function above the contract functions. The assembler renames every function and every module-scope <code>const</code> your file declares with a suffix unique to that file, so two files can both define a <code>fold</code> or a <code>FOLD_ANGLE</code> without a clash. One file used by several fractals or mixins is only spliced in once, so it never clashes with itself. Here is a polar wedge fold — the one <code>prismkifs_box_fold.wgsl</code> writes inline — as a helper:</p>
         <pre><code>// Fold the XY plane into one wedge of angle 2π/n, mirrored about the wedge's centre line.
 fn wedge_fold(z: vec3f, n: f32) -&gt; vec3f {
     let period = TAU / n;                       // TAU comes from the template
@@ -2794,6 +2894,21 @@ fn de_finalize(carry: IterCarry) -&gt; f32</code></pre>
           </div>
         </div>
 
+        <h3>Reference: image helpers</h3>
+        <p>A formula that wants an image declares it with one line, next to its <code>@param</code> lines:</p>
+        <pre><code>// @image Height map</code></pre>
+        <p>The text after <code>@image</code> becomes the heading of the image block in the formula's editor (<a href="#ch8">Chapter 8</a>). The image belongs to the slot, not the file, so two fractals using the same formula can each have their own picture, and the same goes for a mixin. Images are bound in every pass, so unlike other textures (below) they are safe to read from <code>de_step</code>.</p>
+        <div class="params">
+          <div class="param">
+            <div class="param-head"><span class="param-name">image_info() -&gt; ImageInfo</span></div>
+            <p>The slot's image. <code>size</code> is its resolution in pixels as a <code>vec2u</code>, (0, 0) when nothing is loaded. <code>slope</code> is a <code>vec4f</code>: per channel, the largest change between neighbouring pixels anywhere in the image. For a height built as <code>dot(k, value)</code>, <code>dot(abs(k), slope) / pixel size</code> bounds the gradient of the whole height field, whatever the weights <code>k</code> are.</p>
+          </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">image_sample(info: ImageInfo, uv: vec2f) -&gt; ImageSample</span></div>
+            <p>Bilinear lookup with <code>uv</code> in [0, 1]², u to the right and v down the picture, clamped at the edges. <code>.value</code> is the four channels in [0, 1]: R, G and B premultiplied by alpha, then alpha. <code>.near</code> and <code>.far</code> bound, per channel, the change per pixel everywhere within <code>IMAGE_SLOPE_RADIUS_NEAR</code> (8) and <code>IMAGE_SLOPE_RADIUS_FAR</code> (64) pixels of <code>uv</code>. Combine them with the absolute values of your weights, <code>dot(abs(k), s.near)</code>. These are what make a fast and safe estimate possible: dividing a height difference by <code>sqrt(1 + g²)</code>, where <code>g</code> is a slope converted to world units, gives a safe distance as long as the result is also capped at that radius. <code>heightmap_primitive.wgsl</code> is the worked example.</p>
+          </div>
+        </div>
+
         <h3>Reference: blending helpers</h3>
         <p>The smooth-min family the combine modes are built from is also available inside a formula, which is how to build a primitive out of two shapes — union two distances in <code>de_finalize</code> and divide the result by <code>dr</code> as usual. <code>k</code> is the blend radius; at 0 every one of them degenerates to its hard equivalent.</p>
         <div class="table-scroll">
@@ -2842,7 +2957,7 @@ fn de_finalize(carry: IterCarry) -&gt; f32</code></pre>
         <ul>
           <li><strong><code>scene_de</code>, <code>march</code>, <code>instance_de_trap</code>, <code>eval_formula</code>, <code>eval_step</code>, <code>hit_material</code>, the photon and fog functions.</strong> These call <em>you</em>. WGSL forbids recursion, so calling any of them from a formula makes a cycle and the compile fails.</li>
           <li><strong>The uniform block <code>u</code>.</strong> Readable, but everything a formula legitimately needs from it already arrives as <code>pos</code> and <code>p</code>. <code>u.time</code> in particular is the viewport's clock and is 0 for every exported still and animation frame, so nothing built on it can be rendered — animate parameters through the Timeline instead (<a href="#ch20">Chapter 20</a>).</li>
-          <li><strong>Textures and the photon storage buffers.</strong> Sampling inside a distance function is not meaningful, and a formula runs in every pass — the accelerator's and the photon tracer's compute passes included — so anything it touched would have to exist in all of them.</li>
+          <li><strong>Textures and the photon storage buffers.</strong> Sampling inside a distance function is not meaningful, and a formula runs in every pass — the accelerator's and the photon tracer's compute passes included — so anything it touched would have to exist in all of them. The one exception is the image a formula declares with <code>@image</code>, which is bound everywhere for exactly that reason (see the image helpers above).</li>
           <li><strong>Anything named in the fixed-limits table of <a href="#ch22">Chapter 22</a>.</strong> The constants are readable, but a formula has no reason to.</li>
         </ul>
         <p>The list of what a formula <em>should</em> reach for is the reference above, plus the built-ins. Everything else is the renderer's business.</p>

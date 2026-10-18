@@ -87,6 +87,10 @@ const VOXEL_WORKGROUP_SIZE = 4;
 const FFT_LINE_WORKGROUP_SIZE = 8;
 const LINEAR_WORKGROUP_SIZE = 64;
 
+// The state a formula's de_step receives and returns. z is the folded point; dr is the
+// accumulated stretch factor (the running derivative), starting at 1.0. In a hybrid the
+// carry may come from a different formula's step, and only the base formula's de_finalize
+// runs at the end, so a step should rebuild what it needs from z and dr alone.
 struct IterCarry {
     z: vec3f,
     dr: f32,
@@ -384,6 +388,7 @@ struct Sky {
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(0) @binding(1) var<storage, read> particle_data: array<u32>;
+@group(0) @binding(2) var<storage, read> image_data: array<u32>;
 
 @group(1) @binding(0) var accel_tex: texture_3d<f32>;
 
@@ -799,10 +804,18 @@ fn instance_mixin_params(slot: i32, idx: i32) -> array<f32, 8> {
     return pack_params(u.instances[slot].mixins[idx].params0, u.instances[slot].mixins[idx].params1);
 }
 
+// Mandelbox outer fold: each component beyond +-limit is reflected back across that
+// plane, i.e. clamp(z, -limit, limit) * 2 - z. A piecewise reflection; dr unchanged.
 fn box_fold(z: vec3f, limit: f32) -> vec3f {
     return clamp(z, vec3f(-limit), vec3f(limit)) * 2.0 - z;
 }
 
+// Mandelbox inner fold: sphere inversion with a floor. Both radii are SQUARED.
+// r^2 < min_radius2:                 scaled by the constant fixed_radius2 / min_radius2.
+// min_radius2 <= r^2 < fixed_radius2: inverted, scaled by fixed_radius2 / r^2.
+// otherwise:                         passed through.
+// Returns the new point in .xyz and dr multiplied by the applied factor in .w; always
+// take dr from .w rather than tracking the factor yourself.
 fn sphere_fold(z: vec3f, dr: f32, min_radius2: f32, fixed_radius2: f32) -> vec4f {
     let r2 = dot(z, z);
     if (r2 < min_radius2) {
@@ -815,6 +828,10 @@ fn sphere_fold(z: vec3f, dr: f32, min_radius2: f32, fixed_radius2: f32) -> vec4f
     return vec4f(z, dr);
 }
 
+// Plain inversion in the sphere of SQUARED radius radius2 about center (the Kleinian
+// fold): points inside are mapped to center + d * radius2 / |d|^2, points outside pass
+// through. |d|^2 is floored at EPSILON_FINE so the centre itself is safe. Returns the
+// point in .xyz and dr times radius2 / |d|^2 in .w, like sphere_fold.
 fn sphere_invert_offset(z: vec3f, dr: f32, center: vec3f, radius2: f32) -> vec4f {
     let d = z - center;
     let r2 = max(dot(d, d), EPSILON_FINE);
@@ -825,26 +842,40 @@ fn sphere_invert_offset(z: vec3f, dr: f32, center: vec3f, radius2: f32) -> vec4f
     return vec4f(z, dr);
 }
 
+// Wraps p into the cube of side cell centred on the origin, so everything after it repeats
+// on an infinite lattice. cell must be non-zero. A translation; dr unchanged.
 fn lattice_wrap(p: vec3f, cell: f32) -> vec3f {
     return p - cell * round(p / cell);
 }
 
+// de_finalize for escape-time folds (box, inversion, lattice) that add pos each step and
+// diverge: length(z) / abs(dr). The abs keeps negative scales working.
 fn de_finalize_scaled(carry: IterCarry) -> f32 {
     return length(carry.z) / abs(carry.dr);
 }
 
+// de_finalize for bounded folds whose attractor passes through the origin (Sierpinski,
+// icosahedral IFS): length(z) / dr. No abs, so dr must stay positive.
 fn de_finalize_plain(carry: IterCarry) -> f32 {
     return length(carry.z) / carry.dr;
 }
 
+// de_finalize for power maps, paired with bulb_power_step: 0.5 * log(r) * r / dr, capped
+// at r so it never exceeds the distance to the origin. r and dr are floored at
+// EPSILON_FINE.
 fn bulb_log_escape(carry: IterCarry) -> f32 {
     let r = length(carry.z);
     let log_est = 0.5 * log(max(r, EPSILON_FINE)) * r / max(carry.dr, EPSILON_FINE);
     return min(log_est, r);
 }
 
+// Escape radius used by bulb_power_step; also usable as a bail-out in custom power maps.
 const BULB_BAILOUT = 2.0;
 
+// One Mandelbulb iteration in spherical coordinates (theta measured from +z, phi =
+// atan2(y, x)): z -> z^power + add, dr -> power * r^(power - 1) * dr + 1. Pass pos as add
+// for a Mandelbulb, a constant for a Juliabulb. Once r > BULB_BAILOUT the carry is
+// returned unchanged, so it is safe to keep calling after escape (e.g. inside a hybrid).
 fn bulb_power_step(carry: IterCarry, add: vec3f, power: f32) -> IterCarry {
     let r = length(carry.z);
     if (r > BULB_BAILOUT) {
@@ -859,6 +890,9 @@ fn bulb_power_step(carry: IterCarry, add: vec3f, power: f32) -> IterCarry {
     return IterCarry(z, dr);
 }
 
+// Cubic-symmetry fold (Menger sponge): abs(z), then the components sorted so that
+// x >= y >= z, folding all of space into one 48th of it. Mirrors and axis swaps only;
+// dr unchanged.
 fn sort_desc_abs(z: vec3f) -> vec3f {
     var v = abs(z);
     if (v.x < v.y) {
@@ -879,6 +913,8 @@ fn sort_desc_abs(z: vec3f) -> vec3f {
     return v;
 }
 
+// Tetrahedral-symmetry fold (Sierpinski tetrahedron): conditional mirrors across the
+// planes x + y = 0, x + z = 0 and y + z = 0, applied in that order. dr unchanged.
 fn tetra_fold(z: vec3f) -> vec3f {
     var v = z;
     if (v.x + v.y < 0.0) {
@@ -899,18 +935,108 @@ fn tetra_fold(z: vec3f) -> vec3f {
     return v;
 }
 
+// Reduces angle a into [0, period), also for negative a. The building block of a polar
+// wedge fold: wrap atan2(z.y, z.x) by TAU / n, mirror the upper half, rebuild z.
 fn wrap_angle(a: f32, period: f32) -> f32 {
     return a - period * floor(a / period);
 }
 
+// Returns 1: the whole body of de_iterations for a single-shape primitive formula.
 fn primitive_de_iterations() -> i32 {
     return 1;
 }
 
+// The de_step for a primitive: rescales the carry so de_finalize can measure a unit-sized
+// shape. z is divided by size and by the incoming |dr| (so a primitive mixed after other
+// formulas stays the right size in their stretched space), and dr is REPLACED by
+// 1 / size. The matching de_finalize is the unit shape's exact signed distance at z
+// divided by abs(dr). size is floored at EPSILON, |dr| at EPSILON_FINE.
 fn primitive_de_step(carry: IterCarry, size: f32) -> IterCarry {
     let unit_dr = 1.0 / max(size, EPSILON);
     let f = unit_dr / max(abs(carry.dr), EPSILON_FINE);
     return IterCarry(carry.z * f, unit_dr);
+}
+
+const IMAGE_SLOTS_PER_FRACTAL = 1 + MAX_MIXINS;
+const IMAGE_HEADER_WORDS = 8;
+const IMAGE_TEXEL_WORDS = 4u;
+const IMAGE_U16_MASK = 0xffffu;
+const IMAGE_U16_SCALE = 1.0 / 65535.0;
+const IMAGE_U8_MASK = 0xffu;
+const IMAGE_SLOPE_STEPS_PER_OCTAVE = 16.0;
+const IMAGE_SLOPE_CODE_MAX = 255.0;
+const IMAGE_SLOPE_CODE_MAX_LOG2 = 1.0;
+
+// How far, in texels, the two local slopes from image_sample stay valid bounds.
+const IMAGE_SLOPE_RADIUS_NEAR = 8.0;
+const IMAGE_SLOPE_RADIUS_FAR = 64.0;
+
+var<private> g_image_slot: i32 = -1;
+
+// The image loaded for this formula (a formula asks for one with a `// @image Label` line).
+// size is in texels and is (0, 0) when nothing is loaded. The four channels are R, G and
+// B premultiplied by alpha (so transparent pixels read 0), then alpha itself, all in
+// [0, 1]. slope holds, per channel, the largest change between neighbouring texels
+// anywhere in the image; for a height built as dot(k, value), dot(abs(k), slope) / texel
+// size bounds its gradient.
+struct ImageInfo {
+    base: u32,
+    size: vec2u,
+    slope: vec4f,
+}
+
+fn image_info() -> ImageInfo {
+    if (g_image_slot < 0) {
+        return ImageInfo(0u, vec2u(0u), vec4f(0.0));
+    }
+    let h = u32(g_image_slot * IMAGE_HEADER_WORDS);
+    let slope = bitcast<vec4f>(vec4u(image_data[h + 3u], image_data[h + 4u], image_data[h + 5u], image_data[h + 6u]));
+    return ImageInfo(image_data[h], vec2u(image_data[h + 1u], image_data[h + 2u]), slope);
+}
+
+// One image_sample result: value is the four channels; near and far bound, per channel,
+// the change per texel everywhere within IMAGE_SLOPE_RADIUS_NEAR and
+// IMAGE_SLOPE_RADIUS_FAR texels. Combine them with the same weights as value, but
+// absolute: dot(abs(k), near).
+struct ImageSample {
+    value: vec4f,
+    near: vec4f,
+    far: vec4f,
+}
+
+fn image_slope_decode(packed: u32) -> vec4f {
+    let code = vec4f(vec4u(packed, packed >> 8u, packed >> 16u, packed >> 24u) & vec4u(IMAGE_U8_MASK));
+    let slope = exp2((code - IMAGE_SLOPE_CODE_MAX) / IMAGE_SLOPE_STEPS_PER_OCTAVE + IMAGE_SLOPE_CODE_MAX_LOG2);
+    return select(slope, vec4f(0.0), code == vec4f(0.0));
+}
+
+fn image_texel(info: ImageInfo, x: u32, y: u32) -> ImageSample {
+    let i = info.base + (y * info.size.x + x) * IMAGE_TEXEL_WORDS;
+    let rg = image_data[i];
+    let ba = image_data[i + 1u];
+    let value = vec4f(vec4u(rg, rg >> 16u, ba, ba >> 16u) & vec4u(IMAGE_U16_MASK)) * IMAGE_U16_SCALE;
+    return ImageSample(value, image_slope_decode(image_data[i + 2u]), image_slope_decode(image_data[i + 3u]));
+}
+
+fn image_mix(a: ImageSample, b: ImageSample, t: f32) -> ImageSample {
+    return ImageSample(mix(a.value, b.value, t), mix(a.near, b.near, t), mix(a.far, b.far, t));
+}
+
+// Bilinear lookup at uv in [0, 1]^2 (u right, v down the image, clamped at the edges).
+// Away from sharp edges near and far are much smaller than info.slope. Returns zeros
+// when no image is loaded.
+fn image_sample(info: ImageInfo, uv: vec2f) -> ImageSample {
+    if (info.size.x == 0u || info.size.y == 0u) {
+        return ImageSample(vec4f(0.0), vec4f(0.0), vec4f(0.0));
+    }
+    let last = info.size - vec2u(1u);
+    let t = clamp(uv * vec2f(info.size) - 0.5, vec2f(0.0), vec2f(last));
+    let i0 = min(vec2u(t), last);
+    let i1 = min(i0 + vec2u(1u), last);
+    let f = t - vec2f(i0);
+    let top = image_mix(image_texel(info, i0.x, i0.y), image_texel(info, i1.x, i0.y), f.x);
+    let bottom = image_mix(image_texel(info, i0.x, i1.y), image_texel(info, i1.x, i1.y), f.x);
+    return image_mix(top, bottom, f.y);
 }
 
 const TRAP_SPHERE = 1;
@@ -1070,6 +1196,7 @@ fn eval_mixed(pos: vec3f, base_slot: i32) -> vec2f {
 
         var code = base_code;
         var p = base_p;
+        var image_slot = base_slot * IMAGE_SLOTS_PER_FRACTAL;
         var have_step = true;
         if (pos_in_cycle >= base_n) {
             pos_in_cycle -= base_n;
@@ -1079,6 +1206,7 @@ fn eval_mixed(pos: vec3f, base_slot: i32) -> vec2f {
                 if (pos_in_cycle < n_j) {
                     code = mixin_code(base_slot, j);
                     p = instance_mixin_params(base_slot, j);
+                    image_slot += 1 + j;
                     have_step = true;
                     break;
                 }
@@ -1087,15 +1215,20 @@ fn eval_mixed(pos: vec3f, base_slot: i32) -> vec2f {
         }
         let z_prev = carry.z;
         if (have_step) {
+            g_image_slot = image_slot;
             carry = eval_step(code, carry, pos, p);
         }
 
         trap = orbit_trap_update(trap, trap_spec, carry.z, z_prev, it);
     }
 
+    g_image_slot = base_slot * IMAGE_SLOTS_PER_FRACTAL;
     return vec2f(eval_finalize(base_code, lod_blend(carry_lo, carry, lod.y)), orbit_trap_finish(trap, trap_spec, total));
 }
 
+// Right-handed rotation matrices by a radians about the x, y and z axes; apply as
+// rot_y(a) * z. The instance rotation composes them as rot_z * rot_y * rot_x. Rotations
+// preserve distances; dr unchanged.
 fn rot_x(a: f32) -> mat3x3f {
     let c = cos(a);
     let s = sin(a);
@@ -1310,14 +1443,19 @@ fn instance_local_de(local: vec3f, slot: i32) -> vec2f {
     return eval_formula(instance_code(slot), slot, local, instance_params(slot));
 }
 
+fn instance_scale_magnitude(slot: i32) -> vec3f {
+    return max(abs(u.instances[slot].scale), vec3f(MIN_INSTANCE_SCALE));
+}
+
 fn instance_de_trap(pos: vec3f, slot: i32) -> vec2f {
     g_lod_dist = distance(pos, u.camera_pos);
-    let s = max(u.instances[slot].scale, vec3f(MIN_INSTANCE_SCALE));
+    let mag = instance_scale_magnitude(slot);
+    let s = select(mag, -mag, u.instances[slot].scale < vec3f(0.0));
     let rot = instance_rotation(slot);
     let unrotated = transpose(rot) * (pos - u.instances[slot].offset);
     let local = unrotated / s;
     let result = instance_local_de(local, slot);
-    let scale_factor = min(s.x, min(s.y, s.z));
+    let scale_factor = min(mag.x, min(mag.y, mag.z));
     let safety = clamp(u.instances[slot].step_safety, MIN_STEP_SAFETY, 1.0);
     return vec2f(result.x * scale_factor * safety, result.y);
 }
@@ -1338,6 +1476,11 @@ const COMBINE_SMOOTH_MIN_LIN = 4;
 const COMBINE_SMOOTH_MIN_NLIN = 5;
 const COMBINE_SMOOTH_MIX = 6;
 
+// Smooth combine family behind the instance combine modes, also usable inside a formula
+// (e.g. to build a primitive from two shapes in de_finalize before dividing by dr).
+// k is the blend radius in distance units; k <= SMOOTH_K_MIN gives the hard operation.
+
+// Smooth union, polynomial blend: min(a, b) rounded off across a seam of width k.
 fn smin(a: f32, b: f32, k: f32) -> f32 {
     if (k <= SMOOTH_K_MIN) {
         return min(a, b);
@@ -1346,6 +1489,7 @@ fn smin(a: f32, b: f32, k: f32) -> f32 {
     return mix(b, a, h) - k * h * (1.0 - h);
 }
 
+// Smooth intersection: max(a, b) with a rounded inner edge.
 fn smax(a: f32, b: f32, k: f32) -> f32 {
     if (k <= SMOOTH_K_MIN) {
         return max(a, b);
@@ -1354,6 +1498,8 @@ fn smax(a: f32, b: f32, k: f32) -> f32 {
     return mix(b, a, h) + k * h * (1.0 - h);
 }
 
+// Smooth subtraction: carves cut out of base, max(-cut, base) with a rounded rim.
+// Note the argument order: the shape being removed comes first.
 fn ssub(cut: f32, base: f32, k: f32) -> f32 {
     if (k <= SMOOTH_K_MIN) {
         return max(-cut, base);
@@ -1362,6 +1508,7 @@ fn ssub(cut: f32, base: f32, k: f32) -> f32 {
     return mix(base, -cut, h) + k * h * (1.0 - h);
 }
 
+// Smooth union with a linear, chamfer-like seam: a + b - k where both are within k.
 fn smin_lin(a: f32, b: f32, k: f32) -> f32 {
     if (k <= SMOOTH_K_MIN) {
         return min(a, b);
@@ -1369,6 +1516,7 @@ fn smin_lin(a: f32, b: f32, k: f32) -> f32 {
     return min(b - max(k - a, 0.0), a - max(k - b, 0.0));
 }
 
+// Smooth union with a rounder, nonlinear seam than smin_lin.
 fn smin_nlin(a: f32, b: f32, k: f32) -> f32 {
     if (k <= SMOOTH_K_MIN) {
         return min(a, b);
@@ -1378,6 +1526,8 @@ fn smin_nlin(a: f32, b: f32, k: f32) -> f32 {
     return min(b - ra * (k - rb) / k, a - rb * (k - ra) / k);
 }
 
+// Crossfade between a and b across a seam of width k. Softer than smin and not a true
+// union: inside the seam the result can exceed min(a, b), so it may overestimate there.
 fn smix(a: f32, b: f32, k: f32) -> f32 {
     if (k <= SMOOTH_K_MIN) {
         return min(a, b);
@@ -2026,10 +2176,15 @@ fn fog_light_visibility(pos: vec3f, light_dir: vec3f, light_dist: f32, steps: i3
 const IGN_SCALE = 52.9829189;
 const IGN_WEIGHTS = vec2f(0.06711056, 0.00583715);
 
+// Interleaved gradient noise in [0, 1). Built for integer pixel coordinates, where it is
+// well spread; on arbitrary floats it shows banding, so prefer hash12w or hash33 there.
 fn hash12(p: vec2f) -> f32 {
     return fract(IGN_SCALE * fract(dot(p, IGN_WEIGHTS)));
 }
 
+// White-noise hash of the raw float bits of p, in [0, 1). Any input works, but values
+// differing by a single ulp hash unrelated, so it is not continuous: never feed it into a
+// distance estimate directly, only into choices made per lattice cell (floor(p) first).
 fn hash12w(p: vec2f) -> f32 {
     var v = vec2u(bitcast<u32>(p.x), bitcast<u32>(p.y));
     v = v * LCG_MULTIPLIER + LCG_INCREMENT;
@@ -2401,7 +2556,8 @@ fn march_fft_cloud(origin: vec3f, dir: vec3f, max_t: f32, screen_pos: vec2f) -> 
     let slot = i32(u.fft_target_slot + 0.5);
     let offset = u.instances[slot].offset;
     let box_radius = max(u.fft_box_radius, FFT_MIN_BOX_RADIUS);
-    let s = max(u.instances[slot].scale, vec3f(MIN_INSTANCE_SCALE));
+    let s = instance_scale_magnitude(slot);
+    let s_signed = select(s, -s, u.instances[slot].scale < vec3f(0.0));
     let sphere_r = box_radius * max(s.x, max(s.y, s.z)) * SQRT3;
 
     let hit = fft_sphere_intersect(origin, dir, offset, sphere_r);
@@ -2424,7 +2580,7 @@ fn march_fft_cloud(origin: vec3f, dir: vec3f, max_t: f32, screen_pos: vec2f) -> 
             break;
         }
         let pos = origin + dir * t;
-        let local = (transpose(rot) * (pos - offset)) / s;
+        let local = (transpose(rot) * (pos - offset)) / s_signed;
         if (all(abs(local) <= vec3f(box_radius))) {
             let mag = sample_fft_magnitude(local, box_radius);
             let sigma_t = mag * density_scale;
@@ -2660,6 +2816,9 @@ const FILM_PI = 3.14159265358979;
 const FILM_MAX_ANGLE = 1.5607;
 const FILM_MIN_PEAK = 1e-5;
 
+// Integer-lattice hash: three values in [0, 1) per integer cell. p is truncated toward
+// zero, so pass floor(p) (or other integer-valued vectors) or the cells either side of 0
+// merge.
 fn hash33(p: vec3f) -> vec3f {
     var v = bitcast<vec3u>(vec3i(p));
     v = v * LCG_MULTIPLIER + LCG_INCREMENT;
@@ -2673,6 +2832,10 @@ fn hash33(p: vec3f) -> vec3f {
     return vec3f(v) * INV_U32_RANGE;
 }
 
+// Smooth 3-channel value noise in [-1, 1] on a unit lattice (hash33 at the corners,
+// smoothstep-weighted trilinear blend). Each partial derivative is at most 3, so
+// displacing a distance by amount * film_noise(p * freq).x needs the result divided by
+// about 1 + 5.2 * amount * freq to stay a safe estimate.
 fn film_noise(p: vec3f) -> vec3f {
     let i = floor(p);
     let f = p - i;

@@ -442,7 +442,10 @@ pub fn main(init: std.process.Init.Minimal) !void {
                 .redo => hist.redo(&app_ui),
                 .none => false,
             };
-            if (changed) redraw_pending = true;
+            if (changed) {
+                redraw_pending = true;
+                if (animation.parkedKeyframe(&timeline) != null) timeline.dirty = true;
+            }
         }
         history_op = .none;
 
@@ -482,6 +485,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
             timeline.dirty = false;
         }
 
+        screen_shader_mod.refreshAllGlyphs(allocator, &gpu_ctx, &fractal.post, screen_shaders[0..screen_shader_count]);
         stampPostEffects(&gpu_ctx, &fractal, render_parts, instances[0..instance_count], screen_shaders[0..screen_shader_count], shaftFor(render_parts, lights[0..light_count], fog_emitters[0..fog_count], sky, camera));
 
         editor_windows.buildCrosshair(&ui.ctx, &play, width_f, height_f);
@@ -498,8 +502,13 @@ pub fn main(init: std.process.Init.Minimal) !void {
             .particle_systems = particle_systems[0..particle_count],
         };
         selection.syncWithWindows(objects);
+        if (animation.parkedKeyframe(&timeline) != null) {
+            const snap = animation.captureSnapshot(instances[0..instance_count], instance_count, lights[0..light_count], light_count, fog_emitters[0..fog_count], fog_count, warps[0..warp_count], warp_count, screen_shaders[0..screen_shader_count], particle_systems[0..particle_count], camera);
+            animation.autoKey(&timeline, &snap);
+        }
         const mouse_down = (sdl.SDL_GetMouseState(null, null) & sdl.SDL_BUTTON_LMASK) != 0;
         hist.track(&app_ui, now_ticks, timeline.playing or play_active, mouse_down);
+        screen_shader_mod.refreshAllGlyphs(allocator, &gpu_ctx, &fractal.post, screen_shaders[0..screen_shader_count]);
         stampPostEffects(&gpu_ctx, &fractal, render_parts, instances[0..instance_count], screen_shaders[0..screen_shader_count], shaftFor(render_parts, lights[0..light_count], fog_emitters[0..fog_count], sky, camera));
         perf.mark("ui");
 
@@ -509,6 +518,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
             .particles_lit = particle_needs.lit,
             .particles_dots = particle_needs.dots,
         });
+        scene_state.syncImages(&gpu_ctx, &fractal, instances[0..instance_count]);
 
         const cam = camera.basis();
         const elapsed_ms = sdl.SDL_GetTicks() - start_ticks;

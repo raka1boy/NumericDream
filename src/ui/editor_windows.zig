@@ -45,6 +45,9 @@ const approximations_mod = @import("../app/approximations.zig");
 const Approximations = approximations_mod.Approximations;
 const McRenderState = @import("../app/mc_render.zig").McRenderState;
 const oidn = @import("../bindings/oidn.zig");
+const text_raster = @import("../bindings/text_raster.zig");
+const glyph_atlas = @import("../gpu/glyph_atlas.zig");
+const ui_backend = @import("nuklear_backend.zig");
 const ProgressOverlay = @import("../gpu/progress_overlay.zig").ProgressOverlay;
 const accel_gpu = @import("../gpu/accel.zig");
 const AccelState = @import("../app/accel_state.zig").AccelState;
@@ -108,6 +111,8 @@ fn buildFormulaSection(
 
     widgets.separator(ctx);
 
+    if (formula.imageLabel()) |label| buildFormulaImage(ctx, window, fractal, formula, label);
+
     widgets.sectionLabel(ctx, "Parameters");
     for (0..formula.custom_param_count) |i| {
         const param = &formula.custom_params[i];
@@ -118,6 +123,47 @@ fn buildFormulaSection(
             widgets.sliderFloat(ctx, param.label(), &param.value, &param.range);
         }
     }
+}
+
+fn buildFormulaImage(ctx: *nk.nk_context, window: *sdl.SDL_Window, fractal: *FractalRenderer, formula: *FormulaState, label: []const u8) void {
+    var label_buf: [64]u8 = undefined;
+    widgets.sectionLabel(ctx, std.fmt.bufPrintSentinel(&label_buf, "{s}", .{label[0..@min(label.len, 48)]}, 0) catch "Image");
+    nk.nk_layout_row_template_begin(ctx, 24);
+    nk.nk_layout_row_template_push_dynamic(ctx);
+    nk.nk_layout_row_template_push_static(ctx, 76);
+    nk.nk_layout_row_template_end(ctx);
+    _ = nk.nk_edit_string_zero_terminated(ctx, @intCast(nk.NK_EDIT_FIELD), &formula.image_path, formula.image_path.len, nk.nk_filter_default);
+    if (nk.nk_button_label(ctx, "Browse") != 0) {
+        var buf: [256]u8 = undefined;
+        if (file_dialog.pickHeightMapFile(window, &buf)) |len| formula.setImagePath(buf[0..len]);
+    }
+
+    const path = formula.imagePath();
+    nk.nk_layout_row_dynamic(ctx, 22, 2);
+    if (nk.nk_button_label(ctx, "Reload") != 0) fractal.height_maps.forget(path);
+    if (nk.nk_button_label(ctx, "Clear") != 0) formula.setImagePath("");
+
+    var status_buf: [160]u8 = undefined;
+    var ok = false;
+    const status: [:0]const u8 = if (path.len == 0)
+        "No image loaded, rendering a flat plate"
+    else if (fractal.height_maps.lookup(path)) |img| blk: {
+        if (img.err) |err| break :blk std.fmt.bufPrintSentinel(&status_buf, "Could not load image ({s}).", .{@errorName(err)}, 0) catch "Could not load image.";
+        ok = true;
+        const depth = switch (img.depth) {
+            .bits8 => "8-bit",
+            .bits16 => "16-bit",
+            .hdr => "HDR, normalised",
+        };
+        if (img.width != img.source_width) {
+            break :blk std.fmt.bufPrintSentinel(&status_buf, "{d}x{d} {s}, downsampled from {d}x{d}", .{ img.width, img.height, depth, img.source_width, img.source_height }, 0) catch "Loaded.";
+        }
+        break :blk std.fmt.bufPrintSentinel(&status_buf, "{d}x{d} {s}", .{ img.width, img.height, depth }, 0) catch "Loaded.";
+    } else "Loading";
+    nk.nk_layout_row_dynamic(ctx, 32, 1);
+    nk.nk_label_colored_wrap(ctx, status.ptr, if (ok) nk.nk_rgb(140, 220, 140) else nk.nk_rgb(220, 200, 120));
+
+    widgets.separator(ctx);
 }
 
 pub fn buildFractalEditorWindow(
@@ -883,8 +929,77 @@ pub fn buildScreenShaderEditorWindow(
                 widgets.sliderFloat(ctx, param.label(), &param.value, &param.range);
             }
         }
+
+        if (shader.text_count > 0) buildScreenShaderSymbols(ctx, shader);
     }
     layout.end(ctx, title, &shader.window_open);
+}
+
+const symbol_preview_px: f32 = 28;
+const symbols_per_row = 8;
+
+fn buildScreenShaderSymbols(ctx: *nk.nk_context, shader: *ScreenShaderState) void {
+    widgets.separator(ctx);
+    widgets.sectionLabel(ctx, "Symbols");
+    const atlas = &shader.glyphs;
+    for (shader.texts[0..shader.text_count], 0..) |*field, f| {
+        nk.nk_layout_row_dynamic(ctx, 18, 1);
+        nk.nk_label(ctx, field.label().ptr, @intCast(nk.NK_TEXT_LEFT));
+        nk.nk_layout_row_dynamic(ctx, 24, 1);
+        _ = nk.nk_edit_string_zero_terminated(ctx, @intCast(nk.NK_EDIT_FIELD), &field.value, field.value.len, nk.nk_filter_default);
+
+        const start = atlas.info.field_start[f];
+        const len = if (atlas.group != null) atlas.info.field_len[f] else 0;
+        if (len == 0) {
+            nk.nk_layout_row_dynamic(ctx, 16, 1);
+            nk.nk_label_colored(ctx, "(no symbols)", @intCast(nk.NK_TEXT_LEFT), widgets.dim);
+            continue;
+        }
+        const handle = ui_backend.imageHandle(atlas.id, atlas.preview_view);
+        var g: u32 = 0;
+        while (g < len) : (g += 1) {
+            if (g % symbols_per_row == 0) nk.nk_layout_row_static(ctx, symbol_preview_px, @intFromFloat(symbol_preview_px), symbols_per_row);
+            const index = start + g;
+            const region = nk.nk_rect(
+                @floatFromInt((index % glyph_atlas.cols) * glyph_atlas.cell_px),
+                @floatFromInt((index / glyph_atlas.cols) * glyph_atlas.cell_px),
+                @floatFromInt(glyph_atlas.cell_px),
+                @floatFromInt(glyph_atlas.cell_px),
+            );
+            if (nk.nk_widget_is_hovered(ctx) != 0) {
+                var tip: [96]u8 = undefined;
+                nk.nk_tooltip(ctx, codepointLabel(&tip, field.text(), atlas.symbols[index], g));
+            }
+            nk.nk_image(ctx, nk.nk_subimage_handle(handle, glyph_atlas.atlas_px, glyph_atlas.atlas_px, region));
+        }
+    }
+
+    nk.nk_layout_row_template_begin(ctx, 24);
+    nk.nk_layout_row_template_push_static(ctx, 40);
+    nk.nk_layout_row_template_push_dynamic(ctx);
+    nk.nk_layout_row_template_end(ctx);
+    nk.nk_label(ctx, "Font", @intCast(nk.NK_TEXT_LEFT));
+    _ = nk.nk_edit_string_zero_terminated(ctx, @intCast(nk.NK_EDIT_FIELD), &shader.font, shader.font.len, nk.nk_filter_default);
+    widgets.hint(ctx, "Type or paste any Unicode (Ctrl+V, or Win+. for emoji). The boxes show non-ASCII as ?, the strip shows what renders. Empty font = the system monospace; symbols it lacks come from any installed font.", widgets.dim);
+
+    switch (atlas.status) {
+        .unavailable => widgets.hint(ctx, text_raster.unavailableReason(), nk.nk_rgb(230, 90, 90)),
+        .bad_text => widgets.hint(ctx, "Text is not valid UTF-8.", nk.nk_rgb(230, 90, 90)),
+        .truncated => widgets.hint(ctx, "Over the 64-symbol limit; the rest are dropped.", nk.nk_rgb(230, 180, 90)),
+        .empty, .ready => {},
+    }
+}
+
+fn codepointLabel(buf: []u8, text: []const u8, symbol: glyph_atlas.Symbol, index: u32) [*:0]const u8 {
+    var w: std.Io.Writer = .fixed(buf[0 .. buf.len - 1]);
+    w.print("#{d}:", .{index + 1}) catch {};
+    const end = @min(@as(usize, symbol.byte_start) + symbol.byte_len, text.len);
+    const bytes = if (symbol.byte_start < end) text[symbol.byte_start..end] else "";
+    var it = (std.unicode.Utf8View.init(bytes) catch std.unicode.Utf8View.initUnchecked("")).iterator();
+    while (it.nextCodepoint()) |cp| w.print(" U+{X:0>4}", .{cp}) catch break;
+    const n = w.end;
+    buf[n] = 0;
+    return buf[0..n :0].ptr;
 }
 
 pub fn buildStereoSettingsWindow(ctx: *nk.nk_context, ws: layout.Workspace, stereo: *StereoState) void {

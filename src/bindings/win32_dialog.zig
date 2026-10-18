@@ -75,6 +75,10 @@ const sky_image_filter = filterOf(&.{
     "Radiance HDR (*.hdr)",                                      "*.hdr",
     "All files (*.*)",                                           "*.*",
 });
+const height_map_filter = filterOf(&.{
+    "Height maps (*.png;*.jpg;*.jpeg;*.tga;*.bmp;*.hdr)", "*.png;*.jpg;*.jpeg;*.tga;*.bmp;*.hdr",
+    "All files (*.*)",                                    "*.*",
+});
 const dream_filter = filterOf(&.{ "Numeric Dream scene (*.dream)", "*.dream" });
 const dream_default_ext = [_:0]u16{ 'd', 'r', 'e', 'a', 'm' };
 const mesh_filter = filterOf(&.{
@@ -137,6 +141,10 @@ pub fn pickSaveImageFile(window: *sdl.SDL_Window, out: []u8) ?SavedImagePath {
 
 pub fn pickSkyImageFile(window: *sdl.SDL_Window, out: []u8) ?usize {
     return runFileDialog(window, &sky_image_filter, null, OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_EXPLORER | OFN_HIDEREADONLY, GetOpenFileNameW, out, null);
+}
+
+pub fn pickHeightMapFile(window: *sdl.SDL_Window, out: []u8) ?usize {
+    return runFileDialog(window, &height_map_filter, null, OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_EXPLORER | OFN_HIDEREADONLY, GetOpenFileNameW, out, null);
 }
 
 pub fn pickSaveDreamFile(window: *sdl.SDL_Window, out: []u8) ?usize {

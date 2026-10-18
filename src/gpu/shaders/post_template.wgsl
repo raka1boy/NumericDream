@@ -105,6 +105,66 @@ fn pixel_noise(uv: vec2f) -> f32 {
     return hash12(uv * pp.resolution + vec2f(pp.time * POST_NOISE_TIME_RATE + pp.slot * POST_NOISE_SLOT_RATE, pp.frame * POST_NOISE_FRAME_RATE));
 }
 
+struct GlyphInfo {
+    field_start: vec4u,
+    field_len: vec4u,
+    aspect: f32,
+    count: u32,
+    cols: u32,
+    mips: u32,
+    ink: array<vec4f, 16>,
+    colour: array<vec4u, 16>,
+}
+
+@group(1) @binding(0) var<uniform> glyph_info: GlyphInfo;
+@group(1) @binding(1) var glyph_atlas: texture_2d<f32>;
+@group(1) @binding(2) var glyph_samp: sampler;
+
+const GLYPH_CELL_PX = 64.0;
+const GLYPH_FIELDS = 4u;
+const GLYPH_NONE = 0xffffffffu;
+
+fn text_length(field: u32) -> u32 {
+    if (field >= GLYPH_FIELDS) { return 0u; }
+    return glyph_info.field_len[field];
+}
+
+fn text_glyph(field: u32, i: u32) -> u32 {
+    let n = text_length(field);
+    if (n == 0u) { return GLYPH_NONE; }
+    return glyph_info.field_start[field] + min(i, n - 1u);
+}
+
+fn glyph_count() -> u32 {
+    return glyph_info.count;
+}
+
+fn glyph_aspect() -> f32 {
+    return glyph_info.aspect;
+}
+
+fn glyph_ink(g: u32) -> f32 {
+    if (g >= glyph_info.count) { return 0.0; }
+    return glyph_info.ink[g / 4u][g % 4u];
+}
+
+fn glyph_is_colour(g: u32) -> bool {
+    if (g >= glyph_info.count) { return false; }
+    return glyph_info.colour[g / 4u][g % 4u] != 0u;
+}
+
+fn glyph_sample(g: u32, uv: vec2f, size_px: f32) -> vec4f {
+    if (g >= glyph_info.count || any(uv < vec2f(0.0)) || any(uv > vec2f(1.0))) {
+        return vec4f(0.0);
+    }
+    let lod = clamp(log2(GLYPH_CELL_PX / max(size_px, 1.0)), 0.0, f32(glyph_info.mips - 1u));
+    let atlas_px = vec2f(textureDimensions(glyph_atlas));
+    let cell = vec2f(f32(g % glyph_info.cols), f32(g / glyph_info.cols));
+    let half_texel = 0.5 * exp2(ceil(lod)) / GLYPH_CELL_PX;
+    let inner = clamp(uv, vec2f(half_texel), vec2f(1.0 - half_texel));
+    return textureSampleLevel(glyph_atlas, glyph_samp, (cell + inner) * GLYPH_CELL_PX / atlas_px, lod);
+}
+
 @@EFFECT@@
 
 @fragment

@@ -613,7 +613,7 @@ fn searchBox(instances: []const FractalInstanceState) struct { center: Vec3, hal
     var half: f32 = 0;
     for (instances) |inst| {
         const spread = @max(@abs(inst.offset.x - c.x), @max(@abs(inst.offset.y - c.y), @abs(inst.offset.z - c.z)));
-        const s = inst.scale_uniform * @max(inst.scale.x, @max(inst.scale.y, inst.scale.z));
+        const s = @abs(inst.scale_uniform) * @max(@abs(inst.scale.x), @max(@abs(inst.scale.y), @abs(inst.scale.z)));
         half = @max(half, spread + 4 * s);
     }
     return .{ .center = c, .half = half };

@@ -375,7 +375,24 @@ pub fn evaluate(timeline: *const TimelineState, t_in: f32) AnimSnapshot {
 
     const span = b.time - a.time;
     const alpha = if (span > 1e-6) (t - a.time) / span else 0.0;
+    if (alpha <= 0) return a.snapshot;
+    if (alpha >= 1) return b.snapshot;
     return lerpSnapshot(a.snapshot, b.snapshot, alpha);
+}
+
+pub fn parkedKeyframe(timeline: *const TimelineState) ?usize {
+    if (timeline.playing) return null;
+    for (0..timeline.keyframe_count) |i| {
+        if (timeline.keyframes[i].time == timeline.playhead) return i;
+    }
+    return null;
+}
+
+pub fn autoKey(timeline: *TimelineState, snapshot: *const AnimSnapshot) void {
+    const idx = parkedKeyframe(timeline) orelse return;
+    const kf = &timeline.keyframes[idx].snapshot;
+    if (std.mem.eql(u8, std.mem.asBytes(kf), std.mem.asBytes(snapshot))) return;
+    kf.* = snapshot.*;
 }
 
 pub fn addKeyframe(timeline: *TimelineState, time_in: f32, snapshot: AnimSnapshot) ?usize {

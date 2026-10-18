@@ -22,6 +22,7 @@ const Vec3 = camera.Vec3;
 const formula_mod = @import("formula.zig");
 const FormulaState = formula_mod.FormulaState;
 const CustomParam = formula_mod.CustomParam;
+const formula_library = @import("formula_library.zig");
 const fft_state_mod = @import("fft_state.zig");
 const FftBakeState = fft_state_mod.FftBakeState;
 
@@ -331,9 +332,9 @@ pub fn newInstance() FractalInstanceState {
         .offset_range_y = .{ .min = -4, .max = 4 },
         .offset_range_z = .{ .min = -4, .max = 4 },
         .scale = .{ .x = 1, .y = 1, .z = 1 },
-        .scale_range_x = .{ .min = 0.1, .max = 4.0 },
-        .scale_range_y = .{ .min = 0.1, .max = 4.0 },
-        .scale_range_z = .{ .min = 0.1, .max = 4.0 },
+        .scale_range_x = .{ .min = -4.0, .max = 4.0 },
+        .scale_range_y = .{ .min = -4.0, .max = 4.0 },
+        .scale_range_z = .{ .min = -4.0, .max = 4.0 },
         .rotation = .{ .x = 0, .y = 0, .z = 0 },
         .rotation_range_x = .{ .min = -180, .max = 180 },
         .rotation_range_y = .{ .min = -180, .max = 180 },
@@ -397,6 +398,21 @@ pub fn syncShader(ctx: *Context, fractal: *FractalRenderer, allocator: std.mem.A
     fractal.syncShader(ctx, allocator, sceneFormulas(instances), variant);
 }
 
+fn wantedImage(formula: *const FormulaState) []const u8 {
+    if (formula.imageLabel() == null) return "";
+    return formula.imagePath();
+}
+
+pub fn syncImages(ctx: *const Context, fractal: *FractalRenderer, instances: []const FractalInstanceState) void {
+    var paths: [fractal_gpu.height_maps.max_slots][]const u8 = @splat("");
+    for (instances[0..@min(instances.len, max_instances)], 0..) |*inst, i| {
+        const slot = i * fractal_gpu.image_slots_per_fractal;
+        paths[slot] = wantedImage(&inst.formula);
+        for (0..@min(inst.mixin_count, max_mixins)) |j| paths[slot + 1 + j] = wantedImage(&inst.mixins[j].formula);
+    }
+    fractal.syncHeightMaps(ctx, paths);
+}
+
 pub fn drainPendingCompile(fractal: *FractalRenderer, allocator: std.mem.Allocator) void {
     if (!fractal.isCompiling()) return;
     if (fractal.pollRebuild(true)) |outcome| resolveOutcome(outcome, allocator);
@@ -437,7 +453,17 @@ fn readFormulaFile(allocator: std.mem.Allocator, formula: *FormulaState) ?Loaded
     }
 
     const io = std.Io.Threaded.global_single_threaded.io();
-    const content = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(max_formula_file_bytes)) catch |err| {
+    const content = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(max_formula_file_bytes)) catch |err| retry: {
+        if (err == error.FileNotFound) {
+            var renamed_buf: [formula.formula_path.len - 1]u8 = undefined;
+            if (formula_library.findRenamed(io, path, &renamed_buf)) |renamed| {
+                if (std.Io.Dir.cwd().readFileAlloc(io, renamed, allocator, .limited(max_formula_file_bytes))) |c| {
+                    @memcpy(formula.formula_path[0..renamed.len], renamed);
+                    formula.formula_path[renamed.len] = 0;
+                    break :retry c;
+                } else |_| {}
+            }
+        }
         var buf: [status_buf_len]u8 = undefined;
         formula.setError(std.fmt.bufPrint(&buf, "Could not read file ({s}).", .{@errorName(err)}) catch "Could not read file.");
         return null;

@@ -17,6 +17,8 @@ pub const post_process = @import("post_process.zig");
 pub const mesher = @import("mesher.zig");
 pub const particles = @import("particles.zig");
 const ParticleGpu = particles.ParticleGpu;
+pub const height_maps = @import("height_maps.zig");
+const HeightMaps = height_maps.HeightMaps;
 const PostChain = post_process.PostChain;
 const PartsPipelines = @import("parts_pipelines.zig").PartsPipelines;
 pub const gpu_timer = @import("gpu_timer.zig");
@@ -45,6 +47,11 @@ pub const max_carves = 16;
 pub const max_particle_systems = particles.max_systems;
 pub const max_codes = max_instances + max_instances * max_mixins;
 pub const no_code: f32 = -1;
+pub const image_slots_per_fractal = 1 + max_mixins;
+
+comptime {
+    std.debug.assert(height_maps.max_slots == max_instances * image_slots_per_fractal);
+}
 
 pub const uniform_ring_slots: u32 = 32;
 
@@ -417,6 +424,7 @@ fn appendFormulaWrapper(allocator: std.mem.Allocator, out: *std.ArrayList(u8), c
     const wrapper = try std.fmt.allocPrint(allocator,
         \\
         \\fn formula_{0}(pos: vec3f, p: array<f32, 8>, slot: i32) -> vec2f {{
+        \\    g_image_slot = slot * IMAGE_SLOTS_PER_FRACTAL;
         \\    var carry = IterCarry(pos, 1.0);
         \\    let trap_spec = orbit_trap(slot);
         \\    var trap = orbit_trap_begin(trap_spec);
@@ -1451,6 +1459,26 @@ fn createAdaptTarget(ctx: *const Context, layout: wgpu.WGPUBindGroupLayout, widt
     return createAdaptTargetSized(ctx, layout, 1);
 }
 
+fn createUniformGroup(
+    ctx: *const Context,
+    layout: wgpu.WGPUBindGroupLayout,
+    uniform_buffer: wgpu.WGPUBuffer,
+    particle_data: wgpu.WGPUBuffer,
+    heights: *const HeightMaps,
+) wgpu.WGPUBindGroup {
+    return wgpu.wgpuDeviceCreateBindGroup(ctx.device, &wgpu.WGPUBindGroupDescriptor{
+        .nextInChain = null,
+        .label = sv("fractal bind group"),
+        .layout = layout,
+        .entryCount = 3,
+        .entries = &[_]wgpu.WGPUBindGroupEntry{
+            .{ .nextInChain = null, .binding = 0, .buffer = uniform_buffer, .offset = 0, .size = @sizeOf(Uniforms), .sampler = null, .textureView = null },
+            .{ .nextInChain = null, .binding = 1, .buffer = particle_data, .offset = 0, .size = ParticleGpu.dataSize(), .sampler = null, .textureView = null },
+            .{ .nextInChain = null, .binding = 2, .buffer = heights.buffer, .offset = 0, .size = heights.buffer_size, .sampler = null, .textureView = null },
+        },
+    });
+}
+
 fn marchAttachments(color: wgpu.WGPUTextureView, gbuf: GBuffer, load_existing: bool) [3]wgpu.WGPURenderPassColorAttachment {
     return .{
         colorAttachment(color, load_existing),
@@ -1469,6 +1497,8 @@ pub const FractalRenderer = struct {
     bind_group: wgpu.WGPUBindGroup,
     uniform_buffer: wgpu.WGPUBuffer,
     uniform_slot_stride: u32,
+
+    height_maps: HeightMaps,
 
     mesh: ?mesher.MeshGpu = null,
 
@@ -1589,43 +1619,24 @@ pub const FractalRenderer = struct {
             .texture = std.mem.zeroes(wgpu.WGPUTextureBindingLayout),
             .storageTexture = std.mem.zeroes(wgpu.WGPUStorageTextureBindingLayout),
         };
+        var height_data_entry = particle_data_entry;
+        height_data_entry.binding = 2;
         const bind_group_layout = wgpu.wgpuDeviceCreateBindGroupLayout(ctx.device, &wgpu.WGPUBindGroupLayoutDescriptor{
             .nextInChain = null,
             .label = sv("fractal bind group layout"),
-            .entryCount = 2,
-            .entries = &[_]wgpu.WGPUBindGroupLayoutEntry{ bgl_entry, particle_data_entry },
+            .entryCount = 3,
+            .entries = &[_]wgpu.WGPUBindGroupLayoutEntry{ bgl_entry, particle_data_entry, height_data_entry },
         }) orelse return error.BindGroupLayoutCreationFailed;
         errdefer wgpu.wgpuBindGroupLayoutRelease(bind_group_layout);
 
         var particle_gpu = try ParticleGpu.init(ctx);
         errdefer particle_gpu.deinit();
 
-        const bind_group = wgpu.wgpuDeviceCreateBindGroup(ctx.device, &wgpu.WGPUBindGroupDescriptor{
-            .nextInChain = null,
-            .label = sv("fractal bind group"),
-            .layout = bind_group_layout,
-            .entryCount = 2,
-            .entries = &[_]wgpu.WGPUBindGroupEntry{
-                .{
-                    .nextInChain = null,
-                    .binding = 0,
-                    .buffer = uniform_buffer,
-                    .offset = 0,
-                    .size = @sizeOf(Uniforms),
-                    .sampler = null,
-                    .textureView = null,
-                },
-                .{
-                    .nextInChain = null,
-                    .binding = 1,
-                    .buffer = particle_gpu.data,
-                    .offset = 0,
-                    .size = ParticleGpu.dataSize(),
-                    .sampler = null,
-                    .textureView = null,
-                },
-            },
-        }) orelse return error.BindGroupCreationFailed;
+        var height_store = try HeightMaps.init(ctx, allocator);
+        errdefer height_store.deinit();
+
+        const bind_group = createUniformGroup(ctx, bind_group_layout, uniform_buffer, particle_gpu.data, &height_store) orelse
+            return error.BindGroupCreationFailed;
 
         const particle_sim_pipeline_layout = wgpu.wgpuDeviceCreatePipelineLayout(ctx.device, &wgpu.WGPUPipelineLayoutDescriptor{
             .nextInChain = null,
@@ -1848,6 +1859,7 @@ pub const FractalRenderer = struct {
             .photon_pipeline_layout = photon_pipeline_layout,
             .fft_pipeline_layout = fft_pipeline_layout,
             .uniform_layout = bind_group_layout,
+            .height_maps = height_store,
             .adapt_layout = adapt_layout,
             .uniform_slot_stride = @intCast(slot_stride),
             .accel = accel_grid,
@@ -1926,6 +1938,7 @@ pub const FractalRenderer = struct {
         wgpu.wgpuBindGroupRelease(self.bind_group);
         wgpu.wgpuBufferRelease(self.uniform_buffer);
         self.particles.deinit();
+        self.height_maps.deinit();
 
         self.post_targets.deinit();
         self.post.deinit();
@@ -2382,16 +2395,29 @@ pub const FractalRenderer = struct {
 
     pub fn stampFormulaCodes(self: *const FractalRenderer, uniforms: *Uniforms) void {
         const s = &self.scene_hashes;
+        const image_keys = &self.height_maps.slot_keys;
         for (&uniforms.instances, 0..) |*inst, i| {
             const live = i < s.instance_count;
+            const slot = i * image_slots_per_fractal;
             inst.code = if (live) self.table.codeOf(s.base[i], s.mixin_count[i] == 0) else no_code;
-            inst.formula_key = if (live) formulaKey(s.base[i]) else 0;
+            inst.formula_key = if (live) formulaKey(s.base[i] ^ image_keys[slot]) else 0;
             for (&inst.mixins, 0..) |*m, j| {
                 const used = live and j < s.mixin_count[i];
                 m.code = if (used) self.table.codeOf(s.mixins[i][j], false) else no_code;
-                m.formula_key = if (used) formulaKey(s.mixins[i][j]) else 0;
+                m.formula_key = if (used) formulaKey(s.mixins[i][j] ^ image_keys[slot + 1 + j]) else 0;
             }
         }
+    }
+
+    pub fn syncHeightMaps(self: *FractalRenderer, ctx: *const Context, paths: [height_maps.max_slots][]const u8) void {
+        if (!self.height_maps.sync(ctx, paths)) return;
+        const group = createUniformGroup(ctx, self.uniform_layout, self.uniform_buffer, self.particles.data, &self.height_maps) orelse {
+            std.log.err("Failed to rebuild the fractal bind group for new height maps", .{});
+            return;
+        };
+        wgpu.wgpuBindGroupRelease(self.bind_group);
+        self.bind_group = group;
+        self.content_generation +%= 1;
     }
 
     pub fn syncShader(self: *FractalRenderer, ctx: *const Context, allocator: std.mem.Allocator, scene: SceneFormulas, variant: ShaderVariant) void {

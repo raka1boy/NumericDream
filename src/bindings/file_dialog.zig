@@ -8,6 +8,7 @@ const impl = switch (builtin.os.tag) {
 pub const pickWgslFile = impl.pickWgslFile;
 pub const pickSaveImageFile = impl.pickSaveImageFile;
 pub const pickSkyImageFile = impl.pickSkyImageFile;
+pub const pickHeightMapFile = impl.pickHeightMapFile;
 pub const pickSaveDreamFile = impl.pickSaveDreamFile;
 pub const pickOpenDreamFile = impl.pickOpenDreamFile;
 pub const pickFolder = impl.pickFolder;

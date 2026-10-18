@@ -41,6 +41,77 @@ const UiUniforms = extern struct {
     projection: [16]f32,
 };
 
+const font_texture_id: c_int = 1;
+const max_images = 32;
+
+const ImageEntry = struct {
+    id: c_int,
+    view: wgpu.WGPUTextureView,
+    group: wgpu.WGPUBindGroup = null,
+    used: bool = true,
+};
+
+var images: [max_images]ImageEntry = undefined;
+var image_count: usize = 0;
+
+pub fn imageHandle(id: u32, view: wgpu.WGPUTextureView) nk.nk_handle {
+    const key: c_int = @intCast(id);
+    for (images[0..image_count]) |*e| {
+        if (e.id == key) {
+            e.used = true;
+            return nk.nk_handle_id(key);
+        }
+    }
+    if (image_count >= max_images or view == null) return nk.nk_handle_id(font_texture_id);
+    wgpu.wgpuTextureViewAddRef(view);
+    images[image_count] = .{ .id = key, .view = view };
+    image_count += 1;
+    return nk.nk_handle_id(key);
+}
+
+fn releaseImage(e: *ImageEntry) void {
+    if (e.group != null) wgpu.wgpuBindGroupRelease(e.group);
+    wgpu.wgpuTextureViewRelease(e.view);
+}
+
+fn sweepImages() void {
+    var kept: usize = 0;
+    for (images[0..image_count]) |*e| {
+        if (!e.used) {
+            releaseImage(e);
+            continue;
+        }
+        images[kept] = e.*;
+        images[kept].used = false;
+        kept += 1;
+    }
+    image_count = kept;
+}
+
+fn clipboardPaste(_: nk.nk_handle, edit: [*c]nk.nk_text_edit) callconv(.c) void {
+    const text = sdl.SDL_GetClipboardText() orelse return;
+    defer sdl.SDL_free(text);
+    var rest: []const u8 = std.mem.span(text);
+    while (rest.len > 0) {
+        const cut = std.mem.indexOfScalar(u8, rest, '\r') orelse rest.len;
+        if (cut > 0) nk.nk_textedit_text(edit, rest.ptr, @intCast(cut));
+        rest = rest[@min(cut + 1, rest.len)..];
+    }
+}
+
+fn clipboardCopy(_: nk.nk_handle, text: [*c]const u8, runes: c_int) callconv(.c) void {
+    if (runes <= 0 or text == null) return;
+    var n: usize = 0;
+    var left: usize = @intCast(runes);
+    while (left > 0 and text[n] != 0) : (left -= 1) {
+        n += std.unicode.utf8ByteSequenceLength(text[n]) catch 1;
+    }
+    const buf = std.heap.c_allocator.allocSentinel(u8, n, 0) catch return;
+    defer std.heap.c_allocator.free(buf);
+    @memcpy(buf[0..n], text[0..n]);
+    _ = sdl.SDL_SetClipboardText(buf.ptr);
+}
+
 pub const NuklearBackend = struct {
     ctx: nk.nk_context,
     atlas: nk.nk_font_atlas,
@@ -51,6 +122,7 @@ pub const NuklearBackend = struct {
     null_texture: nk.nk_draw_null_texture,
 
     pipeline: wgpu.WGPURenderPipeline,
+    bind_group_layout: wgpu.WGPUBindGroupLayout,
     bind_group: wgpu.WGPUBindGroup,
     uniform_buffer: wgpu.WGPUBuffer,
     font_texture: wgpu.WGPUTexture,
@@ -70,7 +142,7 @@ pub const NuklearBackend = struct {
 
         var w: c_int = 0;
         var h: c_int = 0;
-        const pixels = nk.nk_font_atlas_bake(&atlas, &w, &h, @intCast(nk.NK_FONT_ATLAS_ALPHA8)) orelse
+        const pixels = nk.nk_font_atlas_bake(&atlas, &w, &h, @intCast(nk.NK_FONT_ATLAS_RGBA32)) orelse
             return error.NuklearFontBakeFailed;
 
         const font_texture = wgpu.wgpuDeviceCreateTexture(gpu_ctx.device, &wgpu.WGPUTextureDescriptor{
@@ -79,7 +151,7 @@ pub const NuklearBackend = struct {
             .usage = wgpu.WGPUTextureUsage_TextureBinding | wgpu.WGPUTextureUsage_CopyDst,
             .dimension = wgpu.WGPUTextureDimension_2D,
             .size = .{ .width = @intCast(w), .height = @intCast(h), .depthOrArrayLayers = 1 },
-            .format = wgpu.WGPUTextureFormat_R8Unorm,
+            .format = wgpu.WGPUTextureFormat_RGBA8Unorm,
             .mipLevelCount = 1,
             .sampleCount = 1,
             .viewFormatCount = 0,
@@ -95,16 +167,18 @@ pub const NuklearBackend = struct {
                 .aspect = wgpu.WGPUTextureAspect_All,
             },
             pixels,
-            @intCast(w * h),
-            &wgpu.WGPUTexelCopyBufferLayout{ .offset = 0, .bytesPerRow = @intCast(w), .rowsPerImage = @intCast(h) },
+            @intCast(w * h * 4),
+            &wgpu.WGPUTexelCopyBufferLayout{ .offset = 0, .bytesPerRow = @intCast(w * 4), .rowsPerImage = @intCast(h) },
             &wgpu.WGPUExtent3D{ .width = @intCast(w), .height = @intCast(h), .depthOrArrayLayers = 1 },
         );
 
         var null_texture: nk.nk_draw_null_texture = undefined;
-        nk.nk_font_atlas_end(&atlas, nk.nk_handle_id(1), &null_texture);
+        nk.nk_font_atlas_end(&atlas, nk.nk_handle_id(font_texture_id), &null_texture);
 
         var ctx: nk.nk_context = std.mem.zeroes(nk.nk_context);
         if (nk.nk_init_default(&ctx, &font.*.handle) == 0) return error.NuklearInitFailed;
+        ctx.clip.paste = clipboardPaste;
+        ctx.clip.copy = clipboardCopy;
 
         var cmds: nk.nk_buffer = std.mem.zeroes(nk.nk_buffer);
         var vbuf: nk.nk_buffer = std.mem.zeroes(nk.nk_buffer);
@@ -162,7 +236,7 @@ pub const NuklearBackend = struct {
             .entryCount = bgl_entries.len,
             .entries = &bgl_entries,
         }) orelse return error.NuklearBindGroupLayoutFailed;
-        defer wgpu.wgpuBindGroupLayoutRelease(bind_group_layout);
+        errdefer wgpu.wgpuBindGroupLayoutRelease(bind_group_layout);
 
         const bind_group = wgpu.wgpuDeviceCreateBindGroup(gpu_ctx.device, &wgpu.WGPUBindGroupDescriptor{
             .nextInChain = null,
@@ -272,6 +346,7 @@ pub const NuklearBackend = struct {
             .ebuf = ebuf,
             .null_texture = null_texture,
             .pipeline = pipeline,
+            .bind_group_layout = bind_group_layout,
             .bind_group = bind_group,
             .uniform_buffer = uniform_buffer,
             .font_texture = font_texture,
@@ -289,6 +364,9 @@ pub const NuklearBackend = struct {
         wgpu.wgpuBufferRelease(self.index_buffer);
         wgpu.wgpuRenderPipelineRelease(self.pipeline);
         wgpu.wgpuBindGroupRelease(self.bind_group);
+        for (images[0..image_count]) |*e| releaseImage(e);
+        image_count = 0;
+        wgpu.wgpuBindGroupLayoutRelease(self.bind_group_layout);
         wgpu.wgpuBufferRelease(self.uniform_buffer);
         wgpu.wgpuSamplerRelease(self.sampler);
         wgpu.wgpuTextureViewRelease(self.font_texture_view);
@@ -438,11 +516,35 @@ pub const NuklearBackend = struct {
                 @min(w, @as(u32, @intFromFloat(width)) -| x),
                 @min(h, @as(u32, @intFromFloat(height)) -| y),
             );
+            wgpu.wgpuRenderPassEncoderSetBindGroup(pass, 0, self.groupFor(gpu_ctx, cmd.*.texture.id), 0, null);
             wgpu.wgpuRenderPassEncoderDrawIndexed(pass, cmd.*.elem_count, 1, offset, 0, 0);
             offset += cmd.*.elem_count;
         }
 
         nk.nk_clear(&self.ctx);
+        sweepImages();
+    }
+
+    fn groupFor(self: *NuklearBackend, gpu_ctx: *const Context, id: c_int) wgpu.WGPUBindGroup {
+        if (id == font_texture_id) return self.bind_group;
+        for (images[0..image_count]) |*e| {
+            if (e.id != id) continue;
+            if (e.group == null) {
+                e.group = wgpu.wgpuDeviceCreateBindGroup(gpu_ctx.device, &wgpu.WGPUBindGroupDescriptor{
+                    .nextInChain = null,
+                    .label = sv("nuklear image bind group"),
+                    .layout = self.bind_group_layout,
+                    .entryCount = 3,
+                    .entries = &[_]wgpu.WGPUBindGroupEntry{
+                        .{ .nextInChain = null, .binding = 0, .buffer = self.uniform_buffer, .offset = 0, .size = @sizeOf(UiUniforms), .sampler = null, .textureView = null },
+                        .{ .nextInChain = null, .binding = 1, .buffer = null, .offset = 0, .size = 0, .sampler = self.sampler, .textureView = null },
+                        .{ .nextInChain = null, .binding = 2, .buffer = null, .offset = 0, .size = 0, .sampler = null, .textureView = e.view },
+                    },
+                });
+            }
+            if (e.group != null) return e.group;
+        }
+        return self.bind_group;
     }
 };
 

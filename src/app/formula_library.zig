@@ -51,14 +51,36 @@ pub const Library = struct {
     }
 };
 
-fn parseFileName(file_name: []const u8, out: *FormulaEntry) bool {
-    const ext = ".wgsl";
-    if (!std.mem.endsWith(u8, file_name, ext)) return false;
-    const stem = file_name[0 .. file_name.len - ext.len];
-    if (stem.len == 0) return false;
+const formula_ext = ".wgsl";
 
-    var tokens = std.mem.tokenizeScalar(u8, stem, '_');
-    const name = tokens.next() orelse return false;
+pub fn formulaName(file_name: []const u8) ?[]const u8 {
+    if (!std.mem.endsWith(u8, file_name, formula_ext)) return null;
+    var tokens = std.mem.tokenizeScalar(u8, file_name[0 .. file_name.len - formula_ext.len], '_');
+    return tokens.next();
+}
+
+pub fn findRenamed(io: std.Io, path: []const u8, out: []u8) ?[]const u8 {
+    const sep = std.mem.lastIndexOfAny(u8, path, "/\\");
+    const dir_path = if (sep) |s| path[0..s] else ".";
+    const prefix = if (sep) |s| path[0 .. s + 1] else "";
+    const name = formulaName(path[prefix.len..]) orelse return null;
+
+    var dir = std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch return null;
+    defer dir.close(io);
+    var it = dir.iterate();
+    while (it.next(io) catch null) |entry| {
+        if (entry.kind != .file) continue;
+        const entry_name = formulaName(entry.name) orelse continue;
+        if (!std.mem.eql(u8, entry_name, name)) continue;
+        return std.fmt.bufPrint(out, "{s}{s}", .{ prefix, entry.name }) catch null;
+    }
+    return null;
+}
+
+fn parseFileName(file_name: []const u8, out: *FormulaEntry) bool {
+    const name = formulaName(file_name) orelse return false;
+    var tokens = std.mem.tokenizeScalar(u8, file_name[0 .. file_name.len - formula_ext.len], '_');
+    _ = tokens.next();
     const n = @min(name.len, out.name.len);
     @memcpy(out.name[0..n], name[0..n]);
     out.name_len = n;

@@ -29,6 +29,5 @@ fn vs_main(in: VertexIn) -> VertexOut {
 
 @fragment
 fn fs_main(in: VertexOut) -> @location(0) vec4f {
-    let tex_alpha = textureSample(font_texture, font_sampler, in.uv).r;
-    return vec4f(in.color.rgb, in.color.a * tex_alpha);
+    return in.color * textureSample(font_texture, font_sampler, in.uv);
 }

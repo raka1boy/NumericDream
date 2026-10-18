@@ -5,6 +5,7 @@ const Context = webgpu_context.Context;
 const g_error_sink = &webgpu_context.g_error_sink;
 const sv = webgpu_context.sv;
 const gpu_timer = @import("gpu_timer.zig");
+const glyph_atlas = @import("glyph_atlas.zig");
 
 const post_template = @embedFile("shaders/post_template.wgsl");
 const effect_marker = "@@EFFECT@@";
@@ -39,6 +40,7 @@ comptime {
 
 pub const Effect = struct {
     pipeline: wgpu.WGPURenderPipeline,
+    glyph_group: wgpu.WGPUBindGroup = null,
     params0: [4]f32 = .{ 0, 0, 0, 0 },
     params1: [4]f32 = .{ 0, 0, 0, 0 },
 };
@@ -85,6 +87,9 @@ pub const Targets = struct {
 pub const PostChain = struct {
     format: wgpu.WGPUTextureFormat,
     bind_group_layout: wgpu.WGPUBindGroupLayout,
+    glyph_layout: wgpu.WGPUBindGroupLayout,
+    glyph_sampler: wgpu.WGPUSampler,
+    empty_glyphs: glyph_atlas.GlyphAtlas,
     pipeline_layout: wgpu.WGPUPipelineLayout,
     uniform_buffer: [max_effects]wgpu.WGPUBuffer,
 
@@ -104,11 +109,18 @@ pub const PostChain = struct {
         }) orelse return error.BindGroupLayoutCreationFailed;
         errdefer wgpu.wgpuBindGroupLayoutRelease(bgl);
 
+        const glyph_layout = glyph_atlas.createLayout(ctx.device) orelse return error.BindGroupLayoutCreationFailed;
+        errdefer wgpu.wgpuBindGroupLayoutRelease(glyph_layout);
+        const glyph_sampler = wgpu.wgpuDeviceCreateSampler(ctx.device, &webgpu_context.linearSamplerDesc(sv("glyph atlas sampler"))) orelse return error.SamplerCreationFailed;
+        errdefer wgpu.wgpuSamplerRelease(glyph_sampler);
+        var empty_glyphs = try glyph_atlas.createEmpty(ctx, glyph_layout, glyph_sampler);
+        errdefer empty_glyphs.deinit();
+
         const layout = wgpu.wgpuDeviceCreatePipelineLayout(ctx.device, &wgpu.WGPUPipelineLayoutDescriptor{
             .nextInChain = null,
             .label = sv("post effect pipeline layout"),
-            .bindGroupLayoutCount = 1,
-            .bindGroupLayouts = &[_]wgpu.WGPUBindGroupLayout{bgl},
+            .bindGroupLayoutCount = 2,
+            .bindGroupLayouts = &[_]wgpu.WGPUBindGroupLayout{ bgl, glyph_layout },
             .immediateSize = 0,
         }) orelse return error.PipelineLayoutCreationFailed;
         errdefer wgpu.wgpuPipelineLayoutRelease(layout);
@@ -128,6 +140,9 @@ pub const PostChain = struct {
         return .{
             .format = format,
             .bind_group_layout = bgl,
+            .glyph_layout = glyph_layout,
+            .glyph_sampler = glyph_sampler,
+            .empty_glyphs = empty_glyphs,
             .pipeline_layout = layout,
             .uniform_buffer = buffers,
         };
@@ -136,6 +151,9 @@ pub const PostChain = struct {
     pub fn deinit(self: *PostChain) void {
         for (self.uniform_buffer) |b| if (b != null) wgpu.wgpuBufferRelease(b);
         wgpu.wgpuPipelineLayoutRelease(self.pipeline_layout);
+        self.empty_glyphs.deinit();
+        wgpu.wgpuSamplerRelease(self.glyph_sampler);
+        wgpu.wgpuBindGroupLayoutRelease(self.glyph_layout);
         wgpu.wgpuBindGroupLayoutRelease(self.bind_group_layout);
     }
 
@@ -296,7 +314,7 @@ pub const PostChain = struct {
     ) ?wgpu.WGPUBindGroup {
         if (!targets.isReady() or resolve_pipeline == null or effects.len == 0) return null;
 
-        fullscreenPass(encoder, "post dof resolve pass", targets.view[0], resolve_pipeline, source_group);
+        fullscreenPass(encoder, "post dof resolve pass", targets.view[0], resolve_pipeline, source_group, null);
 
         var src: usize = 0;
         for (effects, 0..) |effect, i| {
@@ -320,7 +338,8 @@ pub const PostChain = struct {
             wgpu.wgpuQueueWriteBuffer(ctx.queue, self.uniform_buffer[i], 0, &uniforms, @sizeOf(PostUniforms));
 
             const dst = 1 - src;
-            fullscreenPass(encoder, "post effect pass", targets.view[dst], effect.pipeline, targets.effect_group[i][src]);
+            const glyphs = if (effect.glyph_group != null) effect.glyph_group else self.empty_glyphs.group;
+            fullscreenPass(encoder, "post effect pass", targets.view[dst], effect.pipeline, targets.effect_group[i][src], glyphs);
             src = dst;
         }
         return targets.read_group[src];
@@ -333,6 +352,7 @@ fn fullscreenPass(
     target: wgpu.WGPUTextureView,
     pipeline: wgpu.WGPURenderPipeline,
     group: wgpu.WGPUBindGroup,
+    glyph_group: wgpu.WGPUBindGroup,
 ) void {
     const pass = wgpu.wgpuCommandEncoderBeginRenderPass(encoder, &wgpu.WGPURenderPassDescriptor{
         .nextInChain = null,
@@ -353,6 +373,7 @@ fn fullscreenPass(
     }) orelse return;
     wgpu.wgpuRenderPassEncoderSetPipeline(pass, pipeline);
     wgpu.wgpuRenderPassEncoderSetBindGroup(pass, 0, group, 0, null);
+    if (glyph_group != null) wgpu.wgpuRenderPassEncoderSetBindGroup(pass, 1, glyph_group, 0, null);
     wgpu.wgpuRenderPassEncoderDraw(pass, 3, 1, 0, 0);
     wgpu.wgpuRenderPassEncoderEnd(pass);
     wgpu.wgpuRenderPassEncoderRelease(pass);

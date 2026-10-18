@@ -122,12 +122,13 @@ fn buildTrackRow(
     var remove_index: ?usize = null;
     var recapture_index: ?usize = null;
     var handled_click = false;
+    const parked = animation.parkedKeyframe(timeline);
 
     for (0..timeline.keyframe_count) |i| {
         const kf_time = timeline.keyframes[i].time;
         const cx = bounds.x + (kf_time / duration) * bounds.w;
         const marker = nk.nk_rect(cx - marker_w / 2, bounds.y, marker_w, bounds.h);
-        nk.nk_fill_rect(canvas, marker, 2, nk.nk_rgb(120, 170, 230));
+        nk.nk_fill_rect(canvas, marker, 2, if (parked == i) nk.nk_rgb(255, 220, 80) else nk.nk_rgb(120, 170, 230));
         nk.nk_stroke_rect(canvas, marker, 2, 1.0, nk.nk_rgb(230, 230, 230));
 
         if (nk.nk_input_mouse_clicked(&ctx.input, nk.NK_BUTTON_RIGHT, marker) != 0) {

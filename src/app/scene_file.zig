@@ -53,9 +53,13 @@ const current_version: u32 = 12;
 
 const ParamDto = struct { name: []const u8, value: f32, range: SliderRange };
 
+const TextDto = struct { name: []const u8, value: []const u8 };
+
 const ScreenShaderDto = struct {
     path: []const u8,
     params: []const ParamDto,
+    texts: []const TextDto = &.{},
+    font: []const u8 = "",
     enabled: bool = true,
     animated: bool = false,
 };
@@ -144,7 +148,7 @@ fn skyFromDto(sky: *SkyState, dto: SkyDto) void {
     sky.setPath(dto.image_path);
 }
 
-const FormulaDto = struct { path: []const u8, params: []const ParamDto };
+const FormulaDto = struct { path: []const u8, params: []const ParamDto, image: []const u8 = "" };
 const MixinDto = struct { formula: FormulaDto, iterations: f32, iterations_range: SliderRange };
 
 const InstanceDto = struct {
@@ -239,7 +243,7 @@ fn instanceToDto(inst: *const FractalInstanceState, scratch: *InstanceScratch) I
         const m = &inst.mixins[j];
         for (0..m.formula.custom_param_count) |i| scratch.mixin_params[j][i] = paramToDto(&m.formula.custom_params[i]);
         scratch.mixins[j] = .{
-            .formula = .{ .path = pathSlice(&m.formula), .params = scratch.mixin_params[j][0..m.formula.custom_param_count] },
+            .formula = .{ .path = pathSlice(&m.formula), .params = scratch.mixin_params[j][0..m.formula.custom_param_count], .image = m.formula.imagePath() },
             .iterations = m.iterations,
             .iterations_range = m.iterations_range,
         };
@@ -266,7 +270,7 @@ fn instanceToDto(inst: *const FractalInstanceState, scratch: *InstanceScratch) I
         .combine_mode = inst.combine_mode,
         .blend_k = inst.blend_k,
         .blend_k_range = inst.blend_k_range,
-        .formula = .{ .path = pathSlice(&inst.formula), .params = scratch.params[0..inst.formula.custom_param_count] },
+        .formula = .{ .path = pathSlice(&inst.formula), .params = scratch.params[0..inst.formula.custom_param_count], .image = inst.formula.imagePath() },
         .mixins = scratch.mixins[0..inst.mixin_count],
         .hybrid_base_iters = inst.hybrid_base_iters,
         .hybrid_base_iters_range = inst.hybrid_base_iters_range,
@@ -340,12 +344,16 @@ pub fn encodeScene(
     for (instances, 0..) |*inst, i| instance_dtos[i] = instanceToDto(inst, &scratch[i]);
 
     var screen_params: [max_screen_shaders][max_params]ParamDto = undefined;
+    var screen_texts: [max_screen_shaders][screen_shader.max_text_fields]TextDto = undefined;
     var screen_dtos: [max_screen_shaders]ScreenShaderDto = undefined;
     for (screen_shaders, 0..) |*s, i| {
         for (0..s.param_count) |p| screen_params[i][p] = paramToDto(&s.params[p]);
+        for (0..s.text_count) |t| screen_texts[i][t] = .{ .name = s.texts[t].label(), .value = s.texts[t].text() };
         screen_dtos[i] = .{
             .path = s.pathSlice(),
             .params = screen_params[i][0..s.param_count],
+            .texts = screen_texts[i][0..s.text_count],
+            .font = s.fontSlice(),
             .enabled = s.enabled,
             .animated = s.animated,
         };
@@ -588,6 +596,7 @@ pub fn applyScene(
             }
             instances[i].window_open = o.window_open;
         }
+        instances[i].formula.setImagePath(src.formula.image);
 
         instances[i].mixin_count = @min(src.mixins.len, max_mixins);
         for (0..instances[i].mixin_count) |j| {
@@ -604,6 +613,7 @@ pub fn applyScene(
                     instances[i].mixins[j].window_open = o.mixins[j].window_open;
                 }
             }
+            instances[i].mixins[j].formula.setImagePath(msrc.formula.image);
         }
 
         instances[i].color_count = @min(src.colors.len, max_color_stops);
@@ -663,6 +673,10 @@ pub fn applyScene(
         screen_shaders[i].enabled = src.enabled;
         screen_shaders[i].animated = src.animated;
         applyParamDtosTo(&screen_shaders[i].params, screen_shaders[i].param_count, src.params);
+        screen_shaders[i].setFont(src.font);
+        for (src.texts) |saved| {
+            if (screen_shaders[i].textField(saved.name)) |field| field.setText(saved.value);
+        }
     }
     for (0..old_shader_count) |i| {
         if (!kept_shader[i]) old_shaders[i].deinit(allocator);

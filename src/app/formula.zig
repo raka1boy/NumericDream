@@ -41,6 +41,7 @@ pub fn defaultBuiltinParams(out: *[max_params]CustomParam) usize {
 
 pub const FormulaState = struct {
     formula_path: [256:0]u8,
+    image_path: [256:0]u8 = std.mem.zeroes([256:0]u8),
     formula_body: ?[]u8,
     formula_error: [192:0]u8,
     formula_error_len: usize,
@@ -78,6 +79,21 @@ pub const FormulaState = struct {
 
     pub fn clearError(self: *FormulaState) void {
         self.formula_error_len = 0;
+    }
+
+    pub fn imagePath(self: *const FormulaState) []const u8 {
+        const n = std.mem.indexOfScalar(u8, &self.image_path, 0) orelse self.image_path.len;
+        return self.image_path[0..n];
+    }
+
+    pub fn setImagePath(self: *FormulaState, path: []const u8) void {
+        const n = @min(path.len, self.image_path.len - 1);
+        @memcpy(self.image_path[0..n], path[0..n]);
+        @memset(self.image_path[n..], 0);
+    }
+
+    pub fn imageLabel(self: *const FormulaState) ?[]const u8 {
+        return imageDirective(self.formula_body orelse return null);
     }
 
     pub fn packedParams(self: *const FormulaState) [2][4]f32 {
@@ -134,6 +150,17 @@ pub fn parseFormulaParams(content: []const u8, out: *[max_params]CustomParam, ou
         out[out_count.*] = param;
         out_count.* += 1;
     }
+}
+
+pub fn imageDirective(content: []const u8) ?[]const u8 {
+    const marker = "@image";
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line| {
+        const idx = std.mem.indexOf(u8, line, marker) orelse continue;
+        const label = std.mem.trim(u8, line[idx + marker.len ..], " \t\r");
+        return if (label.len > 0) label else "Image";
+    }
+    return null;
 }
 
 pub fn missingContractFn(content: []const u8) ?[]const u8 {

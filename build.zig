@@ -324,8 +324,13 @@ pub fn build(b: *std.Build) void {
             for ([_][]const u8{
                 "user32",   "gdi32",    "shell32", "advapi32", "ole32",
                 "oleaut32", "imm32",    "version", "setupapi", "winmm",
-                "shlwapi",  "comdlg32",
+                "shlwapi",  "comdlg32", "d2d1",    "dwrite",
+                "windowscodecs",
             }) |lib| mod.linkSystemLibrary(lib, .{ .use_pkg_config = .no });
+            mod.addCSourceFile(.{
+                .file = b.path("src/bindings/text_raster_win32.c"),
+                .flags = &.{"-std=gnu11"},
+            });
         },
         .linux => {
             if (sdl_inc) |inc| {

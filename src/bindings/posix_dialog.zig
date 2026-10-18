@@ -35,6 +35,11 @@ const sky_image_filters = [_]Filter{
     .{ .desc = "All files", .patterns = &.{"*"} },
 };
 
+const height_map_filters = [_]Filter{
+    .{ .desc = "Height maps", .patterns = &.{ "*.png", "*.jpg", "*.jpeg", "*.tga", "*.bmp", "*.hdr" } },
+    .{ .desc = "All files", .patterns = &.{"*"} },
+};
+
 const dream_filters = [_]Filter{
     .{ .desc = "Numeric Dream scene (*.dream)", .patterns = &.{"*.dream"} },
 };
@@ -163,6 +168,10 @@ pub fn pickSaveImageFile(window: *sdl.SDL_Window, out: []u8) ?SavedImagePath {
 
 pub fn pickSkyImageFile(window: *sdl.SDL_Window, out: []u8) ?usize {
     return pick(window, .open_file, "Choose sky image", &sky_image_filters, out);
+}
+
+pub fn pickHeightMapFile(window: *sdl.SDL_Window, out: []u8) ?usize {
+    return pick(window, .open_file, "Choose height map image", &height_map_filters, out);
 }
 
 pub fn pickSaveDreamFile(window: *sdl.SDL_Window, out: []u8) ?usize {
