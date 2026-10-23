@@ -40,6 +40,8 @@ const oidn = @import("../bindings/oidn.zig");
 const ProgressOverlay = @import("../gpu/progress_overlay.zig").ProgressOverlay;
 const accel_gpu = @import("../gpu/accel.zig");
 const AccelState = @import("../app/accel_state.zig").AccelState;
+const FogVisState = @import("../app/fog_vis_state.zig").FogVisState;
+const fog_vis_gpu = @import("../gpu/fog_vis.zig");
 const photons_gpu = @import("../gpu/photons.zig");
 const PhotonSettings = @import("../app/photon_state.zig").PhotonSettings;
 const render_precision = @import("../app/render_precision.zig");
@@ -48,6 +50,9 @@ const RenderSettingsState = render_precision.RenderSettingsState;
 const animation = @import("../app/animation.zig");
 const export_mesh = @import("../app/export_mesh.zig");
 const PlayState = @import("../app/play_mode.zig").PlayState;
+const flat_windows = @import("flat_windows.zig");
+const NavigatorState = @import("../app/navigator.zig").NavigatorState;
+const NavigatorRenderer = @import("../gpu/navigator.zig").NavigatorRenderer;
 
 pub const App = struct {
     window: *sdl.SDL_Window,
@@ -86,6 +91,7 @@ pub const App = struct {
     render_settings: *RenderSettingsState,
     photon: *PhotonSettings,
     accel_state: *AccelState,
+    fog_vis_state: *FogVisState,
     mc: *McRenderState,
     mc_sample_count: *const u32,
 
@@ -103,6 +109,9 @@ pub const App = struct {
 
     library_panel: *formula_library.PanelState,
     screen_library_panel: *formula_library.PanelState,
+
+    navigator: *NavigatorState,
+    navigator_target: *const NavigatorRenderer,
 };
 
 const Panels = struct {
@@ -292,7 +301,7 @@ fn buildMenuBar(ctx: *nk.nk_context, app: *const App, ws: layout.Workspace) ?Act
         }
 
         nk.nk_layout_row_push(ctx, 72);
-        if (nk.nk_menu_begin_label(ctx, "Windows", @intCast(nk.NK_TEXT_LEFT), nk.nk_vec2(240, 300)) != 0) {
+        if (nk.nk_menu_begin_label(ctx, "Windows", @intCast(nk.NK_TEXT_LEFT), nk.nk_vec2(240, 360)) != 0) {
             nk.nk_layout_row_dynamic(ctx, 22, 1);
             _ = menuCheck(ctx, "Scene", &panels.scene);
             _ = menuCheck(ctx, "Render", &panels.render);
@@ -302,6 +311,8 @@ fn buildMenuBar(ctx: *nk.nk_context, app: *const App, ws: layout.Workspace) ?Act
             _ = menuCheck(ctx, "Sky", &app.sky.window_open);
             _ = menuCheck(ctx, "Simple render & approximations", &app.render_parts.window_open);
             _ = menuCheck(ctx, "Stereo settings", &app.stereo.settings_open);
+            _ = menuCheck(ctx, "2D view", &app.camera.flat.window_open);
+            _ = menuCheck(ctx, "Navigator", &app.navigator.open);
             if (menuCheck(ctx, "Render animation", &app.anim_render.window_open)) action = .render_animation;
             if (menuCheck(ctx, "Mesh export", &app.mesh_export.window_open)) action = .export_mesh;
             nk.nk_menu_end(ctx);
@@ -330,7 +341,17 @@ fn statusText(app: *const App, buf: []u8) [:0]const u8 {
         if (w.end > 0) w.writeAll("   |   ") catch {};
         w.writeAll("Specialising shader...") catch {};
     }
-    if (app.mc.enabled) {
+    if (app.fractal.coreCompiling()) {
+        if (w.end > 0) w.writeAll("   |   ") catch {};
+        w.writeAll("Compiling 3D shader...") catch {};
+    }
+    if (app.camera.mode_2d) {
+        const target = app.camera.flat.sampleCount();
+        if (target > 1) {
+            if (w.end > 0) w.writeAll("   |   ") catch {};
+            w.print("AA {d} / {d}", .{ app.mc_sample_count.*, target }) catch {};
+        }
+    } else if (app.mc.enabled) {
         if (w.end > 0) w.writeAll("   |   ") catch {};
         w.print("MC {d} / {d}", .{ app.mc_sample_count.*, @as(u32, @intFromFloat(@max(app.mc.max_samples, 1))) }) catch {};
     }
@@ -618,6 +639,10 @@ fn buildRenderWindow(ctx: *nk.nk_context, app: *const App, ws: layout.Workspace)
             defer widgets.endSection(ctx);
             buildAccelSection(ctx, app.accel_state, &app.fractal.accel);
         }
+        if (widgets.beginSection(ctx, "Fog shadow grid", .closed)) {
+            defer widgets.endSection(ctx);
+            buildFogVisSection(ctx, app.fog_vis_state, &app.fractal.fog_vis);
+        }
     }
     layout.end(ctx, title, &panels.render);
 }
@@ -648,6 +673,7 @@ fn buildQualityTable(ctx: *nk.nk_context, app: *const App) void {
     widgets.sliderPair(ctx, "Reflection bounces", true, .{ .value = app.max_reflection_bounces, .range = app.max_reflection_bounces_range }, .{ .value = &rs.max_reflection_bounces, .range = &rs.max_reflection_bounces_range });
     widgets.sliderPair(ctx, "Render scale", false, .{ .value = app.preview_quality, .range = app.preview_quality_range }, null);
     widgets.sliderPair(ctx, "Fog samples", true, null, .{ .value = &rs.fog_samples, .range = &rs.fog_samples_range });
+    if (app.mc.enabled) widgets.hint(ctx, "MC Render is on, so fog uses Rays per MC sample instead of Fog samples.", widgets.dim);
 
     if (widgets.beginSubsection(ctx, "precision", "Ray march precision", .closed)) {
         defer widgets.endSection(ctx);
@@ -658,6 +684,9 @@ fn buildQualityTable(ctx: *nk.nk_context, app: *const App) void {
         widgets.sliderPair(ctx, "HQ footprint budget", false, .{ .value = &p.hq_footprint_budget_px, .range = &p.hq_footprint_budget_px_range }, .{ .value = &f.hq_footprint_budget_px, .range = &f.hq_footprint_budget_px_range });
         widgets.sliderPair(ctx, "Bisection refine steps", true, .{ .value = &p.refine_fast, .range = &p.refine_fast_range }, .{ .value = &f.refine_fast, .range = &f.refine_fast_range });
         widgets.sliderPair(ctx, "Bisection refine steps (hq)", true, .{ .value = &p.refine_hq, .range = &p.refine_hq_range }, .{ .value = &f.refine_hq, .range = &f.refine_hq_range });
+        checkbox(ctx, "Verify every step (preview)", &p.verify_each_step);
+        checkbox(ctx, "Verify every step (final render)", &f.verify_each_step);
+        widgets.hint(ctx, "Off: one DE per step, bisect only on a hit. On: a second DE per step catches overstepping DEs.", widgets.dim);
     }
 }
 
@@ -702,6 +731,8 @@ fn buildPhotonSection(ctx: *nk.nk_context, photon: *PhotonSettings, map: *const 
         "One trace stands for the whole accumulation", widgets.dim);
 
     if (photon.refine_per_sample) {
+        widgets.sliderInt(ctx, "Paths per sample (%)", &photon.sample_paths_pct, &photon.sample_paths_pct_range);
+        widgets.hint(ctx, "After the first sample, each retrace shoots this share of Photon paths. Accumulation averages the traces, so lower is faster per sample but grainier early on.", widgets.dim);
         checkbox(ctx, "Progressive radius", &photon.progressive);
         if (photon.progressive) {
             widgets.sliderFloat(ctx, "Progressive start (x)", &photon.progressive_start, &photon.progressive_start_range);
@@ -711,6 +742,11 @@ fn buildPhotonSection(ctx: *nk.nk_context, photon: *PhotonSettings, map: *const 
     if (widgets.beginSubsection(ctx, "photon advanced", "Advanced", .closed)) {
         defer widgets.endSection(ctx);
         widgets.sliderFloat(ctx, "Bounce light radius (x)", &photon.bounce_radius_scale, &photon.bounce_radius_scale_range);
+        checkbox(ctx, "Prefiltered bounce light", &photon.prefilter);
+        widgets.hint(ctx, if (photon.prefilter)
+            "Bounce light read from the nearest photon's precomputed gather"
+        else
+            "Bounce light gathered in full at every hit", widgets.dim);
         widgets.sliderFloat(ctx, "Fog cell scale", &photon.volume_scale, &photon.volume_scale_range);
         widgets.sliderFloat(ctx, "Dispersion softness", &photon.dispersion_softness, &photon.dispersion_softness_range);
         widgets.sliderInt(ctx, "Grid size (power of two)", &photon.grid_log2, &photon.grid_log2_range);
@@ -763,6 +799,17 @@ fn buildMcSection(ctx: *nk.nk_context, mc: *McRenderState, mc_sample_count: u32)
             widgets.sliderInt(ctx, "Minimum samples", &mc.adaptive_min_samples, &mc.adaptive_min_samples_range);
         }
 
+        widgets.sliderInt(ctx, "Rays per MC sample", &mc.inner_samples, &mc.inner_samples_range);
+        widgets.hint(ctx, "Depth-of-field lens rays and fog marches traced per MC sample. 1 is fastest per sample; more makes each sample smoother at a matching cost.", widgets.dim);
+        checkbox(ctx, "One shadowed light per sample", &mc.light_pick);
+        widgets.hint(ctx, "Each MC sample shadow-tests one light, picked by brightness, instead of every light.", widgets.dim);
+        checkbox(ctx, "Delta-tracked fog", &mc.fog_tracking);
+        widgets.hint(ctx, "Each MC sample lights fog at one tracked point with one shadow ray, instead of shadow-marching every light at every fog step.", widgets.dim);
+        checkbox(ctx, "Reuse first hit", &mc.primary_cache);
+        widgets.hint(ctx, "The camera ray's first hit, and the mirror reflection off a smooth surface there, are marched once and reused by later samples. Off with depth of field lens rays, motion blur and stereo preview.", widgets.dim);
+        checkbox(ctx, "Wavefront path tracing", &mc.wavefront);
+        widgets.hint(ctx, "Traces each bounce for the whole image as separate GPU passes, regrouping the rays still alive so they run together. Same image, usually faster. Not used in stereo preview or the diagnostic views.", widgets.dim);
+
         var sample_buf: [32]u8 = undefined;
         const sample_label: [:0]const u8 = std.fmt.bufPrintSentinel(&sample_buf, "Samples: {d} / {d}", .{ mc_sample_count, @as(u32, @intFromFloat(@max(mc.max_samples, 1))) }, 0) catch "Samples";
         nk.nk_layout_row_dynamic(ctx, 16, 1);
@@ -804,6 +851,29 @@ fn buildAccelSection(ctx: *nk.nk_context, state: *AccelState, grid: *const accel
     widgets.sliderInt(ctx, "Rebuild delay (ms)", &state.debounce_ms, &state.debounce_ms_range);
 }
 
+fn buildFogVisSection(ctx: *nk.nk_context, state: *FogVisState, grid: *const fog_vis_gpu.FogVisGrid) void {
+    checkbox(ctx, "Enabled", &state.enabled);
+    if (!state.enabled) return;
+
+    var status_buf: [192]u8 = undefined;
+    const status: [:0]const u8 = if (!grid.valid)
+        (std.fmt.bufPrintSentinel(&status_buf, "Rebuilding after {d:.0}ms of quiet -- marching fog shadows for now.", .{state.debounce_ms}, 0) catch "Rebuilding...")
+    else if (grid.layers == 0)
+        "Idle: no fog, or no shadow-casting light."
+    else
+        (std.fmt.bufPrintSentinel(
+            &status_buf,
+            "Live: {d}x{d}x{d} x {d} lights ({d:.1} MB), built in {d}ms.",
+            .{ grid.placement.dims[0], grid.placement.dims[1], grid.placement.dims[2], grid.layers, @as(f64, @floatFromInt(grid.bytes())) / (1024.0 * 1024.0), grid.last_build_ms },
+            0,
+        ) catch "Live");
+    widgets.hint(ctx, status, widgets.dim);
+    widgets.hint(ctx, "Fog reads light visibility from a grid over the fog spheres instead of marching a shadow ray at every fog step. Shadow detail in fog is limited to the grid cell size.", widgets.dim);
+
+    widgets.sliderInt(ctx, "Grid resolution", &state.resolution, &state.resolution_range);
+    widgets.sliderInt(ctx, "Rebuild delay (ms)", &state.debounce_ms, &state.debounce_ms_range);
+}
+
 fn buildPlaySection(ctx: *nk.nk_context, play: *PlayState, camera: *FreeCamera) void {
     nk.nk_layout_row_dynamic(ctx, 22, 1);
     const play_now: nk.nk_bool = if (play.enabled) 1 else 0;
@@ -830,10 +900,16 @@ fn buildCameraWindow(ctx: *nk.nk_context, app: *const App, ws: layout.Workspace)
     if (layout.begin(ctx, ws, title, .{ .fixed = ws.cameraRect() })) {
         buildPlaySection(ctx, app.play, camera);
 
-        checkbox(ctx, "2D mode", &camera.mode_2d);
+        nk.nk_layout_row_template_begin(ctx, 22);
+        nk.nk_layout_row_template_push_dynamic(ctx);
+        nk.nk_layout_row_template_push_static(ctx, 80);
+        nk.nk_layout_row_template_end(ctx);
+        camera.mode_2d = nk.nk_check_label(ctx, "2D mode", if (camera.mode_2d) 1 else 0) != 0;
+        if (nk.nk_button_label(ctx, "Settings...") != 0) camera.flat.window_open = true;
+        checkbox(ctx, "Navigator", &app.navigator.open);
         if (camera.mode_2d) {
             app.play.enabled = false;
-            widgets.hint(ctx, "Renders the flat slice the camera cuts through the fractal. F zooms in, R zooms out.", widgets.dim);
+            widgets.hint(ctx, "Renders the flat slice the camera cuts through the fractal. Drag pans, wheel zooms, right-drag tilts, Shift+wheel moves the slice.", widgets.dim);
 
             var zoom_buf: [64]u8 = undefined;
             const zoom_label: [:0]const u8 = std.fmt.bufPrintSentinel(
@@ -863,9 +939,11 @@ fn buildCameraWindow(ctx: *nk.nk_context, app: *const App, ws: layout.Workspace)
         if (nk.nk_button_label(ctx, "Reset camera") != 0) {
             const was_2d = camera.mode_2d;
             const was_following = camera.follow_warp;
+            const flat = camera.flat;
             camera.* = FreeCamera.initial();
             camera.mode_2d = was_2d;
             camera.follow_warp = was_following;
+            camera.flat = flat;
         }
     }
     layout.end(ctx, title, &panels.camera);
@@ -909,6 +987,8 @@ fn buildOutputWindow(ctx: *nk.nk_context, app: *const App, ws: layout.Workspace)
 
 fn buildDialogs(ctx: *nk.nk_context, app: *const App, ws: layout.Workspace) void {
     editor_windows.buildStereoSettingsWindow(ctx, ws, app.stereo);
+    flat_windows.buildFlatViewWindow(ctx, ws, app.camera, app.fractal.coreCompiling());
+    flat_windows.buildNavigatorWindow(ctx, ws, app.navigator, app.navigator_target, app.camera, ws.width / @max(ws.height, 1));
     editor_windows.buildRenderPartsWindow(ctx, ws, app.render_parts, app.fractal.parts.compiling());
     editor_windows.buildAnimRenderWindow(ctx, ws, app.window, app.gpu_ctx, app.fractal, app.allocator, app.timeline, app.anim_render, app.instances[0..app.instance_count.*], app.instance_count.*, app.lights[0..app.light_count.*], app.light_count.*, app.fog_emitters[0..app.fog_count.*], app.fog_count.*, app.warps[0..app.warp_count.*], app.warp_count.*, app.screen_shaders[0..app.screen_shader_count.*], app.particle_systems[0..app.particle_count.*], app.camera.*, app.render_settings.*, app.photon.*, app.stereo.*, app.mc.*, app.progress_overlay);
     editor_windows.buildMeshExportWindow(ctx, ws, app.window, app.gpu_ctx, app.fractal, app.allocator, app.mesh_export, .{ .instances = app.instances[0..app.instance_count.*], .warps = app.warps[0..app.warp_count.*], .camera = app.camera.* }, app.progress_overlay);

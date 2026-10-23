@@ -178,16 +178,18 @@ pub const WarpState = struct {
         };
 
         const lip = self.lipschitzParts();
+        const rot: [3]f32 = .{
+            std.math.degreesToRadians(self.rotation.x),
+            std.math.degreesToRadians(self.rotation.y),
+            std.math.degreesToRadians(self.rotation.z),
+        };
         return .{
             .center = .{ self.center.x, self.center.y, self.center.z },
             .region_kind = @floatFromInt(@backingInt(self.region_kind)),
             .extent = extent,
             .falloff = self.falloff,
-            .rotation = .{
-                std.math.degreesToRadians(self.rotation.x),
-                std.math.degreesToRadians(self.rotation.y),
-                std.math.degreesToRadians(self.rotation.z),
-            },
+            .rotation = rot,
+            .frame = camera_mod.eulerFrame(rot[0], rot[1], rot[2]),
             .sub_kind = @floatFromInt(@backingInt(self.coord_kind)),
             .params0 = p0,
             .params1 = p1,

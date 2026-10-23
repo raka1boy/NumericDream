@@ -288,6 +288,11 @@ pub const FractalInstanceState = struct {
         for (0..self.color_count) |i| colors[i] = self.colors[order[i]].toGpu();
         for (self.color_count..max_color_stops) |i| colors[i] = std.mem.zeroes(GpuColorStop);
 
+        const rot: [3]f32 = .{
+            std.math.degreesToRadians(self.rotation.x),
+            std.math.degreesToRadians(self.rotation.y),
+            std.math.degreesToRadians(self.rotation.z),
+        };
         return .{
             .offset = .{ self.offset.x, self.offset.y, self.offset.z },
             .scale = .{
@@ -295,11 +300,8 @@ pub const FractalInstanceState = struct {
                 self.scale.y * self.scale_uniform,
                 self.scale.z * self.scale_uniform,
             },
-            .rotation = .{
-                std.math.degreesToRadians(self.rotation.x),
-                std.math.degreesToRadians(self.rotation.y),
-                std.math.degreesToRadians(self.rotation.z),
-            },
+            .rotation = rot,
+            .frame = camera.eulerFrame(rot[0], rot[1], rot[2]),
             .step_safety = self.step_safety,
             .hidden = if (self.visible) 0.0 else 1.0,
             .blend_k = self.blend_k,

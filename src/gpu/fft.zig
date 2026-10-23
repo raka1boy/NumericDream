@@ -52,11 +52,37 @@ pub const FftVolume = struct {
             },
             .storageTexture = std.mem.zeroes(wgpu.WGPUStorageTextureBindingLayout),
         };
+        const fog_vis_entry = wgpu.WGPUBindGroupLayoutEntry{
+            .nextInChain = null,
+            .binding = 1,
+            .visibility = wgpu.WGPUShaderStage_Fragment | wgpu.WGPUShaderStage_Compute,
+            .bindingArraySize = 0,
+            .buffer = std.mem.zeroes(wgpu.WGPUBufferBindingLayout),
+            .sampler = std.mem.zeroes(wgpu.WGPUSamplerBindingLayout),
+            .texture = .{
+                .nextInChain = null,
+                .sampleType = wgpu.WGPUTextureSampleType_Float,
+                .viewDimension = wgpu.WGPUTextureViewDimension_3D,
+                .multisampled = 0,
+            },
+            .storageTexture = std.mem.zeroes(wgpu.WGPUStorageTextureBindingLayout),
+        };
+        const fog_vis_sampler_entry = wgpu.WGPUBindGroupLayoutEntry{
+            .nextInChain = null,
+            .binding = 2,
+            .visibility = wgpu.WGPUShaderStage_Fragment | wgpu.WGPUShaderStage_Compute,
+            .bindingArraySize = 0,
+            .buffer = std.mem.zeroes(wgpu.WGPUBufferBindingLayout),
+            .sampler = .{ .nextInChain = null, .type = wgpu.WGPUSamplerBindingType_Filtering },
+            .texture = std.mem.zeroes(wgpu.WGPUTextureBindingLayout),
+            .storageTexture = std.mem.zeroes(wgpu.WGPUStorageTextureBindingLayout),
+        };
+        const render_entries = [_]wgpu.WGPUBindGroupLayoutEntry{ render_entry, fog_vis_entry, fog_vis_sampler_entry };
         const render_layout = wgpu.wgpuDeviceCreateBindGroupLayout(ctx.device, &wgpu.WGPUBindGroupLayoutDescriptor{
             .nextInChain = null,
-            .label = sv("fft read bind group layout"),
-            .entryCount = 1,
-            .entries = &[_]wgpu.WGPUBindGroupLayoutEntry{render_entry},
+            .label = sv("volume read bind group layout"),
+            .entryCount = render_entries.len,
+            .entries = &render_entries,
         }) orelse return error.BindGroupLayoutCreationFailed;
         errdefer wgpu.wgpuBindGroupLayoutRelease(render_layout);
 
@@ -226,21 +252,6 @@ pub const FftVolume = struct {
             return false;
         }
 
-        const render_bind_group = wgpu.wgpuDeviceCreateBindGroup(ctx.device, &wgpu.WGPUBindGroupDescriptor{
-            .nextInChain = null,
-            .label = sv("fft read bind group"),
-            .layout = self.render_layout,
-            .entryCount = 1,
-            .entries = &[_]wgpu.WGPUBindGroupEntry{.{
-                .nextInChain = null,
-                .binding = 0,
-                .buffer = null,
-                .offset = 0,
-                .size = 0,
-                .sampler = null,
-                .textureView = sampled_view,
-            }},
-        });
         const compute_bind_group = wgpu.wgpuDeviceCreateBindGroup(ctx.device, &wgpu.WGPUBindGroupDescriptor{
             .nextInChain = null,
             .label = sv("fft write bind group"),
@@ -254,9 +265,7 @@ pub const FftVolume = struct {
                 .{ .nextInChain = null, .binding = 4, .buffer = peak_buf, .offset = 0, .size = peak_bytes, .sampler = null, .textureView = null },
             },
         });
-        if (render_bind_group == null or compute_bind_group == null) {
-            if (render_bind_group != null) wgpu.wgpuBindGroupRelease(render_bind_group);
-            if (compute_bind_group != null) wgpu.wgpuBindGroupRelease(compute_bind_group);
+        if (compute_bind_group == null) {
             wgpu.wgpuTextureViewRelease(sampled_view);
             wgpu.wgpuTextureViewRelease(storage_view);
             wgpu.wgpuTextureRelease(texture);
@@ -274,9 +283,26 @@ pub const FftVolume = struct {
         self.magnitude_texture = texture;
         self.magnitude_sampled_view = sampled_view;
         self.magnitude_storage_view = storage_view;
-        self.render_bind_group = render_bind_group;
         self.compute_bind_group = compute_bind_group;
         self.allocated = true;
+        return true;
+    }
+
+    pub fn bindRead(self: *FftVolume, ctx: *const Context, fog_vis_view: wgpu.WGPUTextureView, sampler: wgpu.WGPUSampler) bool {
+        if (self.magnitude_sampled_view == null or fog_vis_view == null) return false;
+        const group = wgpu.wgpuDeviceCreateBindGroup(ctx.device, &wgpu.WGPUBindGroupDescriptor{
+            .nextInChain = null,
+            .label = sv("volume read bind group"),
+            .layout = self.render_layout,
+            .entryCount = 3,
+            .entries = &[_]wgpu.WGPUBindGroupEntry{
+                .{ .nextInChain = null, .binding = 0, .buffer = null, .offset = 0, .size = 0, .sampler = null, .textureView = self.magnitude_sampled_view },
+                .{ .nextInChain = null, .binding = 1, .buffer = null, .offset = 0, .size = 0, .sampler = null, .textureView = fog_vis_view },
+                .{ .nextInChain = null, .binding = 2, .buffer = null, .offset = 0, .size = 0, .sampler = sampler, .textureView = null },
+            },
+        }) orelse return false;
+        if (self.render_bind_group != null) wgpu.wgpuBindGroupRelease(self.render_bind_group);
+        self.render_bind_group = group;
         return true;
     }
 

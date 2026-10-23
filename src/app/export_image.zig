@@ -131,6 +131,7 @@ pub fn buildUniforms(
         .hq_footprint_budget_px = precision.hq_footprint_budget_px,
         .refine_fast = precision.refine_fast,
         .refine_hq = precision.refine_hq,
+        .march_verify = if (precision.verify_each_step) 1.0 else 0.0,
         .dof_enabled = if (camera.dof_enabled) 1.0 else 0.0,
         .focus_distance = camera.focus_distance,
         .aperture = camera.aperture,
@@ -142,12 +143,17 @@ pub fn buildUniforms(
         .adapt_enabled = if (mc.enabled and mc.adaptive) 1.0 else 0.0,
         .adapt_threshold = mc.adaptive_threshold,
         .adapt_min_samples = mc.adaptive_min_samples,
+        .mc_inner_samples = @max(mc.inner_samples, 1.0),
+        .mc_light_pick = if (mc.light_pick) 1.0 else 0.0,
+        .fog_tracking = if (mc.fog_tracking) 1.0 else 0.0,
+        .primary_cache_key = if (mc.enabled and mc.primary_cache) 1.0 else 0.0,
         .instances = undefined,
         .lights = undefined,
         .fog_emitters = undefined,
         .warps = undefined,
     };
     stampEyeBasis(&uniforms, eye);
+    camera.flat.stamp(&uniforms);
     for (0..max_instances) |i| {
         uniforms.instances[i] = if (i < instances.len) instances[i].toGpu() else std.mem.zeroes(GpuFractalInstance);
     }
@@ -217,8 +223,8 @@ pub fn prepareParticles(gpu_ctx: *const Context, fractal: *FractalRenderer, part
     fractal.stampParticleUniforms(uniforms);
 }
 
-pub fn mcSampleCount(mc: McRenderState, mode_2d: bool) u32 {
-    if (mode_2d) return 1;
+pub fn mcSampleCount(mc: McRenderState, camera: FreeCamera) u32 {
+    if (camera.mode_2d) return camera.flat.sampleCount();
     return if (mc.enabled) @intFromFloat(@max(mc.export_samples, 1)) else 1;
 }
 
@@ -266,7 +272,7 @@ pub fn renderEye(
     fractal.photon_settings = photon;
     fractal.denoise = mc.denoise;
     fractal.denoise_strength = mc.denoise_strength;
-    const samples = fractal_gpu.SampleSet{ .repeat = .{ .uniforms = uniforms, .count = mcSampleCount(mc, camera.mode_2d) } };
+    const samples = fractal_gpu.SampleSet{ .repeat = .{ .uniforms = uniforms, .count = mcSampleCount(mc, camera) } };
     return fractal.renderToImage(gpu_ctx, &samples, width, height, allocator, progress);
 }
 
@@ -344,6 +350,9 @@ pub fn exportImage(
         const half_sep = stereo.eye_separation * 0.5;
         const left_eye = camera_mod.stereoEyeBasis(cam, camera.mode_2d, stereo.convergence_distance, -half_sep);
         const right_eye = camera_mod.stereoEyeBasis(cam, camera.mode_2d, stereo.convergence_distance, half_sep);
+
+        fractal.beginExportSession();
+        defer fractal.endExportSession();
 
         const left_pixels = renderEye(
             allocator,

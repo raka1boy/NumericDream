@@ -53,9 +53,12 @@ const export_mesh = @import("app/export_mesh.zig");
 const McRenderState = @import("app/mc_render.zig").McRenderState;
 const animation = @import("app/animation.zig");
 const perf_probe = @import("app/perf_probe.zig");
+const bench = @import("app/bench.zig");
 const accel_gpu = @import("gpu/accel.zig");
 const accel_policy = @import("app/accel_state.zig");
 const AccelState = accel_policy.AccelState;
+const fog_vis_policy = @import("app/fog_vis_state.zig");
+const FogVisState = fog_vis_policy.FogVisState;
 const photon_policy = @import("app/photon_state.zig");
 const PhotonSettings = photon_policy.PhotonSettings;
 const PhotonPolicy = photon_policy.PhotonPolicy;
@@ -63,14 +66,21 @@ const photons_gpu = @import("gpu/photons.zig");
 const fft_policy = @import("app/fft_state.zig");
 const play_mode = @import("app/play_mode.zig");
 const history = @import("app/history.zig");
+const LiveBench = @import("app/live_bench.zig").LiveBench;
+const LiveBatch = @import("app/live_batch.zig").LiveBatch;
 const PlayState = play_mode.PlayState;
 const PreviewDenoiser = @import("gpu/preview_denoiser.zig").PreviewDenoiser;
+const navigator_mod = @import("app/navigator.zig");
+const navigator_gpu = @import("gpu/navigator.zig");
 const oidn = @import("bindings/oidn.zig");
 
 const allocator = std.heap.page_allocator;
 
 const mouse_look_sensitivity: f32 = 0.005;
 const scroll_zoom_speed: f32 = 0.3;
+const wheel_zoom_2d: f32 = 0.15;
+const wheel_depth_2d: f32 = 0.1;
+const primary_epoch_wrap: u32 = (1 << 24) - 1;
 
 fn stampPostEffects(gpu_ctx: *const Context, fractal: *FractalRenderer, parts: RenderParts, instances: []const FractalInstanceState, shaders: []const ScreenShaderState, shaft: ?[8]f32) void {
     fractal.approx_settings = parts.approx;
@@ -146,7 +156,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     defer sdl.SDL_Quit();
 
     const window = sdl.SDL_CreateWindow(
-        "Numeric Dreams",
+        "Numeric Dream",
         1280,
         800,
         sdl.SDL_WINDOW_RESIZABLE,
@@ -193,6 +203,14 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var progress_overlay = try ProgressOverlay.init(&gpu_ctx);
     defer progress_overlay.deinit();
     std.debug.print("[stage] ProgressOverlay.init: done\n", .{});
+
+    if (perf_probe.bench()) |cfg| {
+        bench.run(allocator, &gpu_ctx, &fractal, cfg) catch |err| {
+            std.log.err("benchmark failed: {s} {s}", .{ @errorName(err), webgpu_context.g_error_sink.message() });
+            return err;
+        };
+        return;
+    }
 
     std.debug.print("[stage] entering main loop\n", .{});
 
@@ -254,18 +272,24 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var anim_render = animation.AnimRenderState{};
     var mesh_export = export_mesh.MeshExportState{};
     var accel_state = AccelState{};
+    var fog_vis_state = FogVisState{};
     var photon_settings = PhotonSettings{};
     var photon_state = PhotonPolicy{};
     var play = PlayState{};
     var preview_denoiser = PreviewDenoiser{};
     defer preview_denoiser.deinit();
     var preview_denoise_wanted = false;
+    var navigator = navigator_mod.NavigatorState{};
+    var navigator_target = navigator_gpu.NavigatorRenderer{};
+    defer navigator_target.deinit();
+    var rotating = false;
 
     var hist = history.History{};
     defer hist.deinit(allocator);
     var history_op = HistoryOp.none;
 
     var mc_sample_count: u32 = 0;
+    var primary_epoch: u32 = 0;
     var last_render_uniforms = std.mem.zeroes(fractal_gpu.Uniforms);
     var has_last_uniforms = false;
     var drawn_generation: ?u32 = null;
@@ -305,6 +329,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
         .render_settings = &render_settings,
         .photon = &photon_settings,
         .accel_state = &accel_state,
+        .fog_vis_state = &fog_vis_state,
         .mc = &mc,
         .mc_sample_count = &mc_sample_count,
         .export_width = &export_width,
@@ -320,7 +345,12 @@ pub fn main(init: std.process.Init.Minimal) !void {
         .mesh_export = &mesh_export,
         .library_panel = &library_panel,
         .screen_library_panel = &screen_library_panel,
+        .navigator = &navigator,
+        .navigator_target = &navigator_target,
     };
+
+    var live_bench: ?LiveBench = if (perf_probe.liveBench()) |cfg| try LiveBench.load(cfg, &app_ui) else null;
+    var live_batch = LiveBatch{};
 
     const start_ticks = sdl.SDL_GetTicks();
     var last_ticks = start_ticks;
@@ -345,21 +375,27 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
         const fast_before_ui = fastRender(render_parts, instances[0..instance_count]);
         const mc_active = mc.enabled and !camera.mode_2d and !fast_before_ui;
-        const mc_converging = mc_active and mc_sample_count < @as(u32, @intFromFloat(@max(mc.max_samples, 1)));
+        const flat_accum = camera.mode_2d and camera.flat.sampleCount() > 1;
+        const accum_active = mc_active or flat_accum;
+        const accum_target: u32 = if (mc_active) @intFromFloat(@max(mc.max_samples, 1)) else camera.flat.sampleCount();
+        const mc_converging = accum_active and mc_sample_count < accum_target;
         const screen_shaders_animating = screen_shader_mod.anyAnimated(screen_shaders[0..screen_shader_count]);
         const play_active = play.enabled and !camera.mode_2d;
         const rebuild_waiting = !camera.mode_2d and
             ((accel_state.enabled and accel_state.debounce_state.dirty) or
+                (fog_vis_state.enabled and fog_vis_state.debounce_state.dirty) or
                 (photon_settings.enabled and photonsShown(render_parts, instances[0..instance_count]) and photon_state.debounce_state.dirty) or
                 (if (ftViewSlot(instances[0..instance_count])) |slot| instances[slot].fft_state.debounce_state.dirty else false));
-        const continuous_input = (!uiHasMouse(&ui, &play) and (dragging or anyMovementKeyDown(keys_for_wait))) or
-            hist.settling() or mc_converging or timeline.playing or redraw_pending or screen_shaders_animating or play_active or rebuild_waiting or fractal.parts.compiling() or fractal.isCompiling() or
-            preview_denoiser.busy(preview_denoise_wanted) or gpu_timer.global.busy();
+        const continuous_input = (!uiHasMouse(&ui, &play) and (dragging or rotating or anyMovementKeyDown(keys_for_wait))) or
+            hist.settling() or mc_converging or timeline.playing or redraw_pending or screen_shaders_animating or play_active or rebuild_waiting or fractal.parts.compiling() or fractal.isCompiling() or fractal.coreCompiling() or
+            preview_denoiser.busy(preview_denoise_wanted) or gpu_timer.global.busy() or fractal.photon_map.stats_mapping;
         redraw_pending = false;
 
         var event: sdl.SDL_Event = undefined;
         perf.waitBegin();
-        var have_event = if (continuous_input)
+        var have_event = if (mc_converging)
+            sdl.SDL_PollEvent(&event)
+        else if (continuous_input)
             sdl.SDL_WaitEventTimeout(&event, 16)
         else
             sdl.SDL_WaitEvent(&event);
@@ -386,6 +422,9 @@ pub fn main(init: std.process.Init.Minimal) !void {
                             press_travel = 0;
                         }
                     }
+                    if (event.button.button == @as(u8, sdl.SDL_BUTTON_RIGHT) and camera.mode_2d and !uiHasMouse(&ui, &play)) {
+                        rotating = true;
+                    }
                 },
                 sdl.SDL_EVENT_MOUSE_BUTTON_UP => {
                     if (event.button.button == @as(u8, sdl.SDL_BUTTON_LEFT)) {
@@ -394,11 +433,18 @@ pub fn main(init: std.process.Init.Minimal) !void {
                         }
                         dragging = false;
                     }
+                    if (event.button.button == @as(u8, sdl.SDL_BUTTON_RIGHT)) rotating = false;
                 },
                 sdl.SDL_EVENT_MOUSE_MOTION => {
                     if (play.captured) {
                         play.look(-event.motion.xrel * play_mode.look_sensitivity, -event.motion.yrel * play_mode.look_sensitivity);
-                    } else if (dragging) {
+                    } else if (dragging and camera.mode_2d) {
+                        press_travel += @abs(event.motion.xrel) + @abs(event.motion.yrel);
+                        var logical_w: c_int = 0;
+                        var logical_h: c_int = 0;
+                        _ = sdl.SDL_GetWindowSize(window, &logical_w, &logical_h);
+                        camera.pan2d(event.motion.xrel, event.motion.yrel, @floatFromInt(logical_h));
+                    } else if (dragging or rotating) {
                         press_travel += @abs(event.motion.xrel) + @abs(event.motion.yrel);
                         camera.turnYaw(event.motion.xrel * mouse_look_sensitivity);
                         camera.turnPitch(-event.motion.yrel * mouse_look_sensitivity);
@@ -407,7 +453,17 @@ pub fn main(init: std.process.Init.Minimal) !void {
                 sdl.SDL_EVENT_MOUSE_WHEEL => {
                     if (!uiHasMouse(&ui, &play) and !play_active) {
                         const forward = camera.basis().forward;
-                        camera.position = camera.position.add(forward.scale(event.wheel.y * scroll_zoom_speed));
+                        const shift_held = (sdl.SDL_GetModState() & sdl.SDL_KMOD_SHIFT) != 0;
+                        if (camera.mode_2d and !shift_held) {
+                            var logical_w: c_int = 0;
+                            var logical_h: c_int = 0;
+                            _ = sdl.SDL_GetWindowSize(window, &logical_w, &logical_h);
+                            camera.zoomAt2d(@exp(-event.wheel.y * wheel_zoom_2d), event.wheel.mouse_x, event.wheel.mouse_y, @floatFromInt(logical_w), @floatFromInt(logical_h));
+                        } else if (camera.mode_2d) {
+                            camera.position = camera.position.add(forward.scale(event.wheel.y * wheel_depth_2d * camera.zoom_2d));
+                        } else {
+                            camera.position = camera.position.add(forward.scale(event.wheel.y * scroll_zoom_speed));
+                        }
                     }
                 },
                 sdl.SDL_EVENT_KEY_DOWN => {
@@ -455,9 +511,11 @@ pub fn main(init: std.process.Init.Minimal) !void {
             continue;
         }
         gpu_timer.global.collect(&gpu_ctx);
+        fractal.photon_map.collectStats(&gpu_ctx);
 
         const now_ticks = sdl.SDL_GetTicks();
-        const dt: f32 = @min(@as(f32, @floatFromInt(now_ticks -| last_ticks)) / 1000.0, 1.0 / 30.0);
+        const frame_ms = now_ticks -| last_ticks;
+        const dt: f32 = @min(@as(f32, @floatFromInt(frame_ms)) / 1000.0, 1.0 / 30.0);
         last_ticks = now_ticks;
 
         const keys = sdl.SDL_GetKeyboardState(null);
@@ -490,7 +548,9 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
         editor_windows.buildCrosshair(&ui.ctx, &play, width_f, height_f);
         gpu_timer.global.wanted = false;
+        fractal.wavefront = mc.wavefront;
         main_panels.build(&ui.ctx, &app_ui, width_f, height_f);
+        fractal.wavefront = mc.wavefront;
         play.syncCapture(window);
         if (export_image.quit_requested) running = false;
 
@@ -513,6 +573,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
         perf.mark("ui");
 
         const particle_needs = particles_mod.shaderNeeds(particle_systems[0..particle_count]);
+        fractal.setViewNeeds(!camera.mode_2d, camera.mode_2d or navigator.open);
         scene_state.syncShader(&gpu_ctx, &fractal, allocator, instances[0..instance_count], .{
             .warps = warp_count > 0,
             .particles_lit = particle_needs.lit,
@@ -596,6 +657,25 @@ pub fn main(init: std.process.Init.Minimal) !void {
         }
         fractal.stampPhotonUniforms(&uniforms);
 
+        fractal.fog_vis_enabled = fog_vis_state.enabled;
+        fractal.fog_vis_resolution = fog_vis_state.resolutionU32();
+        const fog_vis_decision = fog_vis_policy.update(
+            &fog_vis_state,
+            &fractal.fog_vis,
+            fog_vis_state.enabled and !camera.mode_2d,
+            now_ticks,
+            fog_vis_policy.sceneHash(&uniforms, photon_wanted, fractal.fog_vis_resolution),
+        );
+        if (fog_vis_decision == .rebuild) {
+            if (fractal.buildFogVis(&gpu_ctx, uniforms, photon_wanted)) {
+                fog_vis_policy.noteBuilt(&fog_vis_state);
+            } else |err| {
+                std.debug.print("[fog-vis] build failed: {s} -- marching fog shadows\n", .{@errorName(err)});
+                fog_vis_policy.noteFailed(&fog_vis_state, now_ticks);
+            }
+        }
+        fractal.stampFogVisUniforms(&uniforms);
+
         const fft_active_instance = ftViewSlot(instances[0..instance_count]);
         var fft_settings: FractalRenderer.FftSettings = .{};
         if (fft_active_instance) |slot| {
@@ -636,6 +716,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
         diff_uniforms.accel_res = 0;
         diff_uniforms.accel_safety = 0;
         diff_uniforms.accel_params = @splat(.{ 0, 0, 0, 0 });
+        FractalRenderer.clearFogVisUniforms(&diff_uniforms);
         diff_uniforms.photon_enabled = if (photon_wanted) 1 else 0;
         diff_uniforms.photon_seed = 0;
         diff_uniforms.photon_hash_salt = 0;
@@ -665,9 +746,9 @@ pub fn main(init: std.process.Init.Minimal) !void {
         var load_existing = false;
         var blend_constant: f32 = 1.0;
         var mc_advanced = false;
-        if (mc_active) {
+        if (accum_active) {
             if (scene_changed) mc_sample_count = 0;
-            const target: u32 = @intFromFloat(@max(mc.max_samples, 1));
+            const target = accum_target;
             if (mc_sample_count < target) {
                 mc_sample_count += 1;
                 mc_advanced = true;
@@ -677,6 +758,11 @@ pub fn main(init: std.process.Init.Minimal) !void {
             uniforms.mc_sample = @floatFromInt(mc_sample_count - 1);
         } else {
             mc_sample_count = 0;
+        }
+        if (uniforms.primary_cache_key > 0.5) {
+            if (!load_existing) primary_epoch = primary_epoch % primary_epoch_wrap + 1;
+            const cache_ok = mc_active and !stereo_preview and !render_parts.diagnosticView();
+            uniforms.primary_cache_key = if (cache_ok) @floatFromInt(primary_epoch) else 0;
         }
 
         const trace_radius = photon_settings.sampleRadius(mc_active, uniforms.mc_sample);
@@ -693,7 +779,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
             trace_radius,
         );
         if (photon_decision == .retrace) {
-            if (fractal.tracePhotons(&gpu_ctx, uniforms, photon_state.seed, trace_radius)) {
+            if (fractal.tracePhotons(&gpu_ctx, uniforms, photon_state.seed, trace_radius, photon_settings.tracePathCount(mc_active, uniforms.mc_sample))) {
                 photon_policy.noteTraced(&photon_state, &fractal.photon_map, uniforms.mc_sample);
             } else |err| {
                 std.debug.print("[photons] trace failed: {s} -- rendering with direct light only\n", .{@errorName(err)});
@@ -740,10 +826,13 @@ pub fn main(init: std.process.Init.Minimal) !void {
             .march;
         const parts_pipeline = if (render_mode == .march) fractal.partsPipeline(&gpu_ctx, render_parts.shaderMask()) else null;
 
+        const draw_ready = fractal.drawReady(&gpu_ctx, render_mode);
+        if (!draw_ready) mc_sample_count = 0;
+
         const generation = fractal.imageGeneration();
         const offscreen_current = drawn_generation != null and drawn_generation.? == generation and
             drawn_mode != null and drawn_mode.? == render_mode;
-        const march_needed = scene_changed or mc_advanced or !offscreen_current;
+        const march_needed = draw_ready and (scene_changed or mc_advanced or !offscreen_current);
         if (march_needed) drawn_generation = null;
 
         preview_denoise_wanted = mc.denoise_preview and render_mode == .march and !stereo_preview and !render_parts.diagnosticView() and oidn.available();
@@ -773,12 +862,20 @@ pub fn main(init: std.process.Init.Minimal) !void {
         perf.mark("acquire");
 
         if (march_needed) {
+            if (render_mode == .march and mc_active and !stereo_preview and !render_parts.diagnosticView()) {
+                _ = fractal.prepareLiveWavefront(&gpu_ctx, frame.encoder, &uniforms);
+            }
             const offscreen_pass = fractal.beginOffscreenPass(frame.encoder, load_existing);
             fractal.draw(offscreen_pass, blend_constant, render_mode, parts_pipeline);
             wgpu.wgpuRenderPassEncoderEnd(offscreen_pass);
             wgpu.wgpuRenderPassEncoderRelease(offscreen_pass);
             drawn_generation = generation;
             drawn_mode = render_mode;
+        }
+
+        if (navigator.open) {
+            const map = navigator_mod.Map.of(cam, navigator.range);
+            navigator_target.render(&gpu_ctx, &fractal, frame.encoder, map.uniforms(uniforms, navigator_gpu.size));
         }
 
         const outline_id = if (camera.mode_2d) 0 else selection.maskId(objects);
@@ -847,8 +944,48 @@ pub fn main(init: std.process.Init.Minimal) !void {
         gpu_timer.global.endFrame(&gpu_ctx, march_needed);
         const lens_noisy_aux = mc_active and camera.dof_enabled and camera.aperture > 0.0001;
         preview_denoiser.maybeCapture(&gpu_ctx, &fractal, preview_denoise_wanted, !lens_noisy_aux, sdl.SDL_GetTicks());
+
+        const batch_eligible = march_needed and render_mode == .march and mc_active and !stereo_preview and
+            !render_parts.diagnosticView() and !gpu_timer.global.wanted and !timeline.playing and !play_active and
+            !dragging and !rotating and !anyMovementKeyDown(keys) and !hist.settling();
+        live_batch.update(batch_eligible, frame_ms);
+        var extra_samples: u32 = 0;
+        while (batch_eligible and extra_samples < live_batch.extra() and mc_sample_count < accum_target) : (extra_samples += 1) {
+            mc_sample_count += 1;
+            uniforms.mc_sample = @floatFromInt(mc_sample_count - 1);
+            const extra_radius = photon_settings.sampleRadius(mc_active, uniforms.mc_sample);
+            const extra_decision = photon_policy.update(
+                &photon_state,
+                &fractal.photon_map,
+                photon_settings,
+                photon_wanted,
+                now_ticks,
+                photon_policy.sceneHash(uniforms, photon_settings),
+                uniforms.camera_pos,
+                accel_gpu.recenterDistance(uniforms.max_dist),
+                uniforms.mc_sample,
+                extra_radius,
+            );
+            if (extra_decision == .retrace) {
+                if (fractal.tracePhotons(&gpu_ctx, uniforms, photon_state.seed, extra_radius, photon_settings.tracePathCount(mc_active, uniforms.mc_sample))) {
+                    photon_policy.noteTraced(&photon_state, &fractal.photon_map, uniforms.mc_sample);
+                } else |err| {
+                    std.debug.print("[photons] trace failed: {s} -- rendering with direct light only\n", .{@errorName(err)});
+                    photon_policy.noteFailed(&photon_state, now_ticks);
+                }
+                fractal.stampPhotonUniforms(&uniforms);
+            }
+            fractal.updateUniforms(&gpu_ctx, uniforms);
+            fractal.drawSampleNow(&gpu_ctx, &uniforms, 1.0 / @as(f32, @floatFromInt(mc_sample_count)), parts_pipeline);
+            preview_denoiser.noteDraw(&fractal, false, now_ticks);
+        }
+        if (extra_samples > 0) redraw_pending = true;
         perf.renderEnd();
         perf.mark("submit");
+        if (live_bench) |*lb| {
+            const ready = !fractal.isCompiling() and (!mc.wavefront or fractal.wavefrontReady());
+            if (lb.tick(mc_sample_count, ready, sdl.SDL_GetTicks())) running = false;
+        }
         if (perf.tracing()) {
             var notes_buf: [192]u8 = undefined;
             const moved = camera.position.sub(camera_pos_before).length();

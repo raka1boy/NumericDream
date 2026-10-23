@@ -505,7 +505,9 @@
           <li><code>screen_shaders/</code> — the shipped screen-space effects, browsed the same way (<a href="#ch17">Chapter 17</a>). Optional in the same sense: without it you can still point an effect slot at a file by hand.</li>
         </ul>
 
-        <p>The only command-line option is <code>-perf</code> (or <code>--perf</code>), which prints a periodic line of main-loop counters to the console — loop passes, frames actually drawn, idle blocks, failed surface acquires, swapchain reconfigures, and milliseconds of main-thread time spent rendering. It is a diagnostic for "why is this not idling" or "why is this dropping frames", not a benchmark. Anything else on the command line is rejected with a message.</p>
+        <p>The command-line option <code>-perf</code> (or <code>--perf</code>) prints a periodic line of main-loop counters to the console — loop passes, frames actually drawn, idle blocks, failed surface acquires, swapchain reconfigures, and milliseconds of main-thread time spent rendering. It is a diagnostic for "why is this not idling" or "why is this dropping frames", not a benchmark. Anything else on the command line is rejected with a message.</p>
+        <p>For benchmarking, <code>-bench scene.dream</code> loads a scene, renders it as an MC export with the single-pass renderer and with <strong>Wavefront path tracing</strong>, prints the time each took, compares the two images, and exits. It writes <code>megakernel.png</code>, <code>wavefront.png</code> and an 8× amplified <code>diff_x8.png</code> to <code>bench/out</code>. Optional settings: <code>-bench-size 960x540</code>, <code>-bench-samples 64</code>, <code>-bench-repeats 2</code> (the fastest run is reported), <code>-bench-mode both|mega|wave</code>, <code>-bench-out dir</code>, and <code>-bench-profile</code>, which adds one extra run with GPU timestamps around every pass and prints the time per stage and how many rays are still alive at each bounce. Two test scenes ship in <code>bench/</code>: <code>wavefront_glass.dream</code> (glass, chrome, mirror floor, fog, three shadowed lights) and <code>wavefront_opaque.dream</code> (one diffuse fractal, one light).</p>
+        <p><code>-bench-live scene.dream</code> measures the live preview instead. It opens the normal window, loads the scene, turns MC Render on, and lets it accumulate untouched. After 16 warm-up samples, and once the shader and wavefront passes have finished compiling, it counts samples for <code>-bench-seconds 10</code>. It then prints samples per second, frames per second and samples per frame, and exits.</p>
 
         <p>The window opens at 1280×720 with one fractal (the built-in Mandelbulb), one global light, no fog, and the camera 3.2 units out looking back at the origin. Everything else you add yourself.</p>
 
@@ -533,7 +535,7 @@
               <tr><td>Arrow keys</td><td>Turn — left/right yaw, up/down pitch, unlimited in both</td></tr>
               <tr><td>Q / E</td><td>Roll right / left around the view axis</td></tr>
               <tr><td>Z / C</td><td>Halve / multiply move speed by 1.5, once per press. Ignored while Ctrl is held, so undo never changes your speed</td></tr>
-              <tr><td>F / R</td><td>Zoom in / out — <strong>2D mode only</strong> (<a href="#ch18">Chapter 18</a>); no effect otherwise</td></tr>
+              <tr><td>F / R</td><td>Zoom in / out — <strong>2D mode only</strong> (<a href="#ch18">Chapter 18</a>); no effect otherwise. In 2D mode the mouse also changes meaning: drag pans, wheel zooms, right-drag re-aims</td></tr>
               <tr><td>Mouse drag</td><td>Look around (same as the arrow keys)</td></tr>
               <tr><td>Scroll wheel</td><td>Dolly forward / back, 0.3 units per notch</td></tr>
               <tr><td>Left click (no drag)</td><td>Select the object under the pointer (<a href="#ch3">Chapter 3</a>)</td></tr>
@@ -545,7 +547,7 @@
 
         <p>Base move speed is 2.5 units per second before the Z/C multiplier. Since fractal detail is self-similar, expect to lean on Z heavily as you close in — at a hundredth of a unit from the surface, the default speed crosses the entire visible structure in a single frame.</p>
 
-        <p><strong>Reset camera</strong>, at the bottom of the Camera window, returns to the opening view and resets the speed multiplier and the 2D zoom. It deliberately leaves the 2D mode checkbox alone — untick that yourself when you want to go back to ray marching.</p>
+        <p><strong>Reset camera</strong>, at the bottom of the Camera window, returns to the opening view and resets the speed multiplier and the 2D zoom. It deliberately leaves the 2D mode checkbox and the 2D view settings alone — untick 2D mode yourself when you want to go back to ray marching.</p>
 
         <h3>Gizmos</h3>
         <p>Opening an object's editor window also marks it as selected, and selected objects draw a line gizmo in the viewport:</p>
@@ -702,7 +704,7 @@
           </div>
           <div class="param">
             <div class="param-head"><span class="param-name">Fog samples</span><span class="chip">final render only</span></div>
-            <p>How many jittered passes a render averages through fog (<a href="#ch19">Chapter 19</a>). The preview takes one pass per frame.</p>
+            <p>How many jittered passes a render averages through fog (<a href="#ch19">Chapter 19</a>). The preview takes one pass per frame. With MC Render on, <strong>Rays per MC sample</strong> sets the count instead.</p>
           </div>
           <div class="param">
             <div class="param-head"><span class="param-name">Ray march precision</span><span class="chip">folded by default</span></div>
@@ -714,7 +716,7 @@
         <div class="params">
           <div class="param">
             <div class="param-head"><span class="param-name">Photon map</span><span class="chip">default on</span></div>
-            <p>The mirror image of Reflection bounces, run from the lights instead of the camera. The section is described in full in <a href="#ch11">Lights &amp; shadows</a>. Under <strong>Enabled</strong> are the everyday controls: <strong>Scatter bounces</strong>, <strong>Photon paths</strong>, <strong>Gather radius</strong>, <strong>Photon brightness</strong>, <strong>Aim photons at geometry</strong>, <strong>Retrace per MC Render sample</strong> and <strong>Progressive radius</strong>. The <em>Advanced</em> fold holds <strong>Bounce light radius</strong>, <strong>Fog cell scale</strong>, <strong>Dispersion softness</strong>, <strong>Grid size</strong> and <strong>Retrace delay</strong>, and the <em>Details</em> fold holds the live trace and pool statistics. Warnings about dropped photons appear above the sliders, outside both folds.</p>
+            <p>The mirror image of Reflection bounces, run from the lights instead of the camera. The section is described in full in <a href="#ch11">Lights &amp; shadows</a>. Under <strong>Enabled</strong> are the everyday controls: <strong>Scatter bounces</strong>, <strong>Photon paths</strong>, <strong>Gather radius</strong>, <strong>Photon brightness</strong>, <strong>Aim photons at geometry</strong>, <strong>Retrace per MC Render sample</strong>, <strong>Paths per sample (%)</strong> and <strong>Progressive radius</strong>. The <em>Advanced</em> fold holds <strong>Bounce light radius</strong>, <strong>Fog cell scale</strong>, <strong>Dispersion softness</strong>, <strong>Grid size</strong> and <strong>Retrace delay</strong>, and the <em>Details</em> fold holds the live trace and pool statistics. Warnings about dropped photons appear above the sliders, outside both folds.</p>
             <p>None of these have a <em>Final render</em> column: exported stills and animations use the values set here, so a render always matches the lighting you composed in the viewport.</p>
           </div>
           <div class="param">
@@ -724,6 +726,10 @@
           <div class="param">
             <div class="param-head"><span class="param-name">Empty-space accelerator</span><span class="chip">folded by default</span></div>
             <p>A speed feature that never changes the image (<a href="#ch5">Chapter 5</a>).</p>
+          </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">Fog shadow grid</span><span class="chip">folded by default</span></div>
+            <p>Precomputed light visibility for fog, so fog steps stop marching shadow rays (<a href="#ch13">Chapter 13</a>).</p>
           </div>
         </div>
 
@@ -883,15 +889,19 @@
           </div>
           <div class="param">
             <div class="param-head"><span class="param-name">HQ footprint budget</span><span class="chip">default 2.0</span><span class="chip">range 0.25–8</span><span class="chip warn">export only</span></div>
-            <p>A last-resort cap, in screen pixels, on how far the export marcher will commit to a step it could not verify as safe. Lower values close the gap that lets thin features slip between samples, at the cost of more steps. Has no effect on the live preview, which never runs the verification path this backs up.</p>
+            <p>A last-resort cap, in screen pixels, on how far the export marcher will commit to a step it could not verify as safe. Lower values close the gap that lets thin features slip between samples, at the cost of more steps. Only applies with <strong>Verify every step (final render)</strong> on. It has no effect on the live preview, which never runs the verification path this backs up.</p>
           </div>
           <div class="param">
             <div class="param-head"><span class="param-name">Bisection refine steps</span><span class="chip">default 4</span><span class="chip">range 1–12</span></div>
-            <p>How many extra probes the preview marcher spends checking a suspect step before committing. Distance estimates for folded and mixed formulas can overshoot; these probes catch the overshoot. Raise it if the preview shows speckled or torn surfaces, lower it for speed.</p>
+            <p>How many extra probes the preview marcher may spend on one step. With <strong>Verify every step</strong> off, the probes are spent only when a step lands on or inside a surface: the marcher bisects back between that step and the one before to find where the surface starts, and it stops early once the gap is below the hit tolerance. With it on, the probes check every step before committing to it. Distance estimates for folded and mixed formulas can overshoot, and these probes catch the overshoot. Raise it if the preview shows speckled or torn surfaces, lower it for speed.</p>
           </div>
           <div class="param">
             <div class="param-head"><span class="param-name">Bisection refine steps (hq)</span><span class="chip">default 20</span><span class="chip">range 4–40</span><span class="chip warn">export only</span></div>
             <p>The same budget for the export path, where the goal is to bisect until the interval is provably below the hit tolerance rather than stop at a fixed count. 20 halvings takes any starting interval below float precision, so the default already means "converge properly".</p>
+          </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">Verify every step</span><span class="chip">default off</span><span class="chip">preview and final render</span></div>
+            <p>Off, the marcher takes one distance estimate per step and runs the bisection probes only when it lands on a surface. Stepping into a solid always counts as a hit, because estimates are zero or negative inside, so the hit point still comes out right. On, it spends a second estimate on every step to check the step was safe. This is the older, slower behaviour, and it also catches a thin feature that an overshooting estimate skips over entirely. In the benchmark scenes, renders take 20&ndash;33% less time with it off, and the images match up to noise. Turn it on if thin filaments or sheets show holes that a lower <strong>Step-size safety factor</strong> does not fix. The <strong>Overstep view</strong> diagnostic always uses the verified path, because that check is what it measures.</p>
           </div>
         </div>
 
@@ -1401,6 +1411,10 @@
             <p>Photons come in two kinds. Ones that have only ever been reflected or refracted are <em>caustic</em> photons: they draw sharp shapes and need the small Gather radius above. Ones that have scattered off a matte surface or through fog at least once are <em>bounce light</em>: the soft glow a lit floor throws onto what stands on it. That light has no sharp detail to lose, so it is gathered with a radius this many times wider, which catches the square of this many more photons and removes most of the speckle from a lit room. 1 gathers both kinds alike.</p>
           </div>
           <div class="param">
+            <div class="param-head"><span class="param-name">Prefiltered bounce light</span><span class="chip">default on</span></div>
+            <p>After each photon trace, every bounce-light photon gets the full bounce-light gather worked out once, at its own position and facing. A shaded point then just finds the nearest photon in its own corner of the grid that faces the same way, and reads that answer back. The full gather searches up to eight grid cells per shaded point and was the largest single cost of a photon-lit render. In the benchmark scenes, renders take 10&ndash;30% less time with this on. Caustic photons are still gathered in full, so caustics stay as sharp as before. The trade is a little bias in bounce light: a shaded point takes the value of a nearby photon rather than its own, and photons crowd where light is brightest, so deep crevices can come out a shade lighter (under 1% of brightness in the test scenes). Turn it off to compare, or for a final render where bounce light in tight corners has to be exact.</p>
+          </div>
+          <div class="param">
             <div class="param-head"><span class="param-name">Fog cell scale</span><span class="chip">default 1</span><span class="chip">range 1&ndash;6</span></div>
             <p>Photons scattering in fog are stored in their own grid, and this sets that grid's cell size as a multiple of the surface grid's. At 1 the fog cells are as fine as the surface ones, which keeps redirected beams thin and sharp. Raising it pools each fog cell over a larger volume, so the shafts get smoother and less grainy but softer at their edges. Reach for it when bounced or refracted beams in fog look like strings of beads rather than continuous light. A change retraces the photons.</p>
           </div>
@@ -1425,6 +1439,10 @@
             <div class="param-head"><span class="param-name">Retrace per MC Render sample</span><span class="chip">default on</span></div>
             <p>Whether each accumulated <a href="#ch16">MC Render</a> sample gets its own freshly seeded set of photons. On, the caustics converge along with the rest of the image, which is the only way to get a clean one. Off, a single trace stands for the whole accumulation &mdash; much faster while composing a shot, at the cost of caustics that stay exactly as grainy as one trace makes them.</p>
             <p>Exports always trace once for the whole image regardless of this setting, because an export draws every sample of a tile before moving on to the next tile &mdash; a per-sample trace there would fire once per tile per sample. Raise <strong>Photon paths</strong> for an export instead; it buys the same cleanliness, and an export has the time.</p>
+          </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">Paths per sample (%)</span><span class="chip">default 25</span><span class="chip">range 5&ndash;100</span></div>
+            <p>Shown while Retrace per MC Render sample is on. The first sample after a change traces the full <strong>Photon paths</strong>. Every later retrace shoots only this share of them. Each sample still gets its own fresh photons, and the running average adds them up, so over time the photons reaching the image are the same as with fewer, full traces. The retrace is usually the most expensive part of a preview sample, so the preview accumulates two to three times faster at the default. In exchange, caustics and bounce light are grainier in the first few samples. 100 traces every sample in full, as before. Exports are unaffected.</p>
           </div>
           <div class="param">
             <div class="param-head"><span class="param-name">Progressive radius</span><span class="chip">default on</span><span class="chip">start 3&times;, range 1&ndash;8</span></div>
@@ -1591,7 +1609,25 @@
 
         <div class="note">
           <span class="tag">The most expensive feature in the app</span>
-          <p>Every fog sample re-marches the scene toward every shadowing light. The live view uses 28 steps per ray with 10-step light checks; an export uses 64 and 24, and then multiplies the whole thing by the <strong>Fog samples</strong> setting. Budget accordingly, and see <a href="#ch20">Chapter 20</a> for why animation frames should keep fog samples at 1.</p>
+          <p>Every fog sample re-marches the scene toward every shadowing light. The live view uses 28 steps per ray with 10-step light checks; an export uses 64 and 24, and then multiplies the whole thing by the <strong>Fog samples</strong> setting. Budget accordingly, and see <a href="#ch20">Chapter 20</a> for why animation frames should keep fog samples at 1. The fog shadow grid below takes the light checks out of that cost, and MC Render's <strong>Delta-tracked fog</strong> (<a href="#ch16">Chapter 16</a>) cuts the steps down to one lit point per sample.</p>
+        </div>
+
+        <h3>Fog shadow grid</h3>
+        <p>Light visibility inside fog does not depend on the camera, only on the geometry, the lights and where the fog is. So instead of marching a shadow ray toward each light at every fog step, the renderer can work it out once, for a grid of points covering all the fog spheres, and look it up from there. It is built per shadow-casting light, in the Render window's <em>Fog shadow grid</em> section, a moment after the scene stops changing, much like the empty-space accelerator. Flying the camera never rebuilds it. Moving a light, a fog sphere or the fractal does. While it is out of date, fog marches its shadow rays as before. Exports reuse the live grid when nothing has changed, and build their own otherwise.</p>
+        <p>The lookup blends between grid points, so a shadow inside fog is only as sharp as one grid cell. Shafts through wide gaps look the same; a thin shaft through a crack smaller than a cell gets softer and dimmer. Raise the resolution, or turn the grid off, for that kind of shot. The grid always uses the export's 24-step light checks, so the live preview's shafts reach as far as a final render's.</p>
+        <div class="params">
+          <div class="param">
+            <div class="param-head"><span class="param-name">Enabled</span><span class="chip">default on</span></div>
+            <p>Off marches a shadow ray at every fog step, as without the grid.</p>
+          </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">Grid resolution</span><span class="chip">default 64</span><span class="chip">range 16–128</span></div>
+            <p>Cells along the longest side of the box around all fog spheres. One large fog sphere covering the whole scene spreads these cells thinly. Memory is 8 bytes per cell per shadow-casting light: 2 MB per light at 64, 16 MB at 128. Build time grows with the cube of this value.</p>
+          </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">Rebuild delay (ms)</span><span class="chip">default 180</span><span class="chip">range 0–1000</span></div>
+            <p>How long the scene has to sit still before the grid is rebuilt.</p>
+          </div>
         </div>
       </section>
 
@@ -1751,7 +1787,7 @@
         <p>Two optional camera and lighting effects, depth of field in the Camera window and MC Render in the Render window's Monte Carlo section, both applying to the preview and to renders alike.</p>
 
         <h3>Depth of field</h3>
-        <p>A thin-lens simulation: instead of every ray starting from a single pinhole, several rays start from random points on a disc-shaped lens and are re-aimed at the same point on the focus plane. The preview takes 8 lens samples, an export takes 32 — so DOF reads as a soft grain live and a clean blur when rendered. With MC Render on, DOF converges along with everything else as frames accumulate.</p>
+        <p>A thin-lens simulation: instead of every ray starting from a single pinhole, several rays start from random points on a disc-shaped lens and are re-aimed at the same point on the focus plane. With MC Render off, an export takes 32 lens samples, giving a clean blur. With MC Render on, each sample takes <strong>Rays per MC sample</strong> lens rays (default 1), and DOF converges along with everything else as frames accumulate.</p>
 
         <p>Both effects need rays to work on, so neither does anything in 2D mode (<a href="#ch18">Chapter 18</a>). Their controls stay visible and keep their values, so they take effect again as soon as you switch back.</p>
 
@@ -1806,7 +1842,30 @@
             <div class="param-head"><span class="param-name">Minimum samples</span><span class="chip">value 16</span><span class="chip">slider range 4–64</span></div>
             <p>Samples every pixel takes before it may stop. Raise it if rare bright speckles, such as a caustic that only a few samples find, are getting frozen out too early.</p>
           </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">Rays per MC sample</span><span class="chip">default 1</span><span class="chip">range 1–32</span></div>
+            <p>With MC Render on, how many depth of field lens rays and fog passes each sample traces. It replaces the fixed 8/32 lens rays and the <strong>Fog samples</strong> setting. At 1, each sample costs the least, and lens blur and fog grain smooth out as samples accumulate, alongside everything else. A scene with depth of field or fog may need a higher <strong>Export samples</strong> to look as smooth as before, but it gets there in less total time. Raising this makes each sample smoother, at a matching cost.</p>
+          </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">One shadowed light per sample</span><span class="chip">default on</span></div>
+            <p>With MC Render on, each surface shadow-tests just one of its lights per sample instead of all of them. The choice is random, weighted toward the lights that shine brightest on that spot, and the result is scaled to make up for the lights it skipped. Over many samples the image averages to the same result. Each sample costs one shadow march instead of one per light, which matters most in scenes with several shadowing lights. Lights with <strong>Cast shadows</strong> off cost almost nothing and are always included. Turn this off if a dim light's shadows stay noisy for too long.</p>
+          </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">Delta-tracked fog</span><span class="chip">default on</span></div>
+            <p>With MC Render on, fog is lit at one point per sample instead of at every step of a fixed march. The point is picked along the ray in proportion to how much light the fog there could scatter toward the camera. Then one light is picked the same way, and one shadow ray is traced to it. How much light gets through the fog is estimated from the same walk, without marching the scene. Over many samples this averages to the same fog as the stepped march, but each sample costs one shadow ray where the march spent one per step per light. Expect fog and god rays to start grainier and clean up as samples accumulate. Turn it off to compare, or if a thin beam crossing a large fog sphere stays speckled for too long.</p>
+          </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">Reuse first hit</span><span class="chip">default on</span></div>
+            <p>Without depth of field lens rays, every sample's camera ray lands on exactly the same spot. This marches that ray and works out the surface normal once, on the first sample, then lets later samples read both back. The image is unchanged; later samples just skip the most expensive single march. Where that first hit is a smooth surface (Roughness 0), its mirror reflection also points the same way every sample, so the reflected ray's hit and normal are stored and reused the same way. Depth of field still reuses the focus probe. It switches itself off for lens-sampled pixels, motion-blurred animation frames, the stereo preview and the diagnostic views.</p>
+          </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">Wavefront path tracing</span><span class="chip">default on</span></div>
+            <p>With MC Render on, rays are traced one bounce at a time for the whole image instead of one pixel at a time from start to finish. Each bounce runs as a short series of GPU passes: march every live ray, shade every hit, then trace the shadow rays the shading asked for. Between bounces the rays that are still alive are packed together, and rays inside glass are kept apart from rays in open space, so the GPU never waits on a few long glass paths while the rest of the image has already finished. The image is the same up to noise. In the benchmark scenes it renders 1.2–1.3× faster on an integrated GPU. The first time it is used, its passes take a few seconds to compile in the background. It is skipped in the stereo preview and the diagnostic views, which always use the single-pass renderer. Turn it off to compare.</p>
+          </div>
         </div>
+
+        <h3>How fast the preview accumulates</h3>
+        <p>While MC Render is converging and you are not touching the view, the preview does not wait between frames. When a sample is cheap, it draws several samples per displayed frame. The number adjusts by itself, rising while frames take under about 28&nbsp;ms and halving once they take over 45&nbsp;ms, up to 32 per frame. So a light scene keeps the GPU busy instead of drawing one sample per screen refresh, and the window still redraws about 25 times a second. As soon as you drag, rotate, move, play the timeline, or open the GPU timing panel, it drops back to one sample per frame. A scene where one sample already takes longer than a frame gains nothing from this. With photons on, the biggest cost per preview sample is usually <strong>Retrace per MC Render sample</strong>, not the drawing. <strong>Paths per sample (%)</strong> is the control for that.</p>
 
         <div class="note">
           <span class="tag">Interaction worth knowing</span>
@@ -2063,10 +2122,12 @@
               <tr><td>F / R</td><td><strong>Zoom in / out.</strong> Only active in 2D mode; hold to keep zooming</td></tr>
               <tr><td>A / D</td><td>Slide the window left / right across the slice</td></tr>
               <tr><td>W / S</td><td>Push the cutting plane forward / back <em>through</em> the fractal — this is how you move to a different cross section</td></tr>
-              <tr><td>Arrow keys, mouse drag</td><td>Re-aim the plane, cutting at a different angle</td></tr>
+              <tr><td>Mouse drag</td><td>Pan: the point under the cursor follows it</td></tr>
+              <tr><td>Arrow keys, right-drag</td><td>Re-aim the plane, cutting at a different angle</td></tr>
               <tr><td>Q / E</td><td>Roll the plane, spinning the image</td></tr>
               <tr><td>Z / C</td><td>Halve / multiply the pan and slice-depth speed, as in 3D</td></tr>
-              <tr><td>Scroll wheel</td><td>Steps the plane forward / back, same axis as W/S</td></tr>
+              <tr><td>Scroll wheel</td><td>Zoom in / out, keeping the point under the cursor fixed</td></tr>
+              <tr><td>Shift + scroll wheel</td><td>Steps the plane forward / back, same axis as W/S, by a tenth of the view height per notch</td></tr>
             </tbody>
           </table>
         </div>
@@ -2076,7 +2137,7 @@
         <div class="params">
           <div class="param">
             <div class="param-head"><span class="param-name">2D mode</span><span class="chip">default off</span></div>
-            <p>Switches the renderer from ray marching to slicing.</p>
+            <p>Switches the renderer from ray marching to slicing. <strong>Settings...</strong> next to it opens the <strong>2D view</strong> window described below.</p>
           </div>
           <div class="param">
             <div class="param-head"><span class="param-name">Zoom readout</span><span class="chip">F / R</span></div>
@@ -2084,14 +2145,59 @@
           </div>
         </div>
 
-        <h3>Why there is no shading</h3>
-        <p>A cross section has no surface facing the camera, so there is nothing for a light to fall on. Lights, shadows, ambient occlusion, reflections, refraction, subsurface, volumetric fog and depth of field are all simply absent in 2D mode — they are not disabled settings, there is no geometry for them to act on. Your lights and fog emitters are untouched and come straight back when you switch the mode off.</p>
+        <h3>Why there is no lighting</h3>
+        <p>A cross section has no surface facing the camera, so there is nothing for a light to fall on. Lights, shadows, ambient occlusion, reflections, refraction, subsurface, volumetric fog and depth of field are all simply absent in 2D mode — they are not disabled settings, there is no geometry for them to act on. Your lights and fog emitters are untouched and come straight back when you switch the mode off. The optional <strong>Relief</strong> shading below is not lighting in this sense: it embosses the 2D picture itself.</p>
 
         <p>What you see instead is colour alone, and it is exact: a colour strip stop renders as precisely the colour you picked, with none of the tonemap compression a lit 3D surface goes through. This makes 2D mode a genuinely good way to <em>author</em> a strip — the gradient is easier to judge flat than wrapped around a lit surface.</p>
 
         <p>Colour comes from the orbit trap, the same quantity the 3D view colours surfaces with, folded across instances by the same combine modes (<a href="#ch7">Chapter 7</a>). A scene therefore looks like itself in both modes.</p>
 
-        <p>The picture is drawn in two bands. Where the plane passes through solid fractal, the strip colour stands at full strength, faded out over the last pixel so the outline is antialiased rather than crawling as you zoom. Outside it, the distance estimate drives a dimmer falloff over a couple of dozen pixels, which keeps the surrounding structure faintly visible and shows you which way the shape continues — the classic distance-estimate look. That halo is measured in pixels, so it stays the same visual thickness at every magnification.</p>
+        <p>In the default <strong>Cross-section</strong> colouring the picture is drawn in two bands. Where the plane passes through solid fractal, the strip colour stands at full strength, faded out over the last pixel so the outline is antialiased rather than crawling as you zoom. Outside it, the distance estimate drives a dimmer falloff over a couple of dozen pixels, which keeps the surrounding structure faintly visible and shows you which way the shape continues — the classic distance-estimate look. That halo is measured in pixels, so it stays the same visual thickness at every magnification.</p>
+
+        <h3>The 2D view window</h3>
+        <p><strong>Settings...</strong> next to the 2D mode checkbox, or <strong>Windows → 2D view</strong>, opens the window that turns the slice from a preview into a picture of its own. None of it needs anything from the formula: every formula already tells the renderer how to take one step of its orbit, and the 2D view simply watches those steps instead of only reading the distance at the end. Everything here is saved with the scene and undoable.</p>
+
+        <div class="params">
+          <div class="param">
+            <div class="param-head"><span class="param-name">Mode</span><span class="chip">default Cross-section</span></div>
+            <p><strong>Cross-section</strong> is the look described above. <strong>Escape time</strong> colours each point outside the set by how many steps its orbit took to leave the <strong>Escape radius</strong>, smoothed between steps so the bands are continuous — the classic 2D fractal picture, available for every 3D formula. <strong>Distance bands</strong> colours the outside by the distance estimate instead, counted in doublings of the pixel size, so the bands look the same at every zoom and work for formulas that never escape. <strong>Orbit trap field</strong> colours every point, inside and out, with its fractal's orbit trap, ignoring the surface altogether. All of them read colours from the fractal's own colour strip.</p>
+          </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">Escape radius</span><span class="chip">Escape time, default 16</span></div>
+            <p>How far an orbit has to get before it counts as escaped. Power formulas (the bulbs) stop at their own built-in radius of 2, and the 2D view notices that and uses their radius instead, so this slider matters for the box, fold and hybrid families. Primitives and most IFS formulas never escape at all; they show only their inside colouring in this mode.</p>
+          </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">Extra iterations</span><span class="chip">Escape time, default 0</span></div>
+            <p>Keeps stepping the orbit past the formula's own <strong>Iterations</strong> for colouring only. The shape and its outline still come from the normal iteration count, so the 2D view stays the same shape as the 3D one, but escape bands appear much further into the detail.</p>
+          </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">Bands per iteration / octave, Band offset</span><span class="chip">default 0.25 / 0</span></div>
+            <p>How many times the colour strip repeats per escape step (or per doubling of distance), and where in the strip the bands start.</p>
+          </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">Inside</span><span class="chip">default Orbit trap colour</span></div>
+            <p>What fills the solid (or never-escaping) region: the orbit-trap colour, a colour picked by how close the orbit came to the origin (<strong>Closest orbit radius</strong>), or <strong>Black</strong>.</p>
+          </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">Relief, Light angle</span><span class="chip">default 0 / 135°</span></div>
+            <p>Embosses the picture as if the colouring value were a height field, lit from <strong>Light angle</strong> (0° is from the right, 90° from above). It is computed from the difference between neighbouring pixels, so it costs nothing extra. 0 turns it off.</p>
+          </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">Contour lines, Lines per distance octave</span><span class="chip">default 0 / 2</span></div>
+            <p>Draws lines of equal distance estimate outside the surface, spaced geometrically. Besides looking good, they show the distance estimate at work: lines that bunch up, cross or break show where a formula's estimate is poor.</p>
+          </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">Slices, Depth, Opacity per slice</span><span class="chip">default 1 / 0.5 / 0.35</span></div>
+            <p>With more than one slice, the view stacks extra slices behind the plane, up to <strong>Depth</strong> view-heights deep, and composites the solid parts front to back, fading deeper ones. Low opacity sees through the shape like an X-ray; full opacity shows only the nearest solid, which makes it a cheap depth map — turn <strong>Relief</strong> up and it shades by that depth and reads almost like a 3D render. Each slice costs one more fractal evaluation per pixel, so 8 slices are still a few percent of a single 3D frame.</p>
+          </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">Anti-aliasing samples</span><span class="chip">default 8</span></div>
+            <p>The view jitters each sample by a fraction of a pixel (and slab slices by a fraction of their spacing) and averages them, then stops and goes idle. Exports use the same count.</p>
+          </div>
+        </div>
+
+        <h3>Navigator</h3>
+        <p><strong>Navigator</strong> in the Camera window (or <strong>Windows → Navigator</strong>) opens a small map that works in both modes. It shows the slice through the middle row of the view — the plane containing the camera and its right and forward directions — seen from above, with the camera as a dot near the bottom looking up the map and its field of view drawn as two lines. Click anywhere on the map to move the camera there; the wheel over the map, or <strong>Map half-size</strong>, zooms it. It uses the colouring from the 2D view window and is redrawn only when the camera or the scene changes.</p>
 
         <div class="note">
           <span class="tag">Zooming needs iterations</span>
@@ -2108,7 +2214,7 @@
 
         <p>The <em>mode</em> itself is not animated, only the zoom — a keyframe cannot flip the scene between 2D and 3D partway through a render, the same way it cannot switch depth of field on and off.</p>
 
-        <p>MC Render is ignored in 2D mode, live and in renders alike. Progressive accumulation only buys something where a draw is random — a traced bounce, a lens sample, a dithered fog step — and the slice has none of those, so every extra sample would be a bit-identical copy of the last. It comes straight back when you switch the mode off. Motion blur in an animation is unaffected: it varies the scene between samples rather than re-rolling the same one.</p>
+        <p>MC Render is ignored in 2D mode, live and in renders alike; the slice's own <strong>Anti-aliasing samples</strong> take its place. It comes straight back when you switch the mode off. Motion blur in an animation is unaffected: it varies the scene between samples rather than re-rolling the same one.</p>
 
         <div class="note">
           <span class="tag">Note</span>
@@ -2117,7 +2223,7 @@
 
         <div class="note">
           <span class="tag">Under the hood</span>
-          <p>2D mode is its own shader entry point with its own pipeline, not a branch inside the ray marcher's. That is a speed decision — sharing an entry point charged the slice the marcher's register footprint and crippled its occupancy — and it costs one extra, cheap pipeline compile per formula change. See <a href="#ch22">Chapter 22</a>.</p>
+          <p>2D mode is its own shader entry point with its own pipeline, not a branch inside the ray marcher's. That is a speed decision — sharing an entry point charged the slice the marcher's register footprint and crippled its occupancy. It is also compiled on its own: while you are in 2D mode, a formula change compiles only the slice pipeline, which takes a fraction of a second instead of the several seconds the 3D path tracer needs. When you switch back to 3D after such a change, the 3D pipelines compile in the background; the last image stays up and the status bar says <em>Compiling 3D shader...</em> until they are ready. See <a href="#ch22">Chapter 22</a>.</p>
         </div>
       </section>
 
@@ -2149,7 +2255,7 @@
           </div>
           <div class="param">
             <div class="param-head"><span class="param-name">Fog samples</span><span class="chip">default 8</span><span class="chip">range 1–16</span></div>
-            <p>How many independently jittered passes the fog march averages. Fog is dithered to avoid banding, and a still image has nothing downstream to hide that grain, so multiple passes average it away. This is the steepest single cost in a render — each pass re-marches the entire fog volume including its per-light visibility rays. If there is no fog in the scene it costs nothing at all. Hard-capped at 32 in the shader.</p>
+            <p>How many independently jittered passes the fog march averages. Fog is dithered to avoid banding, and a still image has nothing downstream to hide that grain, so multiple passes average it away. This is the steepest single cost in a render — each pass re-marches the entire fog volume including its per-light visibility rays. If there is no fog in the scene it costs nothing at all. Hard-capped at 32 in the shader. With MC Render on, this setting is ignored and fog uses <strong>Rays per MC sample</strong> instead, letting accumulation average the grain away.</p>
           </div>
           <div class="param">
             <div class="param-head"><span class="param-name">Ray march precision</span></div>
@@ -2291,7 +2397,7 @@
           </div>
           <div class="param">
             <div class="param-head"><span class="param-name">Fog samples/frame</span><span class="chip">default 1</span><span class="chip">range 1–16</span></div>
-            <p>Deliberately 1, and deliberately not the still export's value of 8. Those extra passes exist to average away dither grain that a lone still has nothing to hide it — but an animation frame is surrounded by neighbouring frames that the eye averages for you. Raising this multiplies the most expensive part of the renderer across every single frame.</p>
+            <p>Deliberately 1, and deliberately not the still export's value of 8. Those extra passes exist to average away dither grain that a lone still has nothing to hide it — but an animation frame is surrounded by neighbouring frames that the eye averages for you. Raising this multiplies the most expensive part of the renderer across every single frame. With MC Render on, <strong>Rays per MC sample</strong> sets the count instead.</p>
           </div>
           <div class="param">
             <div class="param-head"><span class="param-name">Motion blur</span><span class="chip">default 0</span><span class="chip">range 0–1</span></div>
@@ -2399,7 +2505,7 @@ fn de_finalize(carry: IterCarry) -&gt; f32</code></pre>
         <div class="pipeline">
           <div class="stage">
             <div class="stage-name">fs_main</div>
-            <div class="stage-desc">One fragment per pixel, for the ray-marched view. Builds the camera ray, then decides how many lens samples this pixel needs — one, or 8/32 if depth of field is on and this pixel sits outside the sharp zone.</div>
+            <div class="stage-desc">One fragment per pixel, for the ray-marched view. Builds the camera ray, then decides how many lens samples this pixel needs: one, or, if depth of field is on and this pixel sits outside the sharp zone, 32 in a non-MC export or <strong>Rays per MC sample</strong> under MC Render.</div>
           </div>
           <div class="stage indent-1">
             <div class="stage-name">trace_path</div>
@@ -2484,7 +2590,7 @@ fn de_finalize(carry: IterCarry) -&gt; f32</code></pre>
               <tr><td>FOG_MAX_SAMPLES</td><td class="num">32</td><td>Hard cap on fog passes</td></tr>
               <tr><td>Fog march steps</td><td class="num">28 / 64</td><td>Live / high quality</td></tr>
               <tr><td>Fog light steps</td><td class="num">10 / 24</td><td>Live / high quality</td></tr>
-              <tr><td>DOF lens samples</td><td class="num">8 / 32</td><td>Live / high quality</td></tr>
+              <tr><td>DOF lens samples</td><td class="num">8 / 32</td><td>Live / high quality, MC Render off; with it on, Rays per MC sample</td></tr>
               <tr><td>Shadow ray steps</td><td class="num">min(steps, 40)</td><td>Per light, per surface</td></tr>
               <tr><td>Interior march steps</td><td class="num">512</td><td>Hard cap on Inner max steps, regardless of slider range</td></tr>
               <tr><td>INSIDE_STEP_GROWTH</td><td class="num">6.0</td><td>Interior step floor grows ~e<sup>6</sup>× across the budget</td></tr>

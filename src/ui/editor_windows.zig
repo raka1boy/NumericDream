@@ -345,7 +345,7 @@ fn buildColorStripSection(ctx: *nk.nk_context, inst: anytype) void {
     }
 }
 
-fn labeledEnumCombo(ctx: *nk.nk_context, label: [:0]const u8, comptime E: type, value: *E) void {
+pub fn labeledEnumCombo(ctx: *nk.nk_context, label: [:0]const u8, comptime E: type, value: *E) void {
     nk.nk_layout_row_template_begin(ctx, 22);
     nk.nk_layout_row_template_push_static(ctx, 80);
     nk.nk_layout_row_template_push_dynamic(ctx);

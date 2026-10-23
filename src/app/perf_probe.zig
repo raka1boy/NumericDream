@@ -9,8 +9,46 @@ const max_marks = 12;
 
 var g_enabled: bool = false;
 
+pub const BenchMode = enum { both, mega, wave };
+
+pub const BenchConfig = struct {
+    scene: []const u8,
+    width: u32 = 960,
+    height: u32 = 540,
+    samples: u32 = 64,
+    out_dir: []const u8 = "bench/out",
+    mode: BenchMode = .both,
+    repeats: u32 = 2,
+    profile: bool = false,
+};
+
+pub const LiveBenchConfig = struct {
+    scene: []const u8,
+    seconds: f32 = 10,
+    warmup_samples: u32 = 16,
+};
+
+var g_bench: ?BenchConfig = null;
+var g_live_bench: ?LiveBenchConfig = null;
+
 pub fn enabled() bool {
     return g_enabled;
+}
+
+pub fn bench() ?BenchConfig {
+    return g_bench;
+}
+
+pub fn liveBench() ?LiveBenchConfig {
+    return g_live_bench;
+}
+
+fn optionValue(it: anytype, name: []const u8) ?[]const u8 {
+    const v = it.next() orelse {
+        std.debug.print("option '{s}' needs a value\n", .{name});
+        return null;
+    };
+    return v;
 }
 
 pub fn parseArgs(allocator: std.mem.Allocator, args: std.process.Args) bool {
@@ -18,14 +56,56 @@ pub fn parseArgs(allocator: std.mem.Allocator, args: std.process.Args) bool {
     defer it.deinit();
     _ = it.next();
     var ok = true;
+    var cfg = BenchConfig{ .scene = "" };
+    var want_bench = false;
+    var live = LiveBenchConfig{ .scene = "" };
+    var want_live = false;
     while (it.next()) |arg| {
         if (std.mem.eql(u8, arg, "-perf") or std.mem.eql(u8, arg, "--perf")) {
             g_enabled = true;
+        } else if (std.mem.eql(u8, arg, "-bench-live")) {
+            const v = optionValue(&it, arg) orelse return false;
+            live.scene = allocator.dupe(u8, v) catch return false;
+            want_live = true;
+        } else if (std.mem.eql(u8, arg, "-bench-seconds")) {
+            const v = optionValue(&it, arg) orelse return false;
+            live.seconds = @max(std.fmt.parseFloat(f32, v) catch return false, 1);
+        } else if (std.mem.eql(u8, arg, "-bench")) {
+            const v = optionValue(&it, arg) orelse return false;
+            cfg.scene = allocator.dupe(u8, v) catch return false;
+            want_bench = true;
+        } else if (std.mem.eql(u8, arg, "-bench-size")) {
+            const v = optionValue(&it, arg) orelse return false;
+            const x = std.mem.indexOfScalar(u8, v, 'x') orelse {
+                std.debug.print("-bench-size wants WxH, got '{s}'\n", .{v});
+                return false;
+            };
+            cfg.width = std.fmt.parseInt(u32, v[0..x], 10) catch return false;
+            cfg.height = std.fmt.parseInt(u32, v[x + 1 ..], 10) catch return false;
+        } else if (std.mem.eql(u8, arg, "-bench-samples")) {
+            const v = optionValue(&it, arg) orelse return false;
+            cfg.samples = std.fmt.parseInt(u32, v, 10) catch return false;
+        } else if (std.mem.eql(u8, arg, "-bench-repeats")) {
+            const v = optionValue(&it, arg) orelse return false;
+            cfg.repeats = @max(std.fmt.parseInt(u32, v, 10) catch return false, 1);
+        } else if (std.mem.eql(u8, arg, "-bench-out")) {
+            const v = optionValue(&it, arg) orelse return false;
+            cfg.out_dir = allocator.dupe(u8, v) catch return false;
+        } else if (std.mem.eql(u8, arg, "-bench-profile")) {
+            cfg.profile = true;
+        } else if (std.mem.eql(u8, arg, "-bench-mode")) {
+            const v = optionValue(&it, arg) orelse return false;
+            cfg.mode = std.meta.stringToEnum(BenchMode, v) orelse {
+                std.debug.print("-bench-mode wants both|mega|wave, got '{s}'\n", .{v});
+                return false;
+            };
         } else {
-            std.debug.print("unknown option '{s}' (supported: -perf)\n", .{arg});
+            std.debug.print("unknown option '{s}' (supported: -perf, -bench <scene.dream> [-bench-size WxH] [-bench-samples N] [-bench-repeats N] [-bench-mode both|mega|wave] [-bench-profile] [-bench-out dir], -bench-live <scene.dream> [-bench-seconds N])\n", .{arg});
             ok = false;
         }
     }
+    if (want_bench) g_bench = cfg;
+    if (want_live) g_live_bench = live;
     return ok;
 }
 

@@ -95,7 +95,7 @@ pub fn renderAnimation(
     const h: u32 = @intCast(@max(out_height, 1));
 
     var progress_ctx = export_image.ProgressCtx{ .overlay = progress_overlay, .gpu_ctx = gpu_ctx };
-    const mc_samples = export_image.mcSampleCount(mc, camera.mode_2d);
+    const mc_samples = export_image.mcSampleCount(mc, camera);
     const blur_enabled = motion_blur > 0.0005 and timeline.keyframe_count > 1;
     const sample_count: u32 = if (blur_enabled)
         @max(mc_samples, @as(u32, @intFromFloat(@max(motion_blur_samples, 1))))
@@ -150,6 +150,9 @@ pub fn renderAnimation(
     var frames_written: u32 = 0;
     var aborted = false;
     var pipe_failed = false;
+
+    fractal.beginExportSession();
+    defer fractal.endExportSession();
 
     for (0..frame_count) |f| {
         if (export_image.quit_requested or export_image.cancel_requested) {

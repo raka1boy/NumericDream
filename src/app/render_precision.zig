@@ -14,6 +14,8 @@ pub const MarchPrecision = struct {
     refine_fast_range: SliderRange = .{ .min = 1, .max = 12 },
     refine_hq: f32 = 20,
     refine_hq_range: SliderRange = .{ .min = 4, .max = 40 },
+
+    verify_each_step: bool = false,
 };
 
 pub const RenderSettingsState = struct {

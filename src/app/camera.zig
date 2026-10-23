@@ -1,6 +1,7 @@
 const std = @import("std");
 const sdl = @import("../bindings/sdl3.zig").c;
 const SliderRange = @import("slider_range.zig").SliderRange;
+const FlatView = @import("flat_view.zig").FlatView;
 
 pub const Vec3 = struct {
     x: f32,
@@ -51,6 +52,13 @@ pub fn eulerRotationColumns(rx: f32, ry: f32, rz: f32) [3]Vec3 {
     };
 }
 
+pub fn eulerFrame(rx: f32, ry: f32, rz: f32) [3][4]f32 {
+    const cols = eulerRotationColumns(rx, ry, rz);
+    var frame: [3][4]f32 = undefined;
+    for (cols, 0..) |c, i| frame[i] = .{ c.x, c.y, c.z, 0 };
+    return frame;
+}
+
 pub const CameraBasis = struct { pos: Vec3, forward: Vec3, right: Vec3, up: Vec3 };
 pub const default_zoom_2d: f32 = 2.0;
 pub const min_zoom_2d: f32 = 1e-6;
@@ -69,6 +77,7 @@ pub const FreeCamera = struct {
     focus_range_range: SliderRange = .{ .min = 0.0, .max = 5.0 },
     mode_2d: bool = false,
     zoom_2d: f32 = default_zoom_2d,
+    flat: FlatView = .{},
     follow_warp: bool = false,
     const zoom_speed_2d: f32 = 1.2;
 
@@ -114,6 +123,21 @@ pub const FreeCamera = struct {
         self.up = self.up.rotate(self.forward, angle);
         self.normalizeBasis();
     }
+    pub fn pan2d(self: *FreeCamera, dx: f32, dy: f32, view_h: f32) void {
+        const s = 2.0 * self.zoom_2d / @max(view_h, 1.0);
+        const b = self.basis();
+        self.position = self.position.sub(b.right.scale(dx * s)).sub(b.up.scale(dy * s));
+    }
+
+    pub fn zoomAt2d(self: *FreeCamera, factor: f32, px: f32, py: f32, view_w: f32, view_h: f32) void {
+        const old = self.zoom_2d;
+        self.zoom_2d = std.math.clamp(old * factor, min_zoom_2d, max_zoom_2d);
+        const h = @max(view_h, 1.0);
+        const b = self.basis();
+        const offset = b.right.scale(px - view_w * 0.5).add(b.up.scale(py - h * 0.5));
+        self.position = self.position.add(offset.scale(2.0 * (old - self.zoom_2d) / h));
+    }
+
     pub fn tick(self: *FreeCamera, keys: [*c]const bool, dt: f32) void {
         const zoom_scale: f32 = if (self.mode_2d) self.zoom_2d / default_zoom_2d else 1.0;
         const move_speed: f32 = 2.5 * self.speed_multiplier * zoom_scale;

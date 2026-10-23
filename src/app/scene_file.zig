@@ -338,6 +338,8 @@ pub fn encodeScene(
     }
     var stereo_ui = stereo;
     stereo_ui.settings_open = false;
+    var camera_ui = camera;
+    camera_ui.flat.window_open = false;
 
     var scratch: [max_instances]InstanceScratch = undefined;
     var instance_dtos: [max_instances]InstanceDto = undefined;
@@ -360,7 +362,7 @@ pub fn encodeScene(
     }
 
     const scene = SceneFile{
-        .camera = camera,
+        .camera = camera_ui,
         .max_steps = max_steps,
         .max_steps_range = max_steps_range,
         .max_dist = max_dist,
@@ -762,6 +764,7 @@ pub fn applyScene(
 
     const kept_camera = camera.*;
     camera.* = scene.camera;
+    camera.flat.window_open = undo and kept_camera.flat.window_open;
     if (undo) {
         camera.position = kept_camera.position;
         camera.forward = kept_camera.forward;

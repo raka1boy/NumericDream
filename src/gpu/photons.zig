@@ -4,6 +4,10 @@ const wgpu = @import("../bindings/webgpu.zig").c;
 const webgpu_context = @import("webgpu_context.zig");
 const Context = webgpu_context.Context;
 const sv = webgpu_context.sv;
+const MapState = @import("fractal_renderer.zig").MapState;
+const onBufferMapped = @import("fractal_renderer.zig").onBufferMapped;
+
+const stats_drain_timeout_ms: u32 = 2000;
 
 pub const pool_per_bucket: u32 = 4;
 pub const min_pool_log2: u32 = 19;
@@ -17,6 +21,7 @@ pub const volume_words: u32 = 12;
 pub const fixed_counts_per_deposit: f32 = 65536;
 
 pub const photon_stride: u32 = 48;
+pub const staged_stride: u32 = 48;
 
 pub const stat_count: u32 = 6;
 
@@ -196,8 +201,11 @@ pub const PhotonMap = struct {
 
     last_trace_ms: u64 = 0,
     last_paths: u32 = 0,
+    trace_started_ms: u64 = 0,
 
     last_stats: TraceStats = .{},
+    stats_map: MapState = .{},
+    stats_mapping: bool = false,
     cell_cap_surface: u32 = min_cell_cap,
 
     stored_cap_surface: u32 = min_cell_cap,
@@ -216,11 +224,11 @@ pub const PhotonMap = struct {
 
     pub fn init(ctx: *const Context) !PhotonMap {
         const render_entries = [_]wgpu.WGPUBindGroupLayoutEntry{
-            storageEntry(0, wgpu.WGPUShaderStage_Fragment, wgpu.WGPUBufferBindingType_ReadOnlyStorage),
-            storageEntry(1, wgpu.WGPUShaderStage_Fragment, wgpu.WGPUBufferBindingType_ReadOnlyStorage),
-            storageEntry(2, wgpu.WGPUShaderStage_Fragment, wgpu.WGPUBufferBindingType_ReadOnlyStorage),
-            storageEntry(3, wgpu.WGPUShaderStage_Fragment, wgpu.WGPUBufferBindingType_ReadOnlyStorage),
-            storageEntry(10, wgpu.WGPUShaderStage_Fragment, wgpu.WGPUBufferBindingType_ReadOnlyStorage),
+            storageEntry(0, wgpu.WGPUShaderStage_Fragment | wgpu.WGPUShaderStage_Compute, wgpu.WGPUBufferBindingType_ReadOnlyStorage),
+            storageEntry(1, wgpu.WGPUShaderStage_Fragment | wgpu.WGPUShaderStage_Compute, wgpu.WGPUBufferBindingType_ReadOnlyStorage),
+            storageEntry(2, wgpu.WGPUShaderStage_Fragment | wgpu.WGPUShaderStage_Compute, wgpu.WGPUBufferBindingType_ReadOnlyStorage),
+            storageEntry(3, wgpu.WGPUShaderStage_Fragment | wgpu.WGPUShaderStage_Compute, wgpu.WGPUBufferBindingType_ReadOnlyStorage),
+            storageEntry(10, wgpu.WGPUShaderStage_Fragment | wgpu.WGPUShaderStage_Compute, wgpu.WGPUBufferBindingType_ReadOnlyStorage),
         };
         const render_layout = wgpu.wgpuDeviceCreateBindGroupLayout(ctx.device, &wgpu.WGPUBindGroupLayoutDescriptor{
             .nextInChain = null,
@@ -318,7 +326,7 @@ pub const PhotonMap = struct {
     pub fn bytes(self: *const PhotonMap) u64 {
         if (!self.isAllocated()) return 0;
         const b: u64 = self.buckets;
-        return 2 * @as(u64, self.poolPhotons()) * photon_stride + b * (16 + volume_words * 4) + aimWeightsSize() * 2 + aimTableSize();
+        return @as(u64, self.poolPhotons()) * (photon_stride + staged_stride) + b * (16 + volume_words * 4) + aimWeightsSize() * 2 + aimTableSize();
     }
 
     pub fn aimWeightsSize() u64 {
@@ -335,10 +343,11 @@ pub const PhotonMap = struct {
 
         const buckets: u32 = @as(u32, 1) << @intCast(log2);
         const cells_size: u64 = @as(u64, poolFor(log2)) * photon_stride;
+        const staging_size: u64 = @as(u64, poolFor(log2)) * staged_stride;
         const counts_size: u64 = @as(u64, buckets) * 4;
         const stats_size: u64 = stat_count * 4;
         const volume_size: u64 = @as(u64, buckets) * volume_words * 4;
-        const largest = @max(cells_size, volume_size);
+        const largest = @max(staging_size, volume_size);
         if (largest > ctx.limits.maxStorageBufferBindingSize or largest > ctx.limits.maxBufferSize) {
             return self.cells != null;
         }
@@ -353,7 +362,7 @@ pub const PhotonMap = struct {
             .{ .label = "photon trace stats", .size = stats_size, .usage = wgpu.WGPUBufferUsage_Storage | wgpu.WGPUBufferUsage_CopyDst | wgpu.WGPUBufferUsage_CopySrc },
             .{ .label = "photon trace stats readback", .size = stats_size, .usage = wgpu.WGPUBufferUsage_MapRead | wgpu.WGPUBufferUsage_CopyDst },
             .{ .label = "photon fog sums", .size = volume_size, .usage = wgpu.WGPUBufferUsage_Storage | wgpu.WGPUBufferUsage_CopyDst },
-            .{ .label = "photon staging", .size = cells_size, .usage = wgpu.WGPUBufferUsage_Storage },
+            .{ .label = "photon staging", .size = staging_size, .usage = wgpu.WGPUBufferUsage_Storage },
             .{ .label = "photon aim pilot", .size = aimWeightsSize(), .usage = wgpu.WGPUBufferUsage_Storage | wgpu.WGPUBufferUsage_CopySrc },
             .{ .label = "photon aim pilot readback", .size = aimWeightsSize(), .usage = wgpu.WGPUBufferUsage_MapRead | wgpu.WGPUBufferUsage_CopyDst },
             .{ .label = "photon aim table", .size = aimTableSize(), .usage = wgpu.WGPUBufferUsage_Storage | wgpu.WGPUBufferUsage_CopyDst },
@@ -417,7 +426,7 @@ pub const PhotonMap = struct {
                     bufferEntry(8, cursor, counts_size),
                     bufferEntry(9, stats, stats_size),
                     bufferEntry(11, volume, volume_size),
-                    bufferEntry(12, staging, cells_size),
+                    bufferEntry(12, staging, staging_size),
                     bufferEntry(13, aim_weights, aimWeightsSize()),
                     bufferEntry(14, aim_table, aimTableSize()),
                 },
@@ -434,6 +443,11 @@ pub const PhotonMap = struct {
             return self.cells != null;
         }
 
+        if (self.stats_mapping) {
+            _ = webgpu_context.pollUntil(ctx.instance, &self.stats_map.done, stats_drain_timeout_ms);
+            self.finishStats();
+            self.stats_mapping = false;
+        }
         self.releaseBuffers();
         self.cells = cells;
         self.counts = counts;
@@ -472,6 +486,57 @@ pub const PhotonMap = struct {
     pub fn noteStats(self: *PhotonMap, s: TraceStats) void {
         self.last_stats = s;
         self.cell_cap_surface = capFor(self.poolPhotons(), s.cells_surface);
+    }
+
+    pub fn requestStats(self: *PhotonMap, ctx: *const Context) void {
+        if (self.stats_mapping or self.stats_read == null) return;
+        const size: u64 = @sizeOf(TraceStats);
+        const encoder = wgpu.wgpuDeviceCreateCommandEncoder(ctx.device, null) orelse return;
+        wgpu.wgpuCommandEncoderCopyBufferToBuffer(encoder, self.stats, 0, self.stats_read, 0, size);
+        const cmd = wgpu.wgpuCommandEncoderFinish(encoder, null);
+        wgpu.wgpuCommandEncoderRelease(encoder);
+        wgpu.wgpuQueueSubmit(ctx.queue, 1, &cmd);
+        wgpu.wgpuCommandBufferRelease(cmd);
+
+        self.stats_map = .{};
+        self.stats_mapping = true;
+        _ = wgpu.wgpuBufferMapAsync(self.stats_read, wgpu.WGPUMapMode_Read, 0, size, wgpu.WGPUBufferMapCallbackInfo{
+            .nextInChain = null,
+            .mode = wgpu.WGPUCallbackMode_AllowProcessEvents,
+            .callback = onBufferMapped,
+            .userdata1 = &self.stats_map,
+            .userdata2 = null,
+        });
+    }
+
+    pub fn collectStats(self: *PhotonMap, ctx: *const Context) void {
+        if (!self.stats_mapping) return;
+        wgpu.wgpuInstanceProcessEvents(ctx.instance);
+        self.finishStats();
+    }
+
+    fn finishStats(self: *PhotonMap) void {
+        if (!self.stats_map.done) return;
+        self.stats_mapping = false;
+        if (self.stats_map.status != wgpu.WGPUMapAsyncStatus_Success) return;
+        defer wgpu.wgpuBufferUnmap(self.stats_read);
+        const ptr = wgpu.wgpuBufferGetConstMappedRange(self.stats_read, 0, @sizeOf(TraceStats)) orelse return;
+        const s: TraceStats = @as(*const TraceStats, @ptrCast(@alignCast(ptr))).*;
+        self.noteStats(s);
+        self.last_trace_ms = sdl.SDL_GetTicks() -| self.trace_started_ms;
+        std.debug.print(
+            "[photons] {d} cells, pool {d}/{d}, {d} deposits had no bucket, {d} cells had no pool, {d} staged{s} -- done after ~{d}ms\n",
+            .{
+                s.occupiedCells(),
+                s.pool_used,
+                self.poolPhotons(),
+                s.dropped_no_bucket,
+                s.dropped_no_pool,
+                s.staged,
+                if (s.staged > self.poolPhotons()) " (overflowed staging: traced twice)" else "",
+                self.last_trace_ms,
+            },
+        );
     }
 
     pub fn wantsRecap(self: *const PhotonMap) bool {

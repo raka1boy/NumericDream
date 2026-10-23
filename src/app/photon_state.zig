@@ -7,6 +7,7 @@ const DebouncedDirty = debounce.DebouncedDirty;
 
 const progressive_alpha: f32 = 2.0 / 3.0;
 const progressive_floor: f32 = 0.25;
+const min_sample_paths: u32 = 4096;
 
 pub const PhotonSettings = struct {
     enabled: bool = true,
@@ -24,6 +25,8 @@ pub const PhotonSettings = struct {
 
     bounce_radius_scale: f32 = 4,
     bounce_radius_scale_range: SliderRange = .{ .min = 1, .max = 16 },
+
+    prefilter: bool = true,
 
     progressive: bool = true,
     progressive_start: f32 = 3,
@@ -45,6 +48,8 @@ pub const PhotonSettings = struct {
     },
 
     refine_per_sample: bool = true,
+    sample_paths_pct: f32 = 25,
+    sample_paths_pct_range: SliderRange = .{ .min = 5, .max = 100 },
 
     debounce_ms: f32 = 180,
     debounce_ms_range: SliderRange = .{ .min = 0, .max = 1000 },
@@ -86,6 +91,14 @@ pub const PhotonSettings = struct {
 
     pub fn pathCount(self: PhotonSettings) u32 {
         return @intFromFloat(std.math.clamp(self.paths, 0, 16_777_216));
+    }
+
+    pub fn tracePathCount(self: PhotonSettings, mc_active: bool, sample: f32) u32 {
+        const full = self.pathCount();
+        if (!mc_active or !self.refine_per_sample or sample < 0.5) return full;
+        const share = std.math.clamp(self.sample_paths_pct, 1, 100) / 100;
+        const scaled: u32 = @intFromFloat(@as(f32, @floatFromInt(full)) * share);
+        return @max(scaled, @min(full, min_sample_paths));
     }
 
     pub fn dispersionSoftness(self: PhotonSettings) f32 {

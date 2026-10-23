@@ -1,0 +1,356 @@
+{
+  "version": 12,
+  "camera": {
+    "position": {
+      "x": 0.0,
+      "y": 0.6,
+      "z": 4.2
+    },
+    "forward": {
+      "x": 0.0,
+      "y": -0.1871,
+      "z": -0.9823
+    },
+    "up": {
+      "x": 0.0,
+      "y": -0.9823,
+      "z": 0.1871
+    }
+  },
+  "max_steps": 128,
+  "max_steps_range": {
+    "min": 32,
+    "max": 512
+  },
+  "max_dist": 24,
+  "max_dist_range": {
+    "min": 4,
+    "max": 64
+  },
+  "preview_quality": 0.5,
+  "preview_quality_range": {
+    "min": 0.1,
+    "max": 1
+  },
+  "max_reflection_bounces": 1,
+  "max_reflection_bounces_range": {
+    "min": 0,
+    "max": 8
+  },
+  "render_settings": {
+    "max_steps": 256,
+    "max_dist": 24,
+    "max_reflection_bounces": 1,
+    "fog_samples": 8
+  },
+  "export_width": 960,
+  "export_height": 540,
+  "instances": [
+    {
+      "offset": {
+        "x": 0.0,
+        "y": 0.0,
+        "z": 0.0
+      },
+      "offset_range_x": {
+        "min": -4,
+        "max": 4
+      },
+      "offset_range_y": {
+        "min": -4,
+        "max": 4
+      },
+      "offset_range_z": {
+        "min": -4,
+        "max": 4
+      },
+      "scale": {
+        "x": 1,
+        "y": 1,
+        "z": 1
+      },
+      "scale_range_x": {
+        "min": -4,
+        "max": 4
+      },
+      "scale_range_y": {
+        "min": -4,
+        "max": 4
+      },
+      "scale_range_z": {
+        "min": -4,
+        "max": 4
+      },
+      "rotation": {
+        "x": 20,
+        "y": 30,
+        "z": 0
+      },
+      "rotation_range_x": {
+        "min": -180,
+        "max": 180
+      },
+      "rotation_range_y": {
+        "min": -180,
+        "max": 180
+      },
+      "rotation_range_z": {
+        "min": -180,
+        "max": 180
+      },
+      "step_safety": 1.0,
+      "step_safety_range": {
+        "min": 0.05,
+        "max": 1
+      },
+      "combine_mode": "hard_union",
+      "blend_k": 0.5,
+      "blend_k_range": {
+        "min": 0,
+        "max": 2
+      },
+      "formula": {
+        "path": "",
+        "params": []
+      },
+      "mixins": [],
+      "hybrid_base_iters": 2,
+      "hybrid_base_iters_range": {
+        "min": 0,
+        "max": 8
+      },
+      "hybrid_total_iters": 12,
+      "hybrid_total_iters_range": {
+        "min": 1,
+        "max": 48
+      },
+      "colors": [
+        {
+          "position": 0.0,
+          "color": [
+            0.85,
+            0.45,
+            0.2
+          ],
+          "glossiness": 0.4,
+          "transparency": 0.0,
+          "reflectiveness": 0.05,
+          "ior": 1.5,
+          "abbe": 0,
+          "inner_max_steps": 64
+        },
+        {
+          "position": 1.0,
+          "color": [
+            0.3,
+            0.5,
+            0.9
+          ],
+          "glossiness": 0.4,
+          "transparency": 0.0,
+          "reflectiveness": 0.05,
+          "ior": 1.5,
+          "abbe": 0,
+          "inner_max_steps": 64
+        }
+      ]
+    },
+    {
+      "offset": {
+        "x": 0.0,
+        "y": -1.35,
+        "z": 0.0
+      },
+      "offset_range_x": {
+        "min": -4,
+        "max": 4
+      },
+      "offset_range_y": {
+        "min": -4,
+        "max": 4
+      },
+      "offset_range_z": {
+        "min": -4,
+        "max": 4
+      },
+      "scale": {
+        "x": 6,
+        "y": 0.1,
+        "z": 6
+      },
+      "scale_range_x": {
+        "min": -8,
+        "max": 8
+      },
+      "scale_range_y": {
+        "min": -8,
+        "max": 8
+      },
+      "scale_range_z": {
+        "min": -8,
+        "max": 8
+      },
+      "rotation": {
+        "x": 0,
+        "y": 0,
+        "z": 0
+      },
+      "rotation_range_x": {
+        "min": -180,
+        "max": 180
+      },
+      "rotation_range_y": {
+        "min": -180,
+        "max": 180
+      },
+      "rotation_range_z": {
+        "min": -180,
+        "max": 180
+      },
+      "step_safety": 1.0,
+      "step_safety_range": {
+        "min": 0.05,
+        "max": 1
+      },
+      "combine_mode": "hard_union",
+      "blend_k": 0.5,
+      "blend_k_range": {
+        "min": 0,
+        "max": 2
+      },
+      "formula": {
+        "path": "formulas/cube_primitive.wgsl",
+        "params": [
+          {
+            "name": "Size",
+            "value": 1.0,
+            "range": {
+              "min": 0.02,
+              "max": 8
+            }
+          }
+        ]
+      },
+      "mixins": [],
+      "hybrid_base_iters": 2,
+      "hybrid_base_iters_range": {
+        "min": 0,
+        "max": 8
+      },
+      "hybrid_total_iters": 12,
+      "hybrid_total_iters_range": {
+        "min": 1,
+        "max": 48
+      },
+      "colors": [
+        {
+          "position": 0.0,
+          "color": [
+            0.55,
+            0.55,
+            0.6
+          ],
+          "glossiness": 0.85,
+          "reflectiveness": 0.05
+        },
+        {
+          "position": 1.0,
+          "color": [
+            0.35,
+            0.35,
+            0.4
+          ],
+          "glossiness": 0.85,
+          "reflectiveness": 0.05
+        }
+      ]
+    }
+  ],
+  "lights": [
+    {
+      "kind": "global",
+      "color": [
+        0.7,
+        0.8,
+        1.0
+      ],
+      "brightness": 1.2,
+      "brightness_range": {
+        "min": 0,
+        "max": 4
+      },
+      "position": {
+        "x": 0,
+        "y": 3,
+        "z": 0
+      },
+      "position_range_x": {
+        "min": -10,
+        "max": 10
+      },
+      "position_range_y": {
+        "min": -10,
+        "max": 10
+      },
+      "position_range_z": {
+        "min": -10,
+        "max": 10
+      },
+      "direction": {
+        "x": -0.5,
+        "y": 0.8,
+        "z": 0.3
+      },
+      "direction_range_x": {
+        "min": -1,
+        "max": 1
+      },
+      "direction_range_y": {
+        "min": -1,
+        "max": 1
+      },
+      "direction_range_z": {
+        "min": -1,
+        "max": 1
+      },
+      "cast_shadows": true,
+      "hard_shadows": false,
+      "shadow_softness": 12,
+      "shadow_softness_range": {
+        "min": 1,
+        "max": 64
+      },
+      "window_open": false
+    }
+  ],
+  "fog_emitters": [],
+  "sky": {
+    "mode": "procedural",
+    "zenith": [
+      0.1,
+      0.14,
+      0.3
+    ],
+    "horizon": [
+      0.35,
+      0.32,
+      0.4
+    ],
+    "ground": [
+      0.08,
+      0.07,
+      0.1
+    ],
+    "intensity": 1.0
+  },
+  "mc": {
+    "enabled": true,
+    "max_samples": 256,
+    "export_samples": 64,
+    "adaptive": false,
+    "inner_samples": 1,
+    "light_pick": true,
+    "fog_tracking": true,
+    "primary_cache": true
+  }
+}

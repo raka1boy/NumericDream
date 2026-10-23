@@ -9,6 +9,10 @@ pub const accel = @import("accel.zig");
 const AccelGrid = accel.AccelGrid;
 pub const fft = @import("fft.zig");
 const FftVolume = fft.FftVolume;
+pub const fog_vis = @import("fog_vis.zig");
+pub const wavefront = @import("wavefront.zig");
+const WavefrontGpu = wavefront.WavefrontGpu;
+const FogVisGrid = fog_vis.FogVisGrid;
 pub const photons = @import("photons.zig");
 const PhotonMap = photons.PhotonMap;
 pub const sky_texture = @import("sky_texture.zig");
@@ -24,6 +28,7 @@ const PartsPipelines = @import("parts_pipelines.zig").PartsPipelines;
 pub const gpu_timer = @import("gpu_timer.zig");
 const photon_state = @import("../app/photon_state.zig");
 const accel_state = @import("../app/accel_state.zig");
+const fog_vis_state = @import("../app/fog_vis_state.zig");
 const sky_state = @import("../app/sky.zig");
 const approximations = @import("../app/approximations.zig");
 const perf_probe = @import("../app/perf_probe.zig");
@@ -66,7 +71,7 @@ const select_format = wgpu.WGPUTextureFormat_R8Unorm;
 const depth_format = wgpu.WGPUTextureFormat_R32Float;
 const normal_format = wgpu.WGPUTextureFormat_RGBA16Float;
 
-const adapt_stats_stride: u64 = 16;
+const adapt_stats_stride: u64 = 48;
 
 const aov_format = wgpu.WGPUTextureFormat_RGBA16Float;
 const aov_bytes_per_pixel: u32 = 8;
@@ -138,12 +143,16 @@ pub const FractalInstance = extern struct {
     trap_offset: f32 = 0,
     mixins: [max_mixins]MixinParams,
     colors: [max_color_stops]ColorStop,
+    frame: [3][4]f32 = identity_frame,
 };
+
+pub const identity_frame: [3][4]f32 = .{ .{ 1, 0, 0, 0 }, .{ 0, 1, 0, 0 }, .{ 0, 0, 1, 0 } };
 
 comptime {
     std.debug.assert(@offsetOf(FractalInstance, "trap_center") % 16 == 0);
     std.debug.assert(@offsetOf(FractalInstance, "trap_box") % 16 == 0);
     std.debug.assert(@offsetOf(FractalInstance, "mixins") % 16 == 0);
+    std.debug.assert(@offsetOf(FractalInstance, "frame") % 16 == 0);
     std.debug.assert(@sizeOf(FractalInstance) % 16 == 0);
 }
 
@@ -184,7 +193,12 @@ pub const Warp = extern struct {
     lip_mult: f32 = 0,
     lip_grad: f32 = 0,
     safety: f32 = 1,
+    frame: [3][4]f32 = identity_frame,
 };
+
+comptime {
+    std.debug.assert(@offsetOf(Warp, "frame") == 96);
+}
 
 pub const ParticleSystem = extern struct {
     center: [3]f32 = .{ 0, 0, 0 },
@@ -255,8 +269,8 @@ pub const Uniforms = extern struct {
     accel_params: [accel.max_cascades][4]f32 = @splat(.{ 0, 0, 0, 0 }),
     warp_count: f32 = 0,
     has_transparency: f32 = 0,
-    _pad_warp1: f32 = 0,
-    _pad_warp2: f32 = 0,
+    photon_prefilter: f32 = 0,
+    march_verify: f32 = 0,
     warps: [max_warps]Warp = @splat(.{}),
     photon_enabled: f32 = 0,
     photon_radius: f32 = 0.05,
@@ -298,11 +312,37 @@ pub const Uniforms = extern struct {
     approx_tint: f32 = 1,
     approx_lod_start: f32 = 2,
     approx_lod_strength: f32 = 1.5,
-    _pad_approx0: f32 = 0,
+    mc_light_pick: f32 = 0,
     adapt_enabled: f32 = 0,
     adapt_threshold: f32 = 0.02,
     adapt_min_samples: f32 = 16,
     adapt_row_width: f32 = 0,
+    flat_coloring: f32 = 0,
+    flat_interior: f32 = 0,
+    flat_bailout: f32 = 16,
+    flat_extra_iters: f32 = 0,
+    flat_band_density: f32 = 0.25,
+    flat_band_offset: f32 = 0,
+    flat_relief: f32 = 0,
+    flat_light_angle: f32 = 135,
+    flat_contours: f32 = 0,
+    flat_contour_density: f32 = 2,
+    flat_slab_slices: f32 = 1,
+    flat_slab_depth: f32 = 0.5,
+    flat_slab_opacity: f32 = 0.35,
+    flat_samples: f32 = 1,
+    flat_halo: f32 = 0.35,
+    mc_inner_samples: f32 = 1,
+    fog_tracking: f32 = 0,
+    primary_cache_key: f32 = 0,
+    fog_vis_enabled: f32 = 0,
+    fog_vis_layers: f32 = 0,
+    fog_vis_origin: [3]f32 = .{ 0, 0, 0 },
+    fog_vis_cell: f32 = 0,
+    fog_vis_dims: [3]f32 = .{ 0, 0, 0 },
+    fog_vis_z_offset: f32 = 0,
+    fog_vis_light_layer: [max_lights / 4][4]f32 = @splat(@splat(-1)),
+    fog_vis_layer_light: [max_lights / 4][4]f32 = @splat(@splat(0)),
 };
 
 pub const Sky = extern struct {
@@ -336,6 +376,12 @@ comptime {
     std.debug.assert(@offsetOf(Uniforms, "particle_systems") % 16 == 0);
     std.debug.assert(@offsetOf(Uniforms, "approx_flags") % 16 == 0);
     std.debug.assert(@offsetOf(Uniforms, "adapt_enabled") % 16 == 0);
+    std.debug.assert(@offsetOf(Uniforms, "flat_coloring") % 16 == 0);
+    std.debug.assert(@offsetOf(Uniforms, "fog_tracking") % 16 == 0);
+    std.debug.assert(@offsetOf(Uniforms, "fog_vis_origin") % 16 == 0);
+    std.debug.assert(@offsetOf(Uniforms, "fog_vis_dims") % 16 == 0);
+    std.debug.assert(@offsetOf(Uniforms, "fog_vis_light_layer") % 16 == 0);
+    std.debug.assert(max_lights == fog_vis.max_lights and max_lights % 4 == 0);
     std.debug.assert(max_lights == photons.aim_max_lights);
     std.debug.assert(@sizeOf(photons.AimEntry) == 16);
     for (.{ "zenith", "horizon", "ground", "sun_color", "sun_dir" }) |field| {
@@ -468,6 +514,7 @@ fn appendDispatchers(allocator: std.mem.Allocator, out: *std.ArrayList(u8), tabl
     try appendDispatch(allocator, out, table, "\nfn eval_formula(code: i32, slot: i32, pos: vec3f, p: array<f32, 8>) -> vec2f {\n", "formula_{0d}(pos, p, slot)", true, "    return vec2f(NO_SURFACE_DE, 0.0);\n}\n");
     try appendDispatch(allocator, out, table, "\nfn eval_step(code: i32, carry: IterCarry, pos: vec3f, p: array<f32, 8>) -> IterCarry {\n", "de_step_{0d}(carry, pos, p)", false, "    return carry;\n}\n");
     try appendDispatch(allocator, out, table, "\nfn eval_finalize(code: i32, carry: IterCarry) -> f32 {\n", "de_finalize_{0d}(carry)", false, "    return NO_SURFACE_DE;\n}\n");
+    try appendDispatch(allocator, out, table, "\nfn eval_iterations(code: i32, p: array<f32, 8>) -> i32 {\n", "de_iterations_{0d}(p)", false, "    return 0;\n}\n");
 }
 
 pub fn sourceHash(source: []const u8) u64 {
@@ -740,6 +787,23 @@ fn photonSceneHash(u: *const Uniforms, settings: photon_state.PhotonSettings) u6
     return photon_state.sceneHash(u, settings);
 }
 
+fn fogVisSceneHash(u: *const Uniforms, _: photon_state.PhotonSettings) u64 {
+    return fog_vis_state.sceneHash(u, false, 0);
+}
+
+fn primarySceneHash(u: *const Uniforms, _: photon_state.PhotonSettings) u64 {
+    var h = std.hash.Wyhash.init(accel_state.sceneHash(u));
+    inline for (.{
+        "camera_pos",            "camera_right",        "camera_up",   "camera_forward",
+        "max_steps",             "max_dist",            "resolution",  "high_quality",
+        "epsilon_coefficient",   "epsilon_floor",       "refine_fast", "refine_hq",
+        "hq_footprint_budget_px", "primary_cache_key",   "march_verify",
+    }) |field| {
+        h.update(std.mem.asBytes(&@field(u, field)));
+    }
+    return h.final();
+}
+
 pub const RenderProgress = struct {
     callback: *const fn (frac: f32, userdata: ?*anyopaque) void,
     userdata: ?*anyopaque = null,
@@ -822,6 +886,63 @@ const export_batch_target_ms: f32 = 250;
 
 const post_single_tile_px_budget: u64 = 16 << 20;
 
+const live_band_capacity = 16;
+
+const WaveEncoder = struct {
+    r: *FractalRenderer,
+    encoder: wgpu.WGPUCommandEncoder,
+    slot: u32,
+    block: u32,
+    timed: bool,
+    pass: wgpu.WGPUComputePassEncoder = null,
+
+    const Dispatch = union(enum) { direct: u32, indirect: u64 };
+
+    fn open(self: *WaveEncoder, kernel: wavefront.Kernel) void {
+        if (self.pass != null and self.r.profile == null) return;
+        self.close();
+        const writes = if (self.r.profile) |*p| p.pass(kernel) else if (self.timed) gpu_timer.pass(.march) else null;
+        const pass = wgpu.wgpuCommandEncoderBeginComputePass(self.encoder, &wgpu.WGPUComputePassDescriptor{
+            .nextInChain = null,
+            .label = sv("wavefront path trace pass"),
+            .timestampWrites = writes,
+        }).?;
+        const uniform_offset = self.r.uniformOffset(self.slot);
+        wgpu.wgpuComputePassEncoderSetBindGroup(pass, 0, self.r.bind_group, 1, &uniform_offset);
+        wgpu.wgpuComputePassEncoderSetBindGroup(pass, 1, self.r.accel.render_bind_group, 0, null);
+        wgpu.wgpuComputePassEncoderSetBindGroup(pass, 2, self.r.photon_map.render_bind_group, 0, null);
+        wgpu.wgpuComputePassEncoderSetBindGroup(pass, 3, self.r.sky.bind_group, 0, null);
+        wgpu.wgpuComputePassEncoderSetBindGroup(pass, 4, self.r.fft.render_bind_group, 0, null);
+        wgpu.wgpuComputePassEncoderSetBindGroup(pass, 5, self.r.active_adapt_group, 0, null);
+        self.pass = pass;
+    }
+
+    fn close(self: *WaveEncoder) void {
+        const pass = self.pass orelse return;
+        wgpu.wgpuComputePassEncoderEnd(pass);
+        wgpu.wgpuComputePassEncoderRelease(pass);
+        self.pass = null;
+    }
+
+    fn run(self: *WaveEncoder, kernel: wavefront.Kernel, entry: WaveEntry, dispatch: Dispatch) void {
+        self.open(kernel);
+        const pass = self.pass.?;
+        if (entry.writesArgs()) {
+            const offsets = [_]u32{ self.block, self.block };
+            wgpu.wgpuComputePassEncoderSetBindGroup(pass, wavefront.group_index, self.r.wave.args_group, offsets.len, &offsets);
+        } else {
+            wgpu.wgpuComputePassEncoderSetBindGroup(pass, wavefront.group_index, self.r.wave.compute_group, 1, &self.block);
+        }
+        wgpu.wgpuComputePassEncoderSetPipeline(pass, self.r.pipelines.wf[@intFromEnum(entry)]);
+        switch (dispatch) {
+            .direct => |n| wgpu.wgpuComputePassEncoderDispatchWorkgroups(pass, n, 1, 1),
+            .indirect => |off| wgpu.wgpuComputePassEncoderDispatchWorkgroupsIndirect(pass, self.r.wave.args, self.block + off),
+        }
+    }
+};
+
+const LiveBand = struct { rect: wavefront.Band, block: u32 };
+
 const Rect = struct {
     x: u32,
     y: u32,
@@ -885,11 +1006,24 @@ fn nowMs() f64 {
     return @as(f64, @floatFromInt(sdl.SDL_GetTicksNS())) / @as(f64, std.time.ns_per_ms);
 }
 
+const export_batches_in_flight = 2;
+
+const ExportFlight = struct {
+    state: WorkDoneState = .{},
+    pixels: u64 = 0,
+    submitted_ms: f64 = 0,
+    pending: bool = false,
+};
+
 const ExportBatch = struct {
     cmd_encoder: wgpu.WGPUCommandEncoder = null,
     est_ms: f32 = 0,
     pixels: u64 = 0,
     first_sample: u32 = 0,
+    flights: [export_batches_in_flight]ExportFlight = @splat(.{}),
+    oldest: usize = 0,
+    in_flight: usize = 0,
+    last_done_ms: f64 = 0,
 
     fn encoder(self: *ExportBatch, ctx: *const Context, sample: u32) !wgpu.WGPUCommandEncoder {
         if (self.cmd_encoder == null) {
@@ -900,25 +1034,65 @@ const ExportBatch = struct {
         return self.cmd_encoder.?;
     }
 
-    fn discard(self: *ExportBatch) void {
+    fn discard(self: *ExportBatch, ctx: *const Context) void {
         if (self.cmd_encoder) |enc| wgpu.wgpuCommandEncoderRelease(enc);
-        self.* = .{};
+        self.cmd_encoder = null;
+        for (&self.flights) |*f| {
+            if (f.pending) _ = webgpu_context.pollUntil(ctx.instance, &f.state.done, gpu_work_timeout_ms);
+            f.pending = false;
+        }
+        self.in_flight = 0;
     }
 
     fn flush(self: *ExportBatch, ctx: *const Context, pacer: *ExportPacer, tracker: *ProgressTracker) !void {
         const enc = self.cmd_encoder orelse return;
         const cmd_buffer = wgpu.wgpuCommandEncoderFinish(enc, null);
         wgpu.wgpuCommandEncoderRelease(enc);
+        self.cmd_encoder = null;
         const pixels = self.pixels;
-        self.* = .{};
+        self.est_ms = 0;
+        self.pixels = 0;
 
-        const start_ms = nowMs();
+        if (self.in_flight == export_batches_in_flight) {
+            self.retireOldest(ctx, pacer, tracker) catch |err| {
+                wgpu.wgpuCommandBufferRelease(cmd_buffer);
+                return err;
+            };
+        }
+
+        const f = &self.flights[(self.oldest + self.in_flight) % export_batches_in_flight];
+        f.* = .{ .pixels = pixels, .submitted_ms = nowMs(), .pending = true };
+        self.in_flight += 1;
         wgpu.wgpuQueueSubmit(ctx.queue, 1, &[_]wgpu.WGPUCommandBuffer{cmd_buffer});
         wgpu.wgpuCommandBufferRelease(cmd_buffer);
-        try waitForQueueIdle(ctx);
-        pacer.observe(@floatCast(nowMs() - start_ms), pixels);
+        _ = wgpu.wgpuQueueOnSubmittedWorkDone(ctx.queue, wgpu.WGPUQueueWorkDoneCallbackInfo{
+            .nextInChain = null,
+            .mode = wgpu.WGPUCallbackMode_AllowProcessEvents,
+            .callback = onQueueWorkDone,
+            .userdata1 = &f.state,
+            .userdata2 = null,
+        });
+    }
 
-        tracker.tick(pixels);
+    fn drain(self: *ExportBatch, ctx: *const Context, pacer: *ExportPacer, tracker: *ProgressTracker) !void {
+        while (self.in_flight > 0) try self.retireOldest(ctx, pacer, tracker);
+    }
+
+    fn retireOldest(self: *ExportBatch, ctx: *const Context, pacer: *ExportPacer, tracker: *ProgressTracker) !void {
+        const f = &self.flights[self.oldest];
+        _ = webgpu_context.pollUntil(ctx.instance, &f.state.done, gpu_work_timeout_ms);
+        if (!f.state.done or f.state.status != wgpu.WGPUQueueWorkDoneStatus_Success) {
+            return error.QueueWorkDoneFailed;
+        }
+        f.pending = false;
+        self.oldest = (self.oldest + 1) % export_batches_in_flight;
+        self.in_flight -= 1;
+
+        const done_ms = nowMs();
+        pacer.observe(@floatCast(done_ms - @max(f.submitted_ms, self.last_done_ms)), f.pixels);
+        self.last_done_ms = done_ms;
+
+        tracker.tick(f.pixels);
         if (tracker.progress) |p| {
             if (p.cancel_flag) |cf| {
                 if (cf.*) return error.RenderCancelled;
@@ -944,6 +1118,12 @@ pub fn waitForQueueIdle(ctx: *const Context) !void {
 }
 
 const ComputeBindGroup = struct { index: u32, group: wgpu.WGPUBindGroup };
+
+fn linearDispatch(ctx: *const Context, groups: u32) [3]u32 {
+    const max_x = @max(ctx.limits.maxComputeWorkgroupsPerDimension, 1);
+    if (groups <= max_x) return .{ groups, 1, 1 };
+    return .{ max_x, (groups + max_x - 1) / max_x, 1 };
+}
 
 fn runComputePass(
     ctx: *const Context,
@@ -1003,16 +1183,44 @@ const ParticleEntry = enum {
 };
 const particle_entry_count = std.enums.values(ParticleEntry).len;
 
+const WaveEntry = enum {
+    generate,
+    args_begin,
+    extend,
+    args_hits,
+    surface,
+    shade,
+    args_mid,
+    shadow,
+    indirect,
+
+    fn writesArgs(self: WaveEntry) bool {
+        return self == .args_begin or self == .args_hits or self == .args_mid;
+    }
+
+    fn constants(self: WaveEntry) []const wgpu.WGPUConstantEntry {
+        return if (self == .shade) &wave_shade_constants else &.{};
+    }
+};
+const wave_entry_count = std.enums.values(WaveEntry).len;
+const wave_shade_constants = [_]wgpu.WGPUConstantEntry{
+    .{ .nextInChain = null, .key = sv("WF_DEFER"), .value = 1 },
+    .{ .nextInChain = null, .key = sv("WF_SURFACE_SPLIT"), .value = 1 },
+};
+
 const PipelinePair = struct {
     march: wgpu.WGPURenderPipeline = null,
     slice: wgpu.WGPURenderPipeline = null,
     simple: wgpu.WGPURenderPipeline = null,
     select: wgpu.WGPURenderPipeline = null,
     build_accel: wgpu.WGPUComputePipeline = null,
+    build_fog_vis: wgpu.WGPUComputePipeline = null,
     trace_photons: wgpu.WGPUComputePipeline = null,
     clear_photons: wgpu.WGPUComputePipeline = null,
     alloc_photons: wgpu.WGPUComputePipeline = null,
     scatter_photons: wgpu.WGPUComputePipeline = null,
+    sort_photons: wgpu.WGPUComputePipeline = null,
+    prefilter_photons: wgpu.WGPUComputePipeline = null,
     aim_photons: wgpu.WGPUComputePipeline = null,
     aov: wgpu.WGPURenderPipeline = null,
     build_fft_voxelize: wgpu.WGPUComputePipeline = null,
@@ -1021,21 +1229,28 @@ const PipelinePair = struct {
     build_fft_magnitude: wgpu.WGPUComputePipeline = null,
     build_fft_finalize: wgpu.WGPUComputePipeline = null,
     particle: [particle_entry_count]wgpu.WGPUComputePipeline = @splat(null),
+    wf: [wave_entry_count]wgpu.WGPUComputePipeline = @splat(null),
+    wf_resolve: wgpu.WGPURenderPipeline = null,
     module: wgpu.WGPUShaderModule = null,
 
     fn has(self: PipelinePair, group: PipelineGroup) bool {
         return switch (group) {
-            .core => self.march != null and self.slice != null and self.simple != null,
+            .core => self.march != null and self.simple != null,
+            .flat => self.slice != null,
             .select => self.select != null,
             .accel => self.build_accel != null,
+            .fog_vis => self.build_fog_vis != null,
             .photons => self.trace_photons != null and self.clear_photons != null and
-                self.alloc_photons != null and self.scatter_photons != null,
+                self.alloc_photons != null and self.scatter_photons != null and self.sort_photons != null and self.prefilter_photons != null,
             .aim => self.aim_photons != null,
             .aov => self.aov != null,
             .fft => self.build_fft_voxelize != null and self.build_fft_axis_seed != null and
                 self.build_fft_axis_complex != null and self.build_fft_magnitude != null and
                 self.build_fft_finalize != null,
             .particles => for (self.particle) |p| {
+                if (p == null) break false;
+            } else true,
+            .wavefront => self.wf_resolve != null and for (self.wf) |p| {
                 if (p == null) break false;
             } else true,
         };
@@ -1053,16 +1268,23 @@ const PipelinePair = struct {
         for (self.particle) |p| {
             if (p != null) wgpu.wgpuComputePipelineRelease(p);
         }
+        for (self.wf) |p| {
+            if (p != null) wgpu.wgpuComputePipelineRelease(p);
+        }
+        if (self.wf_resolve != null) wgpu.wgpuRenderPipelineRelease(self.wf_resolve);
         if (self.module != null) wgpu.wgpuShaderModuleRelease(self.module);
         if (self.march != null) wgpu.wgpuRenderPipelineRelease(self.march);
         if (self.slice != null) wgpu.wgpuRenderPipelineRelease(self.slice);
         if (self.simple != null) wgpu.wgpuRenderPipelineRelease(self.simple);
         if (self.select != null) wgpu.wgpuRenderPipelineRelease(self.select);
         if (self.build_accel != null) wgpu.wgpuComputePipelineRelease(self.build_accel);
+        if (self.build_fog_vis != null) wgpu.wgpuComputePipelineRelease(self.build_fog_vis);
         if (self.trace_photons != null) wgpu.wgpuComputePipelineRelease(self.trace_photons);
         if (self.clear_photons != null) wgpu.wgpuComputePipelineRelease(self.clear_photons);
         if (self.alloc_photons != null) wgpu.wgpuComputePipelineRelease(self.alloc_photons);
         if (self.scatter_photons != null) wgpu.wgpuComputePipelineRelease(self.scatter_photons);
+        if (self.sort_photons != null) wgpu.wgpuComputePipelineRelease(self.sort_photons);
+        if (self.prefilter_photons != null) wgpu.wgpuComputePipelineRelease(self.prefilter_photons);
         if (self.aim_photons != null) wgpu.wgpuComputePipelineRelease(self.aim_photons);
         if (self.aov != null) wgpu.wgpuRenderPipelineRelease(self.aov);
         if (self.build_fft_voxelize != null) wgpu.wgpuComputePipelineRelease(self.build_fft_voxelize);
@@ -1073,15 +1295,16 @@ const PipelinePair = struct {
     }
 };
 
-pub const PipelineGroup = enum { core, select, accel, photons, aim, aov, fft, particles };
+pub const PipelineGroup = enum { core, flat, select, accel, fog_vis, photons, aim, aov, fft, particles, wavefront };
 const GroupSet = std.EnumSet(PipelineGroup);
 
-const max_pipeline_jobs = 3 + 1 + 1 + 4 + 1 + 1 + 5 + particle_entry_count;
+const max_pipeline_jobs = 3 + 1 + 1 + 1 + 6 + 1 + 1 + 5 + particle_entry_count + wave_entry_count + 1;
 
 const PipelineJob = struct {
     label: []const u8,
     entry: []const u8,
     layout: wgpu.WGPUPipelineLayout,
+    constants: []const wgpu.WGPUConstantEntry = &.{},
     out: union(enum) {
         compute: *wgpu.WGPUComputePipeline,
         render: struct { pipeline: *wgpu.WGPURenderPipeline, format: wgpu.WGPUTextureFormat, blend: bool, gbuffer: bool },
@@ -1090,7 +1313,7 @@ const PipelineJob = struct {
 
     fn run(self: *const PipelineJob, ctx: *const Context, module: wgpu.WGPUShaderModule) void {
         switch (self.out) {
-            .compute => |p| p.* = FractalRenderer.createComputePipeline(ctx, self.layout, module, self.label, self.entry),
+            .compute => |p| p.* = FractalRenderer.createComputePipeline(ctx, self.layout, module, self.label, self.entry, self.constants),
             .render => |r| r.pipeline.* = FractalRenderer.createPipeline(ctx, self.layout, module, self.label, self.entry, r.format, r.blend, r.gbuffer),
             .aov => |p| p.* = FractalRenderer.createAovPipeline(ctx, self.layout, module),
         }
@@ -1136,8 +1359,12 @@ const JobBatch = struct {
     }
 
     fn compute(self: *JobBatch, out: *wgpu.WGPUComputePipeline, layout: wgpu.WGPUPipelineLayout, label: []const u8, entry: []const u8) void {
+        self.computeWith(out, layout, label, entry, &.{});
+    }
+
+    fn computeWith(self: *JobBatch, out: *wgpu.WGPUComputePipeline, layout: wgpu.WGPUPipelineLayout, label: []const u8, entry: []const u8, constants: []const wgpu.WGPUConstantEntry) void {
         if (out.* != null) return;
-        self.push(.{ .label = label, .entry = entry, .layout = layout, .out = .{ .compute = out } });
+        self.push(.{ .label = label, .entry = entry, .layout = layout, .constants = constants, .out = .{ .compute = out } });
     }
 
     fn render(self: *JobBatch, out: *wgpu.WGPURenderPipeline, layout: wgpu.WGPUPipelineLayout, label: []const u8, entry: []const u8, format: wgpu.WGPUTextureFormat, blend: bool, gbuffer: bool) void {
@@ -1150,15 +1377,18 @@ const JobBatch = struct {
             .core => {
                 self.render(&p.march, lay.render, "fractal pipeline", "fs_main", accumFormat(ctx), true, true);
                 self.render(&p.simple, lay.render, "fractal simple render pipeline", "fs_simple", accumFormat(ctx), true, true);
-                self.render(&p.slice, lay.render, "fractal 2D slice pipeline", "fs_slice", accumFormat(ctx), true, true);
             },
+            .flat => self.render(&p.slice, lay.render, "fractal 2D slice pipeline", "fs_slice", accumFormat(ctx), true, true),
             .select => self.render(&p.select, lay.select, "fractal selection id pipeline", "fs_select", select_format, false, false),
             .accel => self.compute(&p.build_accel, lay.accel, "accel build pipeline", "cs_build_accel"),
+            .fog_vis => self.compute(&p.build_fog_vis, lay.fog_vis, "fog visibility build pipeline", "cs_build_fog_vis"),
             .photons => {
                 self.compute(&p.trace_photons, lay.photon, "photon trace pipeline", "cs_trace_photons");
                 self.compute(&p.clear_photons, lay.photon, "photon clear pipeline", "cs_clear_photons");
                 self.compute(&p.alloc_photons, lay.photon, "photon alloc pipeline", "cs_alloc_photons");
                 self.compute(&p.scatter_photons, lay.photon, "photon scatter pipeline", "cs_scatter_photons");
+                self.compute(&p.sort_photons, lay.photon, "photon sort pipeline", "cs_sort_photons");
+                self.compute(&p.prefilter_photons, lay.photon, "photon prefilter pipeline", "cs_prefilter_photons");
             },
             .aim => self.compute(&p.aim_photons, lay.photon, "photon aim pipeline", "cs_photon_aim"),
             .aov => if (p.aov == null) self.push(.{ .label = "fractal denoise aov pipeline", .entry = "fs_aov", .layout = lay.render, .out = .{ .aov = &p.aov } }),
@@ -1172,6 +1402,13 @@ const JobBatch = struct {
             .particles => inline for (comptime std.enums.values(ParticleEntry)) |e| {
                 const name = "cs_particle_" ++ @tagName(e);
                 self.compute(&p.particle[@intFromEnum(e)], if (e.isSim()) lay.particle_sim else lay.particle_build, name, name);
+            },
+            .wavefront => {
+                inline for (comptime std.enums.values(WaveEntry)) |e| {
+                    const name = "cs_wf_" ++ @tagName(e);
+                    self.computeWith(&p.wf[@intFromEnum(e)], if (e.writesArgs()) lay.wavefront_args else lay.wavefront, name, name, e.constants());
+                }
+                self.render(&p.wf_resolve, lay.wavefront_resolve, "wavefront resolve pipeline", "fs_wf_resolve", accumFormat(ctx), true, true);
             },
         }
     }
@@ -1221,6 +1458,25 @@ const JobQueue = struct {
             if (i >= self.jobs.len) return;
             self.jobs[i].run(self.ctx, self.module);
         }
+    }
+};
+
+const CoreJob = struct {
+    module: wgpu.WGPUShaderModule,
+    group: PipelineGroup = .core,
+    pipelines: PipelinePair = .{},
+    thread: std.Thread = undefined,
+    ok: bool = false,
+    elapsed_ms: u64 = 0,
+    done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+
+    fn worker(job: *CoreJob, ctx: *const Context, layouts: Layouts) void {
+        defer job.done.store(true, .release);
+        const started = sdl.SDL_GetTicks();
+        var batch = JobBatch{};
+        batch.addGroup(ctx, layouts, &job.pipelines, job.group);
+        job.ok = batch.run(ctx, job.module);
+        job.elapsed_ms = sdl.SDL_GetTicks() -| started;
     }
 };
 
@@ -1293,10 +1549,14 @@ const Layouts = struct {
     render: wgpu.WGPUPipelineLayout,
     select: wgpu.WGPUPipelineLayout,
     accel: wgpu.WGPUPipelineLayout,
+    fog_vis: wgpu.WGPUPipelineLayout,
     photon: wgpu.WGPUPipelineLayout,
     fft: wgpu.WGPUPipelineLayout,
     particle_sim: wgpu.WGPUPipelineLayout,
     particle_build: wgpu.WGPUPipelineLayout,
+    wavefront: wgpu.WGPUPipelineLayout,
+    wavefront_args: wgpu.WGPUPipelineLayout,
+    wavefront_resolve: wgpu.WGPUPipelineLayout,
 };
 
 fn buildPipelines(ctx: *const Context, layouts: Layouts, source: []const u8, groups: GroupSet) !PipelinePair {
@@ -1347,7 +1607,7 @@ fn compileWorker(shared: *Shared) void {
     shared.total_ms = @intCast(sdl.SDL_GetTicks() -| started);
 }
 
-const GBuffer = struct {
+pub const GBuffer = struct {
     depth_texture: wgpu.WGPUTexture = null,
     depth_view: wgpu.WGPUTextureView = null,
     normal_texture: wgpu.WGPUTexture = null,
@@ -1369,7 +1629,7 @@ fn createGBufferTexture(ctx: *const Context, label: []const u8, format: wgpu.WGP
     });
 }
 
-fn createGBuffer(ctx: *const Context, w: u32, h: u32) GBuffer {
+pub fn createGBuffer(ctx: *const Context, w: u32, h: u32) GBuffer {
     var out = GBuffer{};
     out.depth_texture = createGBufferTexture(ctx, "fractal depth target", depth_format, w, h);
     out.normal_texture = createGBufferTexture(ctx, "fractal normal target", normal_format, w, h);
@@ -1388,7 +1648,7 @@ fn createDepthBindGroup(ctx: *const Context, layout: wgpu.WGPUBindGroupLayout, v
     });
 }
 
-fn releaseGBuffer(gbuf: GBuffer) void {
+pub fn releaseGBuffer(gbuf: GBuffer) void {
     if (gbuf.depth_view != null) wgpu.wgpuTextureViewRelease(gbuf.depth_view);
     if (gbuf.depth_texture != null) wgpu.wgpuTextureRelease(gbuf.depth_texture);
     if (gbuf.normal_view != null) wgpu.wgpuTextureViewRelease(gbuf.normal_view);
@@ -1479,7 +1739,7 @@ fn createUniformGroup(
     });
 }
 
-fn marchAttachments(color: wgpu.WGPUTextureView, gbuf: GBuffer, load_existing: bool) [3]wgpu.WGPURenderPassColorAttachment {
+pub fn marchAttachments(color: wgpu.WGPUTextureView, gbuf: GBuffer, load_existing: bool) [3]wgpu.WGPURenderPassColorAttachment {
     return .{
         colorAttachment(color, load_existing),
         colorAttachment(gbuf.depth_view, load_existing),
@@ -1491,6 +1751,7 @@ pub const FractalRenderer = struct {
     pipelines: PipelinePair,
     pipeline_layout: wgpu.WGPUPipelineLayout,
     accel_pipeline_layout: wgpu.WGPUPipelineLayout,
+    fog_vis_pipeline_layout: wgpu.WGPUPipelineLayout,
     photon_pipeline_layout: wgpu.WGPUPipelineLayout,
     fft_pipeline_layout: wgpu.WGPUPipelineLayout,
     uniform_layout: wgpu.WGPUBindGroupLayout,
@@ -1508,8 +1769,20 @@ pub const FractalRenderer = struct {
 
     fft: FftVolume,
 
+    fog_vis: FogVisGrid,
+    fog_vis_enabled: bool = true,
+    fog_vis_resolution: u32 = fog_vis.default_resolution,
+
     photon_map: PhotonMap,
     photon_settings: photon_state.PhotonSettings = .{},
+
+    wavefront: bool = false,
+    last_used_wavefront: bool = false,
+    last_march_ms: f64 = 0,
+
+    export_session: bool = false,
+    export_accel_key: u64 = 0,
+    export_photon_key: u64 = 0,
 
     sky: SkyTexture,
     sky_settings: sky_state.SkyState = .{},
@@ -1534,6 +1807,14 @@ pub const FractalRenderer = struct {
     particle_sim_pipeline_layout: wgpu.WGPUPipelineLayout,
     particle_build_pipeline_layout: wgpu.WGPUPipelineLayout,
 
+    wave: WavefrontGpu,
+    profile: ?wavefront.Profile = null,
+    wavefront_pipeline_layout: wgpu.WGPUPipelineLayout = null,
+    wavefront_args_pipeline_layout: wgpu.WGPUPipelineLayout = null,
+    wavefront_resolve_pipeline_layout: wgpu.WGPUPipelineLayout = null,
+    live_bands: [live_band_capacity]LiveBand = undefined,
+    live_band_count: usize = 0,
+
     content_generation: u32 = 0,
 
     pipeline_cache: [pipeline_cache_capacity]?PipelineCacheEntry = @splat(null),
@@ -1542,6 +1823,10 @@ pub const FractalRenderer = struct {
 
     pending: ?PendingRebuild = null,
     parts: PartsPipelines = .{},
+    want_3d: bool = true,
+    want_flat: bool = false,
+    core_job: ?*CoreJob = null,
+    wave_job: ?*CoreJob = null,
     last_err_buf: [512]u8 = undefined,
     last_err_len: usize = 0,
 
@@ -1665,10 +1950,13 @@ pub const FractalRenderer = struct {
         var fft_volume = try FftVolume.init(ctx);
         errdefer fft_volume.deinit();
 
+        var fog_vis_grid = try FogVisGrid.init(ctx);
+        errdefer fog_vis_grid.deinit();
+
         const adapt_entry = wgpu.WGPUBindGroupLayoutEntry{
             .nextInChain = null,
             .binding = 1,
-            .visibility = wgpu.WGPUShaderStage_Fragment,
+            .visibility = wgpu.WGPUShaderStage_Fragment | wgpu.WGPUShaderStage_Compute,
             .bindingArraySize = 0,
             .buffer = .{ .nextInChain = null, .type = wgpu.WGPUBufferBindingType_Storage, .hasDynamicOffset = 0, .minBindingSize = adapt_stats_stride },
             .sampler = std.mem.zeroes(wgpu.WGPUSamplerBindingLayout),
@@ -1690,6 +1978,35 @@ pub const FractalRenderer = struct {
             .bindGroupLayouts = &[_]wgpu.WGPUBindGroupLayout{ bind_group_layout, accel_grid.render_layout, photon_map.render_layout, sky_tex.layout, fft_volume.render_layout, adapt_layout },
             .immediateSize = 0,
         }) orelse return error.PipelineLayoutCreationFailed;
+
+        var wave_gpu = try WavefrontGpu.init(ctx);
+        errdefer wave_gpu.deinit();
+        var wavefront_pipeline_layout: wgpu.WGPUPipelineLayout = null;
+        var wavefront_args_pipeline_layout: wgpu.WGPUPipelineLayout = null;
+        var wavefront_resolve_pipeline_layout: wgpu.WGPUPipelineLayout = null;
+        if (wavefront.supported(ctx)) {
+            wavefront_pipeline_layout = wgpu.wgpuDeviceCreatePipelineLayout(ctx.device, &wgpu.WGPUPipelineLayoutDescriptor{
+                .nextInChain = null,
+                .label = sv("wavefront compute pipeline layout"),
+                .bindGroupLayoutCount = 7,
+                .bindGroupLayouts = &[_]wgpu.WGPUBindGroupLayout{ bind_group_layout, accel_grid.render_layout, photon_map.render_layout, sky_tex.layout, fft_volume.render_layout, adapt_layout, wave_gpu.compute_layout },
+                .immediateSize = 0,
+            });
+            wavefront_args_pipeline_layout = wgpu.wgpuDeviceCreatePipelineLayout(ctx.device, &wgpu.WGPUPipelineLayoutDescriptor{
+                .nextInChain = null,
+                .label = sv("wavefront args pipeline layout"),
+                .bindGroupLayoutCount = 7,
+                .bindGroupLayouts = &[_]wgpu.WGPUBindGroupLayout{ bind_group_layout, accel_grid.render_layout, photon_map.render_layout, sky_tex.layout, fft_volume.render_layout, adapt_layout, wave_gpu.args_layout },
+                .immediateSize = 0,
+            });
+            wavefront_resolve_pipeline_layout = wgpu.wgpuDeviceCreatePipelineLayout(ctx.device, &wgpu.WGPUPipelineLayoutDescriptor{
+                .nextInChain = null,
+                .label = sv("wavefront resolve pipeline layout"),
+                .bindGroupLayoutCount = 7,
+                .bindGroupLayouts = &[_]wgpu.WGPUBindGroupLayout{ bind_group_layout, accel_grid.render_layout, photon_map.render_layout, sky_tex.layout, fft_volume.render_layout, adapt_layout, wave_gpu.resolve_layout },
+                .immediateSize = 0,
+            });
+        }
 
         if (ctx.limits.maxBindGroups < 6) {
             std.log.err("the selection pass needs 6 bind groups; this adapter allows {d}", .{ctx.limits.maxBindGroups});
@@ -1749,6 +2066,14 @@ pub const FractalRenderer = struct {
             .label = sv("accel build pipeline layout"),
             .bindGroupLayoutCount = 2,
             .bindGroupLayouts = &[_]wgpu.WGPUBindGroupLayout{ bind_group_layout, accel_grid.compute_layout },
+            .immediateSize = 0,
+        }) orelse return error.PipelineLayoutCreationFailed;
+
+        const fog_vis_pipeline_layout = wgpu.wgpuDeviceCreatePipelineLayout(ctx.device, &wgpu.WGPUPipelineLayoutDescriptor{
+            .nextInChain = null,
+            .label = sv("fog visibility build pipeline layout"),
+            .bindGroupLayoutCount = 3,
+            .bindGroupLayouts = &[_]wgpu.WGPUBindGroupLayout{ bind_group_layout, accel_grid.render_layout, fog_vis_grid.compute_layout },
             .immediateSize = 0,
         }) orelse return error.PipelineLayoutCreationFailed;
 
@@ -1856,6 +2181,7 @@ pub const FractalRenderer = struct {
             .pipelines = .{},
             .pipeline_layout = pipeline_layout,
             .accel_pipeline_layout = accel_pipeline_layout,
+            .fog_vis_pipeline_layout = fog_vis_pipeline_layout,
             .photon_pipeline_layout = photon_pipeline_layout,
             .fft_pipeline_layout = fft_pipeline_layout,
             .uniform_layout = bind_group_layout,
@@ -1864,11 +2190,16 @@ pub const FractalRenderer = struct {
             .uniform_slot_stride = @intCast(slot_stride),
             .accel = accel_grid,
             .fft = fft_volume,
+            .fog_vis = fog_vis_grid,
             .photon_map = photon_map,
             .sky = sky_tex,
             .particles = particle_gpu,
             .particle_sim_pipeline_layout = particle_sim_pipeline_layout,
             .particle_build_pipeline_layout = particle_build_pipeline_layout,
+            .wave = wave_gpu,
+            .wavefront_pipeline_layout = wavefront_pipeline_layout,
+            .wavefront_args_pipeline_layout = wavefront_args_pipeline_layout,
+            .wavefront_resolve_pipeline_layout = wavefront_resolve_pipeline_layout,
             .bind_group = bind_group,
             .uniform_buffer = uniform_buffer,
             .offscreen_texture = null,
@@ -1903,6 +2234,7 @@ pub const FractalRenderer = struct {
         _ = self.accel.ensureSize(ctx, accel.default_resolution, accel.default_levels);
         _ = self.photon_map.ensureSize(ctx, photons.default_grid_log2);
         _ = self.fft.ensureAllocated(ctx);
+        _ = self.fft.bindRead(ctx, self.fog_vis.sampled_view, self.sampler);
 
         var default_scene = SceneFormulas{ .instance_count = 1 };
         default_scene.base[0] = builtin_formula_source;
@@ -1911,6 +2243,8 @@ pub const FractalRenderer = struct {
     }
 
     pub fn deinit(self: *FractalRenderer) void {
+        self.collectCoreJob(true);
+        self.collectWaveJob(true);
         if (self.pending) |*p| {
             p.thread.join();
             p.shared.table.free();
@@ -1925,15 +2259,21 @@ pub const FractalRenderer = struct {
         }
         wgpu.wgpuPipelineLayoutRelease(self.pipeline_layout);
         wgpu.wgpuPipelineLayoutRelease(self.accel_pipeline_layout);
+        wgpu.wgpuPipelineLayoutRelease(self.fog_vis_pipeline_layout);
         wgpu.wgpuPipelineLayoutRelease(self.photon_pipeline_layout);
         wgpu.wgpuPipelineLayoutRelease(self.fft_pipeline_layout);
         wgpu.wgpuPipelineLayoutRelease(self.particle_sim_pipeline_layout);
         wgpu.wgpuPipelineLayoutRelease(self.particle_build_pipeline_layout);
+        if (self.wavefront_pipeline_layout != null) wgpu.wgpuPipelineLayoutRelease(self.wavefront_pipeline_layout);
+        if (self.wavefront_args_pipeline_layout != null) wgpu.wgpuPipelineLayoutRelease(self.wavefront_args_pipeline_layout);
+        if (self.wavefront_resolve_pipeline_layout != null) wgpu.wgpuPipelineLayoutRelease(self.wavefront_resolve_pipeline_layout);
+        self.wave.deinit();
         if (self.mesh) |*m| m.deinit();
         wgpu.wgpuBindGroupLayoutRelease(self.uniform_layout);
         self.accel.deinit();
         self.photon_map.deinit();
         self.fft.deinit();
+        self.fog_vis.deinit();
         self.sky.deinit();
         wgpu.wgpuBindGroupRelease(self.bind_group);
         wgpu.wgpuBufferRelease(self.uniform_buffer);
@@ -2308,6 +2648,7 @@ pub const FractalRenderer = struct {
         module: wgpu.WGPUShaderModule,
         label: []const u8,
         entry: []const u8,
+        constants: []const wgpu.WGPUConstantEntry,
     ) wgpu.WGPUComputePipeline {
         return wgpu.wgpuDeviceCreateComputePipeline(ctx.device, &wgpu.WGPUComputePipelineDescriptor{
             .nextInChain = null,
@@ -2317,8 +2658,8 @@ pub const FractalRenderer = struct {
                 .nextInChain = null,
                 .module = module,
                 .entryPoint = sv(entry),
-                .constantCount = 0,
-                .constants = null,
+                .constantCount = constants.len,
+                .constants = if (constants.len > 0) constants.ptr else null,
             },
         });
     }
@@ -2376,17 +2717,145 @@ pub const FractalRenderer = struct {
             .render = self.pipeline_layout,
             .select = self.select_pipeline_layout,
             .accel = self.accel_pipeline_layout,
+            .fog_vis = self.fog_vis_pipeline_layout,
             .photon = self.photon_pipeline_layout,
             .fft = self.fft_pipeline_layout,
             .particle_sim = self.particle_sim_pipeline_layout,
             .particle_build = self.particle_build_pipeline_layout,
+            .wavefront = self.wavefront_pipeline_layout,
+            .wavefront_args = self.wavefront_args_pipeline_layout,
+            .wavefront_resolve = self.wavefront_resolve_pipeline_layout,
         };
     }
 
     fn rebuildGroups(self: *const FractalRenderer) GroupSet {
-        var groups = self.pipelines.builtGroups();
-        groups.insert(.core);
+        var groups = if (self.want_3d) self.pipelines.builtGroups() else GroupSet.empty;
+        groups.remove(.wavefront);
+        if (self.want_3d) groups.insert(.core);
+        if (self.want_flat or !self.want_3d) groups.insert(.flat);
         return groups;
+    }
+
+    pub fn setViewNeeds(self: *FractalRenderer, want_3d: bool, want_flat: bool) void {
+        self.want_3d = want_3d;
+        self.want_flat = want_flat;
+    }
+
+    pub fn coreCompiling(self: *const FractalRenderer) bool {
+        return self.core_job != null;
+    }
+
+    fn startCoreJob(self: *FractalRenderer, ctx: *const Context) void {
+        const module = self.pipelines.module orelse return;
+        if (self.core_job != null or self.failed_groups.contains(.core)) return;
+        const job = std.heap.page_allocator.create(CoreJob) catch return;
+        job.* = .{ .module = module };
+        wgpu.wgpuShaderModuleAddRef(module);
+        job.thread = std.Thread.spawn(.{}, CoreJob.worker, .{ job, ctx, self.pipelineLayouts() }) catch {
+            wgpu.wgpuShaderModuleRelease(module);
+            std.heap.page_allocator.destroy(job);
+            return;
+        };
+        self.core_job = job;
+        std.debug.print("[pipelines] compiling the 3D pipelines in the background\n", .{});
+    }
+
+    fn collectCoreJob(self: *FractalRenderer, wait: bool) void {
+        const job = self.core_job orelse return;
+        if (!wait and !job.done.load(.acquire)) return;
+        job.thread.join();
+        self.core_job = null;
+        defer {
+            wgpu.wgpuShaderModuleRelease(job.module);
+            std.heap.page_allocator.destroy(job);
+        }
+        const current = job.module == self.pipelines.module;
+        std.debug.print("[pipelines] background 3D pipelines {s} in {d}ms\n", .{
+            if (!job.ok) "failed" else if (current) "ready" else "outdated",
+            job.elapsed_ms,
+        });
+        if (!job.ok) {
+            if (current) self.failed_groups.insert(.core);
+            return;
+        }
+        if (!current) {
+            job.pipelines.release();
+            return;
+        }
+        var p = self.pipelines;
+        p.march = job.pipelines.march;
+        p.simple = job.pipelines.simple;
+        self.pipelines = p;
+        for (&self.pipeline_cache) |*slot| {
+            if (slot.*) |*entry| {
+                if (entry.pipelines.module == job.module) entry.pipelines = p;
+            }
+        }
+        self.content_generation +%= 1;
+    }
+
+    fn startWaveJob(self: *FractalRenderer, ctx: *const Context) void {
+        const module = self.pipelines.module orelse return;
+        if (self.wave_job != null or self.failed_groups.contains(.wavefront)) return;
+        const job = std.heap.page_allocator.create(CoreJob) catch return;
+        job.* = .{ .module = module, .group = .wavefront };
+        wgpu.wgpuShaderModuleAddRef(module);
+        job.thread = std.Thread.spawn(.{}, CoreJob.worker, .{ job, ctx, self.pipelineLayouts() }) catch {
+            wgpu.wgpuShaderModuleRelease(module);
+            std.heap.page_allocator.destroy(job);
+            return;
+        };
+        self.wave_job = job;
+        std.debug.print("[pipelines] compiling the wavefront pipelines in the background\n", .{});
+    }
+
+    fn collectWaveJob(self: *FractalRenderer, wait: bool) void {
+        const job = self.wave_job orelse return;
+        if (!wait and !job.done.load(.acquire)) return;
+        job.thread.join();
+        self.wave_job = null;
+        defer {
+            wgpu.wgpuShaderModuleRelease(job.module);
+            std.heap.page_allocator.destroy(job);
+        }
+        const current = job.module == self.pipelines.module;
+        std.debug.print("[pipelines] background wavefront pipelines {s} in {d}ms\n", .{
+            if (!job.ok) "failed" else if (current) "ready" else "outdated",
+            job.elapsed_ms,
+        });
+        if (!job.ok) {
+            if (current) self.failed_groups.insert(.wavefront);
+            return;
+        }
+        if (!current or self.pipelines.has(.wavefront)) {
+            job.pipelines.release();
+            return;
+        }
+        var p = self.pipelines;
+        p.wf = job.pipelines.wf;
+        p.wf_resolve = job.pipelines.wf_resolve;
+        self.pipelines = p;
+        for (&self.pipeline_cache) |*slot| {
+            if (slot.*) |*entry| {
+                if (entry.pipelines.module == job.module) entry.pipelines = p;
+            }
+        }
+    }
+
+    pub fn drawReady(self: *FractalRenderer, ctx: *const Context, mode: RenderMode) bool {
+        return switch (mode) {
+            .slice => blk: {
+                self.ensureGroup(ctx, .flat) catch break :blk false;
+                break :blk true;
+            },
+            .march, .simple => self.pipelines.has(.core),
+        };
+    }
+
+    fn ensureDrawable(self: *FractalRenderer, ctx: *const Context, is_2d: bool) !void {
+        if (is_2d) return self.ensureGroup(ctx, .flat);
+        self.collectCoreJob(true);
+        try self.ensureGroup(ctx, .core);
     }
 
     pub fn noteScene(self: *FractalRenderer, scene: SceneFormulas) void {
@@ -2422,7 +2891,12 @@ pub const FractalRenderer = struct {
 
     pub fn syncShader(self: *FractalRenderer, ctx: *const Context, allocator: std.mem.Allocator, scene: SceneFormulas, variant: ShaderVariant) void {
         self.noteScene(scene);
-        if (self.table.covers(self.scene_hashes, variant) or self.isCompiling() or self.parts.compiling()) return;
+        self.collectCoreJob(false);
+        if (self.isCompiling() or self.parts.compiling() or self.core_job != null) return;
+        if (self.table.covers(self.scene_hashes, variant)) {
+            if (self.want_3d and !self.pipelines.has(.core)) self.startCoreJob(ctx);
+            return;
+        }
         const key = CodeTable.forScene(scene, variant).key();
         if (self.failed_key) |failed| {
             if (failed == key) return;
@@ -2443,6 +2917,7 @@ pub const FractalRenderer = struct {
         }
 
         self.parts.waitIdle();
+        self.collectCoreJob(true);
         const started = sdl.SDL_GetTicks();
         const table = try wanted.dupe(allocator);
         errdefer table.free();
@@ -2467,6 +2942,7 @@ pub const FractalRenderer = struct {
         if (self.pending != null) return error.AlreadyCompiling;
 
         self.parts.waitIdle();
+        self.collectCoreJob(true);
         const shared = try allocator.create(Shared);
         errdefer allocator.destroy(shared);
         const table = try wanted.dupe(allocator);
@@ -2564,7 +3040,7 @@ pub const FractalRenderer = struct {
         return .{ .pipeline = self.shaft_pipeline, .params0 = params[0..4].*, .params1 = params[4..8].* };
     }
 
-    fn writeUniformSlot(self: *FractalRenderer, ctx: *const Context, slot: u32, uniforms: Uniforms) void {
+    pub fn writeUniformSlot(self: *FractalRenderer, ctx: *const Context, slot: u32, uniforms: Uniforms) void {
         var stamped = uniforms;
         self.stampFormulaCodes(&stamped);
         wgpu.wgpuQueueWriteBuffer(ctx.queue, self.uniform_buffer, self.uniformOffset(slot), &stamped, @sizeOf(Uniforms));
@@ -2601,6 +3077,7 @@ pub const FractalRenderer = struct {
         uniforms.photon_fixed_unit = self.photon_map.stored_fixed_unit;
         uniforms.photon_hash_salt = self.photon_map.stored_hash_salt;
         uniforms.photon_dispersion_soft = self.photon_settings.dispersionSoftness();
+        uniforms.photon_prefilter = if (self.photon_settings.prefilter) 1 else 0;
     }
 
     fn liveVolumeScale(self: *const FractalRenderer) f32 {
@@ -2717,6 +3194,108 @@ pub const FractalRenderer = struct {
         );
     }
 
+    pub fn buildFogVis(self: *FractalRenderer, ctx: *const Context, scene: Uniforms, photons_wanted: bool) !void {
+        const started_ms = sdl.SDL_GetTicks();
+        const grid = &self.fog_vis;
+        grid.valid = false;
+        grid.key = fog_vis_state.sceneHash(&scene, photons_wanted, self.fog_vis_resolution);
+
+        var layers: u32 = 0;
+        var light_layer: [max_lights]f32 = @splat(-1);
+        var layer_light: [max_lights]f32 = @splat(0);
+        const light_count: usize = @intFromFloat(std.math.clamp(scene.light_count, 0, @as(f32, @floatFromInt(max_lights))));
+        for (scene.lights[0..light_count], 0..) |*light, i| {
+            if (light.cast_shadows < 0.5) continue;
+            light_layer[i] = @floatFromInt(layers);
+            layer_light[layers] = @floatFromInt(i);
+            layers += 1;
+        }
+        const fog_count: usize = @intFromFloat(std.math.clamp(scene.fog_count, 0, @as(f32, @floatFromInt(max_fog_emitters))));
+        const placement = fog_vis.place(scene.fog_emitters[0..fog_count], self.fog_vis_resolution);
+
+        grid.layers = 0;
+        grid.light_layer = light_layer;
+        grid.layer_light = layer_light;
+        if (placement == null or layers == 0) {
+            grid.valid = true;
+            grid.last_build_ms = 0;
+            return;
+        }
+        const pl = placement.?;
+        if (self.accel.render_bind_group == null) return error.AccelNotReady;
+        try self.ensureGroup(ctx, .fog_vis);
+
+        const generation_before = grid.generation;
+        if (!grid.ensureSize(ctx, .{ pl.dims[0], pl.dims[1], pl.dims[2] * layers })) return error.TextureCreationFailed;
+        if (grid.generation != generation_before and !self.fft.bindRead(ctx, grid.sampled_view, self.sampler)) {
+            return error.BindGroupCreationFailed;
+        }
+        grid.placement = pl;
+        grid.layers = layers;
+
+        var build_uniforms = scene;
+        build_uniforms.photon_enabled = if (photons_wanted) 1 else 0;
+        build_uniforms.debug_parts = 0;
+        fillFogVisUniforms(grid, &build_uniforms);
+        build_uniforms.fog_vis_enabled = 0;
+
+        const total_layers = pl.dims[2] * layers;
+        const layers_per_slab = fog_vis.layersPerSubmit(pl.dims);
+        const groups_x = (pl.dims[0] + fog_vis.workgroup_dim - 1) / fog_vis.workgroup_dim;
+        const groups_y = (pl.dims[1] + fog_vis.workgroup_dim - 1) / fog_vis.workgroup_dim;
+
+        var z: u32 = 0;
+        while (z < total_layers) : (z += layers_per_slab) {
+            const slab = @min(layers_per_slab, total_layers - z);
+            const groups_z = (slab + fog_vis.workgroup_dim - 1) / fog_vis.workgroup_dim;
+
+            build_uniforms.fog_vis_z_offset = @floatFromInt(z);
+            self.updateUniforms(ctx, build_uniforms);
+
+            try runComputePass(ctx, .fog_vis, "fog visibility build pass", self.pipelines.build_fog_vis, &.{
+                .{ .index = 0, .group = self.bind_group },
+                .{ .index = 1, .group = self.accel.render_bind_group },
+                .{ .index = 2, .group = grid.compute_bind_group },
+            }, .{ groups_x, groups_y, groups_z }, z + slab >= total_layers);
+        }
+
+        grid.valid = true;
+        self.content_generation +%= 1;
+        grid.last_build_ms = @intCast(sdl.SDL_GetTicks() -| started_ms);
+        std.debug.print(
+            "[fog-vis] built {d}x{d}x{d} x {d} lights (cell {d:.4}) in {d}ms\n",
+            .{ pl.dims[0], pl.dims[1], pl.dims[2], layers, pl.cell, grid.last_build_ms },
+        );
+    }
+
+    pub fn stampFogVisUniforms(self: *const FractalRenderer, uniforms: *Uniforms) void {
+        clearFogVisUniforms(uniforms);
+        const grid = &self.fog_vis;
+        if (!self.fog_vis_enabled or !grid.valid or grid.layers == 0) return;
+        fillFogVisUniforms(grid, uniforms);
+    }
+
+    fn fillFogVisUniforms(grid: *const FogVisGrid, uniforms: *Uniforms) void {
+        uniforms.fog_vis_enabled = 1;
+        uniforms.fog_vis_layers = @floatFromInt(grid.layers);
+        uniforms.fog_vis_origin = grid.placement.origin;
+        uniforms.fog_vis_cell = grid.placement.cell;
+        for (0..3) |a| uniforms.fog_vis_dims[a] = @floatFromInt(grid.placement.dims[a]);
+        uniforms.fog_vis_light_layer = @bitCast(grid.light_layer);
+        uniforms.fog_vis_layer_light = @bitCast(grid.layer_light);
+    }
+
+    pub fn clearFogVisUniforms(uniforms: *Uniforms) void {
+        uniforms.fog_vis_enabled = 0;
+        uniforms.fog_vis_layers = 0;
+        uniforms.fog_vis_origin = .{ 0, 0, 0 };
+        uniforms.fog_vis_cell = 0;
+        uniforms.fog_vis_dims = .{ 0, 0, 0 };
+        uniforms.fog_vis_z_offset = 0;
+        uniforms.fog_vis_light_layer = @splat(@splat(-1));
+        uniforms.fog_vis_layer_light = @splat(@splat(0));
+    }
+
     pub fn meshGpu(self: *FractalRenderer, ctx: *const Context, allocator: std.mem.Allocator) !*mesher.MeshGpu {
         if (self.mesh == null) self.mesh = try mesher.MeshGpu.init(ctx, self.uniform_layout);
         const m = &self.mesh.?;
@@ -2733,13 +3312,13 @@ pub const FractalRenderer = struct {
         return m;
     }
 
-    pub fn tracePhotons(self: *FractalRenderer, ctx: *const Context, scene: Uniforms, seed: f32, radius: f32) !void {
+    pub fn tracePhotons(self: *FractalRenderer, ctx: *const Context, scene: Uniforms, seed: f32, radius: f32, paths: u32) !void {
         if (!self.photon_map.isAllocated()) return error.PhotonMapNotReady;
         try self.ensureGroup(ctx, .photons);
+        self.photon_map.collectStats(ctx);
 
         const started_ms = sdl.SDL_GetTicks();
         const buckets = self.photon_map.buckets;
-        const paths = self.photon_settings.pathCount();
 
         self.photon_map.stored_radius = @max(radius, 1e-4);
         self.photon_map.stored_bounce_scale = self.photon_settings.bounceScale();
@@ -2766,7 +3345,7 @@ pub const FractalRenderer = struct {
         );
         self.photon_map.stored_fixed_unit = trace_uniforms.photon_fixed_unit;
 
-        const bucket_groups = (buckets + photons.workgroup_dim - 1) / photons.workgroup_dim;
+        const bucket_groups = linearDispatch(ctx, (buckets + photons.workgroup_dim - 1) / photons.workgroup_dim);
         const staging_capacity = self.photon_map.poolPhotons();
         const staging_groups = (staging_capacity + photons.workgroup_dim - 1) / photons.workgroup_dim;
         const groups_for = struct {
@@ -2804,7 +3383,7 @@ pub const FractalRenderer = struct {
 
         {
             self.updateUniforms(ctx, trace_uniforms);
-            try runComputePass(ctx, .photons, "photon clear pass", self.pipelines.clear_photons, &binds, .{ bucket_groups, 1, 1 }, false);
+            try runComputePass(ctx, .photons, "photon clear pass", self.pipelines.clear_photons, &binds, bucket_groups, false);
         }
 
         for ([_]f32{ 0, 1 }) |pass| {
@@ -2830,35 +3409,29 @@ pub const FractalRenderer = struct {
             if (pass == 0) {
                 trace_uniforms.photon_path_offset = 0;
                 self.updateUniforms(ctx, trace_uniforms);
-                try runComputePass(ctx, .photons, "photon alloc pass", self.pipelines.alloc_photons, &binds, .{ bucket_groups, 1, 1 }, false);
+                try runComputePass(ctx, .photons, "photon alloc pass", self.pipelines.alloc_photons, &binds, bucket_groups, false);
                 try runComputePass(ctx, .photons, "photon scatter pass", self.pipelines.scatter_photons, &binds, .{ staging_groups, 1, 1 }, false);
             }
         }
 
-        const stats = self.readPhotonStats(ctx) catch photons.TraceStats{};
-        self.photon_map.noteStats(stats);
-        const retraced = stats.staged > staging_capacity;
+        try runComputePass(ctx, .photons, "photon sort pass", self.pipelines.sort_photons, &binds, bucket_groups, false);
+        try runComputePass(ctx, .photons, "photon prefilter pass", self.pipelines.prefilter_photons, &binds, .{ staging_groups, 1, 1 }, false);
+
+        self.photon_map.trace_started_ms = started_ms;
+        self.photon_map.requestStats(ctx);
 
         self.photon_map.valid = true;
         self.content_generation +%= 1;
         self.photon_map.last_paths = paths;
-        self.photon_map.last_trace_ms = @intCast(sdl.SDL_GetTicks() -| started_ms);
 
         std.debug.print(
-            "[photons] traced {d} paths x {d} bounces into {d} cells (radius {d:.4}, cap {d}) in {d}ms -- pool {d}/{d}, {d} deposits had no bucket, {d} cells had no pool, {d} staged{s}\n",
+            "[photons] queued {d} paths x {d} bounces (radius {d:.4}, cap {d}) in {d}ms\n",
             .{
                 paths,
                 @as(u32, @intFromFloat(@max(self.photon_settings.bounces, 0))),
-                stats.occupiedCells(),
                 self.photon_map.stored_radius,
                 trace_uniforms.photon_cap_surface,
-                self.photon_map.last_trace_ms,
-                stats.pool_used,
-                self.photon_map.poolPhotons(),
-                stats.dropped_no_bucket,
-                stats.dropped_no_pool,
-                stats.staged,
-                if (retraced) " (overflowed staging: traced twice)" else "",
+                sdl.SDL_GetTicks() -| started_ms,
             },
         );
     }
@@ -2918,43 +3491,25 @@ pub const FractalRenderer = struct {
         std.debug.print("[photons] aimed {d}/{d} lights at the scene in {d}ms\n", .{ aimed, light_count, sdl.SDL_GetTicks() -| started_ms });
     }
 
-    fn readPhotonStats(self: *FractalRenderer, ctx: *const Context) !photons.TraceStats {
-        const size: u64 = @sizeOf(photons.TraceStats);
-        const encoder = wgpu.wgpuDeviceCreateCommandEncoder(ctx.device, null) orelse return error.EncoderCreationFailed;
-        wgpu.wgpuCommandEncoderCopyBufferToBuffer(encoder, self.photon_map.stats, 0, self.photon_map.stats_read, 0, size);
-        const cmd = wgpu.wgpuCommandEncoderFinish(encoder, null);
-        wgpu.wgpuCommandEncoderRelease(encoder);
-        wgpu.wgpuQueueSubmit(ctx.queue, 1, &cmd);
-        wgpu.wgpuCommandBufferRelease(cmd);
+    pub fn beginExportSession(self: *FractalRenderer) void {
+        self.export_session = true;
+        self.accel.invalidate();
+        self.photon_map.invalidate();
+    }
 
-        var map_state = MapState{};
-        _ = wgpu.wgpuBufferMapAsync(self.photon_map.stats_read, wgpu.WGPUMapMode_Read, 0, size, wgpu.WGPUBufferMapCallbackInfo{
-            .nextInChain = null,
-            .mode = wgpu.WGPUCallbackMode_AllowProcessEvents,
-            .callback = onBufferMapped,
-            .userdata1 = &map_state,
-            .userdata2 = null,
-        });
-        _ = webgpu_context.pollUntil(ctx.instance, &map_state.done, gpu_work_timeout_ms);
-        if (!map_state.done or map_state.status != wgpu.WGPUMapAsyncStatus_Success) {
-            return error.BufferMapFailed;
-        }
-        defer wgpu.wgpuBufferUnmap(self.photon_map.stats_read);
+    pub fn endExportSession(self: *FractalRenderer) void {
+        self.export_session = false;
+        self.accel.invalidate();
+        self.photon_map.invalidate();
+    }
 
-        const ptr = wgpu.wgpuBufferGetConstMappedRange(self.photon_map.stats_read, 0, size) orelse return error.MappedRangeFailed;
-        const words: [*]const u32 = @ptrCast(@alignCast(ptr));
-        return .{
-            .pool_used = words[0],
-            .dropped_no_bucket = words[1],
-            .dropped_no_pool = words[2],
-            .cells_surface = words[3],
-            .cells_volume = words[4],
-            .staged = words[5],
-        };
+    fn exportReuse(self: *const FractalRenderer, valid: bool, key: u64, stored_key: u64, drift: f32, max_dist: f32) bool {
+        return self.export_session and valid and key == stored_key and drift <= accel.recenterDistance(max_dist);
     }
 
     pub fn renderToImage(self: *FractalRenderer, ctx: *const Context, samples: *const SampleSet, width: u32, height: u32, allocator: std.mem.Allocator, progress: ?RenderProgress) ![]u8 {
         std.debug.assert(samples.count() >= 1);
+        try self.ensureDrawable(ctx, samples.is2d());
 
         const bytes_per_pixel: u32 = 4;
         const row_align: u32 = 256;
@@ -2989,28 +3544,58 @@ pub const FractalRenderer = struct {
         var first = samples.at(0).*;
         self.stampApproxUniforms(&first);
 
-        self.accel.invalidate();
-        if (self.accel_enabled and !samples.is2d() and samples.allMatch(self.photon_settings, accelSceneHash)) {
-            self.buildAccel(ctx, first) catch |err| {
-                std.debug.print("[accel] export build failed ({s}); rendering without it\n", .{@errorName(err)});
-                self.accel.invalidate();
-            };
+        const want_accel = self.accel_enabled and !samples.is2d() and samples.allMatch(self.photon_settings, accelSceneHash);
+        const accel_key = std.hash.Wyhash.hash(accelSceneHash(&first, self.photon_settings), std.mem.asBytes(&[_]f32{ first.max_dist, self.accel_safety }));
+        if (!(want_accel and self.exportReuse(self.accel.valid, accel_key, self.export_accel_key, self.accel.drift(first.camera_pos), first.max_dist))) {
+            self.accel.invalidate();
+            if (want_accel) {
+                if (self.buildAccel(ctx, first)) {
+                    self.export_accel_key = accel_key;
+                } else |err| {
+                    std.debug.print("[accel] export build failed ({s}); rendering without it\n", .{@errorName(err)});
+                    self.accel.invalidate();
+                }
+            }
         }
 
-        self.photon_map.invalidate();
-        if (self.photon_settings.enabled and !self.photonsReplaced() and !samples.is2d() and samples.allMatch(self.photon_settings, photonSceneHash)) {
-            self.tracePhotons(ctx, first, 1.0, self.photon_settings.baseRadius()) catch |err| {
-                std.debug.print("[photons] export trace failed ({s}); rendering without caustics\n", .{@errorName(err)});
-                self.photon_map.invalidate();
-            };
+        const want_photons = self.photon_settings.enabled and !self.photonsReplaced() and !samples.is2d() and samples.allMatch(self.photon_settings, photonSceneHash);
+        const photon_key = photonSceneHash(&first, self.photon_settings);
+        if (!(want_photons and self.exportReuse(self.photon_map.valid, photon_key, self.export_photon_key, self.photon_map.drift(first.camera_pos), first.max_dist))) {
+            self.photon_map.invalidate();
+            if (want_photons) {
+                if (self.tracePhotons(ctx, first, 1.0, self.photon_settings.baseRadius(), self.photon_settings.pathCount())) {
+                    self.export_photon_key = photon_key;
+                } else |err| {
+                    std.debug.print("[photons] export trace failed ({s}); rendering without caustics\n", .{@errorName(err)});
+                    self.photon_map.invalidate();
+                }
+            }
         }
-        defer self.accel.invalidate();
-        defer self.photon_map.invalidate();
+        defer if (!self.export_session) {
+            self.accel.invalidate();
+            self.photon_map.invalidate();
+        };
+
+        const want_fog_vis = self.fog_vis_enabled and !samples.is2d() and samples.allMatch(self.photon_settings, fogVisSceneHash);
+        if (want_fog_vis) {
+            var vis_scene = first;
+            self.stampAccelUniforms(&vis_scene);
+            const vis_key = fog_vis_state.sceneHash(&vis_scene, want_photons, self.fog_vis_resolution);
+            if (!(self.fog_vis.valid and self.fog_vis.key == vis_key)) {
+                self.buildFogVis(ctx, vis_scene, want_photons) catch |err| {
+                    std.debug.print("[fog-vis] export build failed ({s}); marching fog shadows\n", .{@errorName(err)});
+                    self.fog_vis.invalidate();
+                };
+            }
+        } else {
+            self.fog_vis.invalidate();
+        }
 
         var tracker = ProgressTracker{
             .progress = progress,
             .total = @as(u64, width) * height * samples.count(),
         };
+        self.last_march_ms = 0;
 
         var tile_y: u32 = 0;
         while (tile_y < height) : (tile_y += tile_dim) {
@@ -3107,14 +3692,20 @@ pub const FractalRenderer = struct {
             .max_side = if (is_2d) export_max_sub_side_2d else export_max_sub_side_3d,
         };
         var batch = ExportBatch{};
-        errdefer batch.discard();
+        errdefer batch.discard(ctx);
         var cleared = false;
 
         const sample_count = samples.count();
+        const primary_cached = sample_count > 1 and !is_2d and samples.at(0).primary_cache_key > 0.5 and
+            samples.allMatch(self.photon_settings, primarySceneHash);
+        const wave_on = !is_2d and self.wavefrontUsable(ctx, samples.at(0));
+        self.last_used_wavefront = wave_on;
+        const wave_inner = wavefrontInner(samples.at(0));
+        const wave_cap = if (wave_on) self.wave.pixelCapacity(wave_inner) else 0;
         var s: u32 = 0;
         while (s < sample_count) : (s += 1) {
             if (batch.cmd_encoder != null and s - batch.first_sample >= uniform_ring_slots) {
-                try batch.flush(ctx, &pacer, tracker);
+                try self.flushExport(ctx, &batch, &pacer, tracker);
             }
             const slot = s % uniform_ring_slots;
             var uniforms = samples.at(s).*;
@@ -3122,7 +3713,9 @@ pub const FractalRenderer = struct {
             uniforms.tile_bias = tile.bias;
             uniforms.mc_sample = @floatFromInt(s);
             uniforms.adapt_row_width = tile_adapt_width;
+            uniforms.primary_cache_key = if (primary_cached) 1 else 0;
             self.stampAccelUniforms(&uniforms);
+            self.stampFogVisUniforms(&uniforms);
             self.stampPhotonUniforms(&uniforms);
             self.stampSkyUniforms(&uniforms);
             self.stampApproxUniforms(&uniforms);
@@ -3137,14 +3730,22 @@ pub const FractalRenderer = struct {
                 stack_len -= 1;
                 var rect = stack[stack_len];
                 const side = pacer.subTileSide();
-                while ((rect.w > side or rect.h > side) and stack_len < stack.len) {
+                while ((rect.w > side or rect.h > side or (wave_on and rect.area() > wave_cap)) and stack_len < stack.len) {
                     const halves = rect.split();
                     stack[stack_len] = halves[1];
                     stack_len += 1;
                     rect = halves[0];
                 }
 
+                const profile_full = if (self.profile) |*pr| pr.full() else false;
+                if ((wave_on and !self.wave.blocksLeft()) or profile_full) try self.flushExport(ctx, &batch, &pacer, tracker);
+                if (batch.cmd_encoder == null) self.wave.resetBlocks();
                 const encoder = try batch.encoder(ctx, s);
+                var wave_block: u32 = 0;
+                if (wave_on) {
+                    wave_block = self.wave.reserveBlock(ctx, .{ .x = rect.x, .y = rect.y, .w = rect.w, .h = rect.h }, tile_w, tile_h, wave_inner);
+                    self.encodeWavefront(encoder, slot, wave_block, @intCast(rect.area()), wavefrontDepth(&uniforms), false);
+                }
                 const attachments = marchAttachments(export_view, tile_gbuf, cleared);
                 const pass = wgpu.wgpuCommandEncoderBeginRenderPass(encoder, &wgpu.WGPURenderPassDescriptor{
                     .nextInChain = null,
@@ -3153,20 +3754,27 @@ pub const FractalRenderer = struct {
                     .colorAttachments = &attachments,
                     .depthStencilAttachment = null,
                     .occlusionQuerySet = null,
-                    .timestampWrites = null,
+                    .timestampWrites = if (self.profile != null) self.profile.?.pass(if (wave_on) .resolve else .megakernel) else null,
                 }).?;
                 cleared = true;
                 wgpu.wgpuRenderPassEncoderSetScissorRect(pass, rect.x, rect.y, rect.w, rect.h);
-                self.drawSlot(pass, blend_constant, if (is_2d) .slice else .march, slot);
+                if (wave_on) {
+                    self.drawWavefrontResolve(pass, blend_constant, slot, wave_block);
+                } else {
+                    self.drawSlot(pass, blend_constant, if (is_2d) .slice else .march, slot);
+                }
                 wgpu.wgpuRenderPassEncoderEnd(pass);
                 wgpu.wgpuRenderPassEncoderRelease(pass);
 
                 batch.pixels += rect.area();
                 batch.est_ms += pacer.estimateMs(rect.area());
-                if (batch.est_ms >= export_batch_target_ms) try batch.flush(ctx, &pacer, tracker);
+                if (batch.est_ms >= export_batch_target_ms) try self.flushExport(ctx, &batch, &pacer, tracker);
             }
         }
-        try batch.flush(ctx, &pacer, tracker);
+        try self.flushExport(ctx, &batch, &pacer, tracker);
+        try batch.drain(ctx, &pacer, tracker);
+        try waitForQueueIdle(ctx);
+        self.last_march_ms += nowMs() - tile_start_ms;
 
         if (perf_probe.enabled()) {
             std.debug.print("[perf] export tile {d}x{d} x{d} samples: {d} submits, sub-tile settled at {d}px, {d:.0}ms\n", .{
@@ -3278,6 +3886,15 @@ pub const FractalRenderer = struct {
             @memcpy(dst_row, src_row);
         }
         wgpu.wgpuBufferUnmap(readback_buffer);
+    }
+
+    fn flushExport(self: *FractalRenderer, ctx: *const Context, batch: *ExportBatch, pacer: *ExportPacer, tracker: *ProgressTracker) !void {
+        try batch.flush(ctx, pacer, tracker);
+        if (self.profile) |*p| {
+            try batch.drain(ctx, pacer, tracker);
+            p.collect(ctx, &self.wave, self.wave.next_block);
+        }
+        self.wave.resetBlocks();
     }
 
     fn denoiseWanted(self: *const FractalRenderer, samples: *const SampleSet) bool {
@@ -3614,14 +4231,16 @@ pub const FractalRenderer = struct {
     }
 
     pub fn draw(self: *FractalRenderer, pass: wgpu.WGPURenderPassEncoder, blend_constant: f32, mode: RenderMode, parts_pipeline: wgpu.WGPURenderPipeline) void {
-        if (mode == .march and parts_pipeline != null) {
+        if (mode == .march and self.live_band_count > 0) {
+            self.drawLiveWavefront(pass, blend_constant);
+        } else if (mode == .march and parts_pipeline != null) {
             self.drawPipeline(pass, blend_constant, parts_pipeline, 0);
         } else {
             self.drawSlot(pass, blend_constant, mode, 0);
         }
     }
 
-    fn drawSlot(self: *FractalRenderer, pass: wgpu.WGPURenderPassEncoder, blend_constant: f32, mode: RenderMode, slot: u32) void {
+    pub fn drawSlot(self: *FractalRenderer, pass: wgpu.WGPURenderPassEncoder, blend_constant: f32, mode: RenderMode, slot: u32) void {
         self.drawPipeline(pass, blend_constant, switch (mode) {
             .march => self.pipelines.march,
             .slice => self.pipelines.slice,
@@ -3630,6 +4249,7 @@ pub const FractalRenderer = struct {
     }
 
     fn drawPipeline(self: *FractalRenderer, pass: wgpu.WGPURenderPassEncoder, blend_constant: f32, pipeline: wgpu.WGPURenderPipeline, slot: u32) void {
+        if (pipeline == null) return;
         wgpu.wgpuRenderPassEncoderSetPipeline(pass, pipeline);
         self.bindSceneGroupsSlot(pass, slot);
         wgpu.wgpuRenderPassEncoderSetBlendConstant(pass, &wgpu.WGPUColor{ .r = blend_constant, .g = blend_constant, .b = blend_constant, .a = 1.0 });
@@ -3646,6 +4266,104 @@ pub const FractalRenderer = struct {
         wgpu.wgpuCommandEncoderRelease(encoder);
         wgpu.wgpuQueueSubmit(ctx.queue, 1, &[_]wgpu.WGPUCommandBuffer{cmd});
         wgpu.wgpuCommandBufferRelease(cmd);
+    }
+
+    pub fn drawSampleNow(self: *FractalRenderer, ctx: *const Context, uniforms: *const Uniforms, blend_constant: f32, parts_pipeline: wgpu.WGPURenderPipeline) void {
+        const encoder = wgpu.wgpuDeviceCreateCommandEncoder(ctx.device, null) orelse return;
+        _ = self.prepareLiveWavefront(ctx, encoder, uniforms);
+        const pass = self.beginOffscreenPass(encoder, true);
+        self.draw(pass, blend_constant, .march, parts_pipeline);
+        wgpu.wgpuRenderPassEncoderEnd(pass);
+        wgpu.wgpuRenderPassEncoderRelease(pass);
+        const cmd = wgpu.wgpuCommandEncoderFinish(encoder, null);
+        wgpu.wgpuCommandEncoderRelease(encoder);
+        wgpu.wgpuQueueSubmit(ctx.queue, 1, &[_]wgpu.WGPUCommandBuffer{cmd});
+        wgpu.wgpuCommandBufferRelease(cmd);
+    }
+
+    pub fn wavefrontInner(u: *const Uniforms) u32 {
+        if (u.dof_enabled < 0.5 or u.aperture <= 0.0001) return 1;
+        return std.math.clamp(@as(u32, @intFromFloat(@max(u.mc_inner_samples, 1))), 1, wavefront.max_inner);
+    }
+
+    fn wavefrontDepth(u: *const Uniforms) u32 {
+        return @intCast(std.math.clamp(@as(i32, @intFromFloat(u.max_reflection_bounces)) + 8, 1, 16));
+    }
+
+    fn wavefrontWanted(self: *const FractalRenderer, u: *const Uniforms) bool {
+        if (!self.wavefront or self.wavefront_pipeline_layout == null or self.wavefront_args_pipeline_layout == null or self.wavefront_resolve_pipeline_layout == null) return false;
+        return u.mc_enabled > 0.5 and u.mode_2d < 0.5;
+    }
+
+    pub fn wavefrontReady(self: *const FractalRenderer) bool {
+        return self.pipelines.has(.wavefront);
+    }
+
+    pub fn wavefrontUsable(self: *FractalRenderer, ctx: *const Context, u: *const Uniforms) bool {
+        if (!self.wavefrontWanted(u)) return false;
+        self.collectWaveJob(true);
+        self.ensureGroup(ctx, .wavefront) catch return false;
+        return self.wave.ensureSlots(ctx, wavefront.default_slots);
+    }
+
+    fn encodeWavefront(self: *FractalRenderer, encoder: wgpu.WGPUCommandEncoder, slot: u32, block: u32, pixels: u32, max_depth: u32, timed: bool) void {
+        var enc = WaveEncoder{ .r = self, .encoder = encoder, .slot = slot, .block = block, .timed = timed };
+        defer enc.close();
+        enc.run(.generate, .generate, .{ .direct = (pixels + wavefront.workgroup - 1) / wavefront.workgroup });
+        for (0..max_depth) |depth| {
+            enc.run(.args, .args_begin, .{ .direct = 1 });
+            enc.run(.extend, .extend, .{ .indirect = wavefront.args_paths_offset });
+            enc.run(.args, .args_hits, .{ .direct = 1 });
+            enc.run(.surface, .surface, .{ .indirect = wavefront.args_hits_offset });
+            enc.run(.shade, .shade, .{ .indirect = wavefront.args_paths_offset });
+            enc.run(.args, .args_mid, .{ .direct = 1 });
+            enc.run(.shadow, .shadow, .{ .indirect = wavefront.args_shadow_offset });
+            if (depth == 0) enc.run(.indirect, .indirect, .{ .indirect = wavefront.args_indirect_offset });
+        }
+    }
+
+    fn drawWavefrontResolve(self: *FractalRenderer, pass: wgpu.WGPURenderPassEncoder, blend_constant: f32, slot: u32, block: u32) void {
+        wgpu.wgpuRenderPassEncoderSetPipeline(pass, self.pipelines.wf_resolve);
+        self.bindSceneGroupsSlot(pass, slot);
+        wgpu.wgpuRenderPassEncoderSetBindGroup(pass, wavefront.group_index, self.wave.resolve_group, 1, &block);
+        wgpu.wgpuRenderPassEncoderSetBlendConstant(pass, &wgpu.WGPUColor{ .r = blend_constant, .g = blend_constant, .b = blend_constant, .a = 1.0 });
+        wgpu.wgpuRenderPassEncoderDraw(pass, 3, 1, 0, 0);
+    }
+
+    pub fn prepareLiveWavefront(self: *FractalRenderer, ctx: *const Context, encoder: wgpu.WGPUCommandEncoder, uniforms: *const Uniforms) bool {
+        self.live_band_count = 0;
+        if (!self.wavefrontWanted(uniforms)) return false;
+        self.collectWaveJob(false);
+        if (!self.pipelines.has(.wavefront)) {
+            if (!self.isCompiling() and self.core_job == null) self.startWaveJob(ctx);
+            return false;
+        }
+        if (!self.wave.ensureSlots(ctx, wavefront.default_slots)) return false;
+        self.wave.resetBlocks();
+        const inner = wavefrontInner(uniforms);
+        const w = self.offscreen_width;
+        const h = self.offscreen_height;
+        const rows: u32 = @intCast(@max(self.wave.pixelCapacity(inner) / w, 1));
+        if ((h + rows - 1) / rows > live_band_capacity) return false;
+        const depth = wavefrontDepth(uniforms);
+        var y: u32 = 0;
+        while (y < h) : (y += rows) {
+            const band = wavefront.Band{ .x = 0, .y = y, .w = w, .h = @min(rows, h - y) };
+            const block = self.wave.reserveBlock(ctx, band, w, h, inner);
+            self.encodeWavefront(encoder, 0, block, band.w * band.h, depth, true);
+            self.live_bands[self.live_band_count] = .{ .rect = band, .block = block };
+            self.live_band_count += 1;
+        }
+        return true;
+    }
+
+    fn drawLiveWavefront(self: *FractalRenderer, pass: wgpu.WGPURenderPassEncoder, blend_constant: f32) void {
+        for (self.live_bands[0..self.live_band_count]) |b| {
+            wgpu.wgpuRenderPassEncoderSetScissorRect(pass, b.rect.x, b.rect.y, b.rect.w, b.rect.h);
+            self.drawWavefrontResolve(pass, blend_constant, 0, b.block);
+        }
+        wgpu.wgpuRenderPassEncoderSetScissorRect(pass, 0, 0, self.offscreen_width, self.offscreen_height);
+        self.live_band_count = 0;
     }
 
     fn bindSceneGroups(self: *FractalRenderer, pass: wgpu.WGPURenderPassEncoder) void {

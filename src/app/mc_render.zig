@@ -14,6 +14,13 @@ pub const McRenderState = struct {
     adaptive_min_samples: f32 = 16,
     adaptive_min_samples_range: SliderRange = .{ .min = 4, .max = 64 },
 
+    inner_samples: f32 = 1,
+    inner_samples_range: SliderRange = .{ .min = 1, .max = 32 },
+    light_pick: bool = true,
+    fog_tracking: bool = true,
+    primary_cache: bool = true,
+    wavefront: bool = true,
+
     denoise: bool = false,
     denoise_preview: bool = false,
     denoise_strength: f32 = 1.0,

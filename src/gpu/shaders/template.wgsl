@@ -23,6 +23,7 @@ const MAX_INSTANCES = 4;
 const MAX_MIXINS = 3;
 const MAX_COLOR_STOPS = 16;
 const MAX_LIGHTS = 8;
+const FOG_VIS_LIGHT_VEC4S = 2;
 const MAX_FOG_EMITTERS = 4;
 const MAX_WARPS = 4;
 const MAX_CASCADES = 8;
@@ -132,6 +133,7 @@ struct FractalInstance {
     trap_offset: f32,
     mixins: array<MixinParams, MAX_MIXINS>,
     colors: array<ColorStop, MAX_COLOR_STOPS>,
+    frame: mat3x3f,
 }
 
 struct Light {
@@ -171,6 +173,7 @@ struct Warp {
     lip_mult: f32,
     lip_grad: f32,
     safety: f32,
+    frame: mat3x3f,
 }
 
 struct ParticleSystem {
@@ -231,8 +234,8 @@ struct Uniforms {
     accel_params: array<vec4f, MAX_CASCADES>,
     warp_count: f32,
     has_transparency: f32,
-    _pad_warp1: f32,
-    _pad_warp2: f32,
+    photon_prefilter: f32,
+    march_verify: f32,
     warps: array<Warp, MAX_WARPS>,
     photon_enabled: f32,
     photon_radius: f32,
@@ -274,11 +277,37 @@ struct Uniforms {
     approx_tint: f32,
     approx_lod_start: f32,
     approx_lod_strength: f32,
-    _pad_approx0: f32,
+    mc_light_pick: f32,
     adapt_enabled: f32,
     adapt_threshold: f32,
     adapt_min_samples: f32,
     adapt_row_width: f32,
+    flat_coloring: f32,
+    flat_interior: f32,
+    flat_bailout: f32,
+    flat_extra_iters: f32,
+    flat_band_density: f32,
+    flat_band_offset: f32,
+    flat_relief: f32,
+    flat_light_angle: f32,
+    flat_contours: f32,
+    flat_contour_density: f32,
+    flat_slab_slices: f32,
+    flat_slab_depth: f32,
+    flat_slab_opacity: f32,
+    flat_samples: f32,
+    flat_halo: f32,
+    mc_inner_samples: f32,
+    fog_tracking: f32,
+    primary_cache_key: f32,
+    fog_vis_enabled: f32,
+    fog_vis_layers: f32,
+    fog_vis_origin: vec3f,
+    fog_vis_cell: f32,
+    fog_vis_dims: vec3f,
+    fog_vis_z_offset: f32,
+    fog_vis_light_layer: array<vec4f, FOG_VIS_LIGHT_VEC4S>,
+    fog_vis_layer_light: array<vec4f, FOG_VIS_LIGHT_VEC4S>,
 }
 
 const APPROX_SIMPLE_FOG: u32 = 1u << 0u;
@@ -422,7 +451,7 @@ struct Photon {
     _pad2: f32,
 }
 
-@group(2) @binding(0) var<storage, read> photon_cells: array<Photon>;
+@group(2) @binding(0) var<storage, read> photon_cells: array<vec4f>;
 @group(2) @binding(1) var<storage, read> photon_counts: array<u32>;
 @group(2) @binding(2) var<storage, read> photon_keys: array<u32>;
 @group(2) @binding(3) var<storage, read> photon_offsets: array<u32>;
@@ -503,6 +532,55 @@ fn photon_cap_surface() -> u32 {
 
 const PHOTON_PROBES: u32 = 8u;
 
+const PHOTON_OCTANTS = 8u;
+const PHOTON_OCTANT_BITS = 10u;
+const PHOTON_OCTANT_MASK = 0x3ffu;
+const PHOTON_OCTANTS_PER_WORD = 3u;
+const PHOTON_OCTANT_HEADER_PHOTONS = 3u;
+
+fn photon_octant(p: vec3f, kind: u32) -> u32 {
+    let q = p / photon_grid_edge(kind);
+    let upper = (q - floor(q)) >= vec3f(0.5);
+    return select(0u, 1u, upper.x) | select(0u, 2u, upper.y) | select(0u, 4u, upper.z);
+}
+
+const PHOTON_POOL_SECTIONS = 3u;
+const PHOTON_NO_PICK = 0xffffffffu;
+
+fn photon_power_index(i: u32) -> u32 {
+    return arrayLength(&photon_cells) / PHOTON_POOL_SECTIONS + i;
+}
+
+fn photon_prefiltered_index(i: u32) -> u32 {
+    return arrayLength(&photon_cells) / PHOTON_POOL_SECTIONS * 2u + i;
+}
+
+fn photon_octant_start(base: u32, o: u32, kept: u32) -> u32 {
+    if (o == 0u) {
+        return 0u;
+    }
+    if (o >= PHOTON_OCTANTS) {
+        return kept;
+    }
+    let i = o - 1u;
+    let packed = bitcast<u32>(photon_cells[photon_power_index(base + i / PHOTON_OCTANTS_PER_WORD)].w);
+    return min((packed >> ((i % PHOTON_OCTANTS_PER_WORD) * PHOTON_OCTANT_BITS)) & PHOTON_OCTANT_MASK, kept);
+}
+
+fn photon_scan(base: u32, begin: u32, end: u32, pos: vec3f, normal: vec3f, r: f32) -> vec3f {
+    var sum = vec3f(0.0);
+    for (var s = base + begin; s < base + end; s++) {
+        let geo = photon_cells[s];
+        let d = geo.xyz - pos;
+        let d2 = dot(d, d);
+        if (d2 > r * r || dot(oct_decode(bitcast<u32>(geo.w)), normal) < PHOTON_NORMAL_MIN_COS) {
+            continue;
+        }
+        sum += photon_cells[photon_power_index(s)].xyz * (1.0 - sqrt(d2) / r);
+    }
+    return sum;
+}
+
 const PHOTON_NO_BUCKET: u32 = 0xffffffffu;
 
 fn photon_bucket_find(c: vec3i, kind: u32) -> u32 {
@@ -522,52 +600,108 @@ fn photon_bucket_find(c: vec3i, kind: u32) -> u32 {
     return PHOTON_NO_BUCKET;
 }
 
+fn photon_gather_kind(pos: vec3f, normal: vec3f, kind: u32) -> vec3f {
+    let edge = photon_grid_edge(kind);
+    let r = PHOTON_GATHER_RADIUS_CELLS * edge;
+    let qlo = (pos - vec3f(r)) / edge;
+    let qhi = (pos + vec3f(r)) / edge;
+    let lo = vec3i(floor(qlo));
+    let hi = vec3i(floor(qhi));
+
+    var sum = vec3f(0.0);
+    for (var z = lo.z; z <= hi.z; z++) {
+        for (var y = lo.y; y <= hi.y; y++) {
+            for (var x = lo.x; x <= hi.x; x++) {
+                let h = photon_bucket_find(vec3i(x, y, z), kind);
+                if (h == PHOTON_NO_BUCKET) {
+                    continue;
+                }
+                let stored = photon_counts[h];
+                if (stored == 0u) {
+                    continue;
+                }
+                let kept = min(stored, photon_cap_surface());
+                let overflow = f32(stored) / f32(kept);
+                let base = photon_offsets[h];
+                if (kept < PHOTON_OCTANT_HEADER_PHOTONS) {
+                    sum += photon_scan(base, 0u, kept, pos, normal, r) * overflow;
+                    continue;
+                }
+                let mid = vec3f(vec3i(x, y, z)) + 0.5;
+                let first = select(vec3u(0u), vec3u(1u), qlo >= mid);
+                let last = select(vec3u(0u), vec3u(1u), qhi >= mid);
+                for (var oz = first.z; oz <= last.z; oz++) {
+                    for (var oy = first.y; oy <= last.y; oy++) {
+                        let row = (oy << 1u) | (oz << 2u);
+                        let begin = photon_octant_start(base, row | first.x, kept);
+                        let end = photon_octant_start(base, (row | last.x) + 1u, kept);
+                        sum += photon_scan(base, begin, end, pos, normal, r) * overflow;
+                    }
+                }
+            }
+        }
+    }
+    return sum / (r * r);
+}
+
+fn photon_bounce_prefiltered(pos: vec3f, normal: vec3f) -> vec3f {
+    let kind = PHOTON_GRID_BOUNCE;
+    let h = photon_bucket_find(photon_grid_cell(pos, kind), kind);
+    if (h == PHOTON_NO_BUCKET) {
+        return vec3f(0.0);
+    }
+    let stored = photon_counts[h];
+    if (stored == 0u) {
+        return vec3f(0.0);
+    }
+    let kept = min(stored, photon_cap_surface());
+    let base = photon_offsets[h];
+    var begin = 0u;
+    var end = kept;
+    if (kept >= PHOTON_OCTANT_HEADER_PHOTONS) {
+        let o = photon_octant(pos, kind);
+        begin = photon_octant_start(base, o, kept);
+        end = photon_octant_start(base, o + 1u, kept);
+    }
+    var pick = PHOTON_NO_PICK;
+    var best = INFINITE_DISTANCE;
+    for (var attempt = 0u; attempt < 2u; attempt++) {
+        for (var s = base + begin; s < base + end; s++) {
+            let geo = photon_cells[s];
+            let d = geo.xyz - pos;
+            let d2 = dot(d, d);
+            if (d2 < best && dot(oct_decode(bitcast<u32>(geo.w)), normal) >= PHOTON_NORMAL_MIN_COS) {
+                best = d2;
+                pick = s;
+            }
+        }
+        if (pick != PHOTON_NO_PICK || (begin == 0u && end == kept)) {
+            break;
+        }
+        begin = 0u;
+        end = kept;
+    }
+    if (pick == PHOTON_NO_PICK) {
+        return vec3f(0.0);
+    }
+    return photon_cells[photon_prefiltered_index(pick)].xyz;
+}
+
 fn photon_gather_surface(pos: vec3f, normal: vec3f) -> vec3f {
     if (!photons_on()) {
         return vec3f(0.0);
     }
     var total = vec3f(0.0);
     for (var g = 0u; g < PHOTON_SURFACE_GRID_COUNT; g++) {
-        let kind = select(PHOTON_GRID_SURFACE, PHOTON_GRID_BOUNCE, g == 1u);
-        if (approx_on(select(APPROX_FAKE_CAUSTICS, APPROX_FAKE_BOUNCE, g == 1u))) {
+        let bounce = g == 1u;
+        if (approx_on(select(APPROX_FAKE_CAUSTICS, APPROX_FAKE_BOUNCE, bounce))) {
             continue;
         }
-        let r = PHOTON_GATHER_RADIUS_CELLS * photon_grid_edge(kind);
-        let r2 = r * r;
-        let lo = photon_grid_cell(pos - vec3f(r), kind);
-        let hi = photon_grid_cell(pos + vec3f(r), kind);
-
-        var sum = vec3f(0.0);
-        for (var z = lo.z; z <= hi.z; z++) {
-            for (var y = lo.y; y <= hi.y; y++) {
-                for (var x = lo.x; x <= hi.x; x++) {
-                    let h = photon_bucket_find(vec3i(x, y, z), kind);
-                    if (h == PHOTON_NO_BUCKET) {
-                        continue;
-                    }
-                    let stored = photon_counts[h];
-                    if (stored == 0u) {
-                        continue;
-                    }
-                    let kept = min(stored, photon_cap_surface());
-                    let overflow = f32(stored) / f32(kept);
-                    let base = photon_offsets[h];
-                    for (var s = 0u; s < kept; s++) {
-                        let ph = photon_cells[base + s];
-                        let d = ph.pos - pos;
-                        if (dot(d, d) > r2) {
-                            continue;
-                        }
-                        if (dot(ph.normal, normal) < PHOTON_NORMAL_MIN_COS) {
-                            continue;
-                        }
-                        let w = 1.0 - sqrt(dot(d, d)) / r;
-                        sum += ph.power * overflow * w;
-                    }
-                }
-            }
+        if (bounce && u.photon_prefilter > 0.5) {
+            total += photon_bounce_prefiltered(pos, normal);
+            continue;
         }
-        total += sum / r2;
+        total += photon_gather_kind(pos, normal, select(PHOTON_GRID_SURFACE, PHOTON_GRID_BOUNCE, bounce));
     }
     return gamut_fit(total) * u.photon_intensity * PHOTON_CONE_FILTER_NORM / PI;
 }
@@ -1171,6 +1305,42 @@ fn mixin_code(slot: i32, idx: i32) -> i32 {
     return i32(u.instances[slot].mixins[idx].code);
 }
 
+struct HybridStep {
+    code: i32,
+    p: array<f32, 8>,
+    image_slot: i32,
+    have: bool,
+}
+
+fn hybrid_cycle_len(slot: i32, base_n: i32, mixin_count: i32) -> i32 {
+    var cycle_len = base_n;
+    for (var j = 0; j < mixin_count; j++) {
+        cycle_len += max(i32(u.instances[slot].mixins[j].iterations), 0);
+    }
+    return max(cycle_len, 1);
+}
+
+fn hybrid_step(slot: i32, it: i32, base_n: i32, cycle_len: i32, mixin_count: i32, base_code: i32, base_p: array<f32, 8>) -> HybridStep {
+    var st = HybridStep(base_code, base_p, slot * IMAGE_SLOTS_PER_FRACTAL, true);
+    var pos_in_cycle = it % cycle_len;
+    if (pos_in_cycle >= base_n) {
+        pos_in_cycle -= base_n;
+        st.have = false;
+        for (var j = 0; j < mixin_count; j++) {
+            let n_j = max(i32(u.instances[slot].mixins[j].iterations), 0);
+            if (pos_in_cycle < n_j) {
+                st.code = mixin_code(slot, j);
+                st.p = instance_mixin_params(slot, j);
+                st.image_slot += 1 + j;
+                st.have = true;
+                break;
+            }
+            pos_in_cycle -= n_j;
+        }
+    }
+    return st;
+}
+
 fn eval_mixed(pos: vec3f, base_slot: i32) -> vec2f {
     var carry = IterCarry(pos, 1.0);
     let trap_spec = orbit_trap(base_slot);
@@ -1180,43 +1350,18 @@ fn eval_mixed(pos: vec3f, base_slot: i32) -> vec2f {
     let base_code = instance_code(base_slot);
     let base_n = max(i32(u.instances[base_slot].hybrid_base_iters), 0);
     let mixin_count = min(i32(u.instances[base_slot].mixin_count), MAX_MIXINS);
-
-    var cycle_len = base_n;
-    for (var j = 0; j < mixin_count; j++) {
-        cycle_len += max(i32(u.instances[base_slot].mixins[j].iterations), 0);
-    }
-    cycle_len = max(cycle_len, 1);
+    let cycle_len = hybrid_cycle_len(base_slot, base_n, mixin_count);
 
     let lod = lod_iterations(max(i32(u.instances[base_slot].hybrid_total_iters), 0));
     let total = i32(lod.x);
     var carry_lo = carry;
     for (var it = 0; it < total; it++) {
         carry_lo = carry;
-        var pos_in_cycle = it % cycle_len;
-
-        var code = base_code;
-        var p = base_p;
-        var image_slot = base_slot * IMAGE_SLOTS_PER_FRACTAL;
-        var have_step = true;
-        if (pos_in_cycle >= base_n) {
-            pos_in_cycle -= base_n;
-            have_step = false;
-            for (var j = 0; j < mixin_count; j++) {
-                let n_j = max(i32(u.instances[base_slot].mixins[j].iterations), 0);
-                if (pos_in_cycle < n_j) {
-                    code = mixin_code(base_slot, j);
-                    p = instance_mixin_params(base_slot, j);
-                    image_slot += 1 + j;
-                    have_step = true;
-                    break;
-                }
-                pos_in_cycle -= n_j;
-            }
-        }
+        let st = hybrid_step(base_slot, it, base_n, cycle_len, mixin_count, base_code, base_p);
         let z_prev = carry.z;
-        if (have_step) {
-            g_image_slot = image_slot;
-            carry = eval_step(code, carry, pos, p);
+        if (st.have) {
+            g_image_slot = st.image_slot;
+            carry = eval_step(st.code, carry, pos, st.p);
         }
 
         trap = orbit_trap_update(trap, trap_spec, carry.z, z_prev, it);
@@ -1246,12 +1391,11 @@ fn rot_z(a: f32) -> mat3x3f {
 }
 
 fn instance_rotation(slot: i32) -> mat3x3f {
-    let r = u.instances[slot].rotation;
-    return rot_z(r.z) * rot_y(r.y) * rot_x(r.x);
+    return u.instances[slot].frame;
 }
 
 fn warp_frame(w: Warp) -> mat3x3f {
-    return rot_z(w.rotation.z) * rot_y(w.rotation.y) * rot_x(w.rotation.x);
+    return w.frame;
 }
 
 const WARP_REGION_SPHERE = 0;
@@ -1447,21 +1591,29 @@ fn instance_scale_magnitude(slot: i32) -> vec3f {
     return max(abs(u.instances[slot].scale), vec3f(MIN_INSTANCE_SCALE));
 }
 
-fn instance_de_trap(pos: vec3f, slot: i32) -> vec2f {
-    g_lod_dist = distance(pos, u.camera_pos);
+fn instance_local(pos: vec3f, slot: i32) -> vec3f {
     let mag = instance_scale_magnitude(slot);
     let s = select(mag, -mag, u.instances[slot].scale < vec3f(0.0));
-    let rot = instance_rotation(slot);
-    let unrotated = transpose(rot) * (pos - u.instances[slot].offset);
-    let local = unrotated / s;
-    let result = instance_local_de(local, slot);
-    let scale_factor = min(mag.x, min(mag.y, mag.z));
-    let safety = clamp(u.instances[slot].step_safety, MIN_STEP_SAFETY, 1.0);
-    return vec2f(result.x * scale_factor * safety, result.y);
+    return (transpose(instance_rotation(slot)) * (pos - u.instances[slot].offset)) / s;
+}
+
+fn instance_de_factor(slot: i32) -> f32 {
+    let mag = instance_scale_magnitude(slot);
+    return min(mag.x, min(mag.y, mag.z)) * clamp(u.instances[slot].step_safety, MIN_STEP_SAFETY, 1.0);
+}
+
+fn instance_ft_hidden(slot: i32) -> bool {
+    return u.fft_active > 0.5 && slot == i32(u.fft_target_slot + 0.5);
+}
+
+fn instance_de_trap(pos: vec3f, slot: i32) -> vec2f {
+    g_lod_dist = distance(pos, u.camera_pos);
+    let result = instance_local_de(instance_local(pos, slot), slot);
+    return vec2f(result.x * instance_de_factor(slot), result.y);
 }
 
 fn instance_de_trap_ft(pos: vec3f, slot: i32) -> vec2f {
-    if (u.fft_active > 0.5 && slot == i32(u.fft_target_slot + 0.5)) {
+    if (instance_ft_hidden(slot)) {
         return vec2f(NO_SURFACE_DE, 0.0);
     }
     return instance_de_trap(pos, slot);
@@ -1688,19 +1840,23 @@ fn march_to(origin: vec3f, dir: vec3f, max_t: f32) -> MarchResult {
     let max_steps = select(i32(u.max_steps), max(i32(u.max_steps) / COARSE_STEP_DIVISOR, COARSE_MIN_STEPS), coarse);
     let hq = u.high_quality > 0.5 && !coarse;
     let eps_scale = select(1.0, COARSE_EPS_SCALE, coarse);
-    let refine_budget = max(select(max(select(i32(u.refine_fast), i32(u.refine_hq), hq), 0), 0, coarse), select(0, 1, g_overstep_watch));
+    let budget = max(select(max(select(i32(u.refine_fast), i32(u.refine_hq), hq), 0), 0, coarse), select(0, 1, g_overstep_watch));
+    let on_hit = u.march_verify < 0.5 && !g_overstep_watch;
+    let refine_budget = select(budget, 0, on_hit);
+    let bisect_budget = select(0, budget, on_hit);
     let footprint_per_unit_t = u.hq_footprint_budget_px * 2.0 / max(u.resolution.y, 1.0);
 
     var t = 0.0;
-    var i = 0; 
-    var probing = true; 
+    var i = 0;
+    var probing = true;
+    var bisecting = false;
     var lo = 0.0;
     var hi = 0.0;
     var refines = 0;
     var resolved = false;
     var evals = 0;
 
-    let max_samples = max_steps * (1 + refine_budget);
+    let max_samples = max_steps * (1 + refine_budget) + bisect_budget;
     for (var n = 0; n < max_samples; n++) {
         let sample_t = select(0.5 * (lo + hi), t, probing);
         let eps = march_epsilon(sample_t) * eps_scale;
@@ -1713,6 +1869,7 @@ fn march_to(origin: vec3f, dir: vec3f, max_t: f32) -> MarchResult {
         if (probing) {
             let skip = min(accel_skip(origin + dir * sample_t), step_lim);
             if (skip > eps) {
+                lo = sample_t;
                 t = sample_t + skip;
                 i++;
                 if (t > max_t || i >= max_steps) {
@@ -1724,6 +1881,18 @@ fn march_to(origin: vec3f, dir: vec3f, max_t: f32) -> MarchResult {
 
         let d = scene_de(origin + dir * sample_t);
         evals++;
+        if (bisecting) {
+            if (d < eps) {
+                hi = sample_t;
+            } else {
+                lo = sample_t;
+            }
+            refines++;
+            if (hi - lo <= eps || refines >= bisect_budget) {
+                return MarchResult(true, hi, f32(i), f32(evals));
+            }
+            continue;
+        }
         if (g_overstep_watch && !probing) {
             let claimed = hi - sample_t;
             if (claimed > eps && d < claimed * (1.0 - OVERSTEP_TOLERANCE)) {
@@ -1732,6 +1901,13 @@ fn march_to(origin: vec3f, dir: vec3f, max_t: f32) -> MarchResult {
             }
         }
         if (d < eps) {
+            if (on_hit && bisect_budget > 0 && sample_t - lo > eps) {
+                bisecting = true;
+                probing = false;
+                hi = sample_t;
+                refines = 0;
+                continue;
+            }
             return MarchResult(true, sample_t, f32(i), f32(evals));
         }
 
@@ -1751,7 +1927,7 @@ fn march_to(origin: vec3f, dir: vec3f, max_t: f32) -> MarchResult {
         }
 
         if (resolved || refines >= refine_budget) {
-            if (hq && !resolved) {
+            if (hq && !resolved && refine_budget > 0) {
                 hi = min(hi, lo + max(t, 1.0) * footprint_per_unit_t);
             }
             t = hi;
@@ -2040,6 +2216,15 @@ fn total_light_count() -> i32 {
     return min(i32(u.light_count), MAX_LIGHTS);
 }
 
+const MC_MAX_INNER_SAMPLES = 32;
+
+fn mc_inner_count(non_mc: i32) -> i32 {
+    if (u.mc_enabled > 0.5) {
+        return clamp(i32(u.mc_inner_samples), 1, MC_MAX_INNER_SAMPLES);
+    }
+    return non_mc;
+}
+
 struct VisParams {
     k: f32,
     t0: f32,
@@ -2172,6 +2357,31 @@ fn fog_light_visibility(pos: vec3f, light_dir: vec3f, light_dist: f32, steps: i3
     return visibility_march(pos, light_dir, light_dist, vp);
 }
 
+@group(4) @binding(1) var fog_vis_tex: texture_3d<f32>;
+@group(4) @binding(2) var fog_vis_samp: sampler;
+
+fn fog_vis_layer(li: i32) -> i32 {
+    if (u.fog_vis_enabled < 0.5) {
+        return -1;
+    }
+    return i32(u.fog_vis_light_layer[li / 4][li % 4]);
+}
+
+fn fog_vis_sample(pos: vec3f, layer: i32) -> vec3f {
+    let dims = u.fog_vis_dims;
+    let local = clamp((pos - u.fog_vis_origin) / u.fog_vis_cell, vec3f(0.5), dims - vec3f(0.5));
+    let uvw = vec3f(local.xy / dims.xy, (local.z + f32(layer) * dims.z) / (dims.z * u.fog_vis_layers));
+    return textureSampleLevel(fog_vis_tex, fog_vis_samp, uvw, 0.0).rgb;
+}
+
+fn fog_shadow(li: i32, pos: vec3f, ls: LightSample, steps: i32) -> Spec {
+    let layer = fog_vis_layer(li);
+    if (layer >= 0) {
+        return spec_from_rgb(fog_vis_sample(pos, layer));
+    }
+    return fog_light_visibility(pos, ls.dir, ls.dist, steps);
+}
+
 
 const IGN_SCALE = 52.9829189;
 const IGN_WEIGHTS = vec2f(0.06711056, 0.00583715);
@@ -2186,6 +2396,10 @@ fn hash12(p: vec2f) -> f32 {
 // differing by a single ulp hash unrelated, so it is not continuous: never feed it into a
 // distance estimate directly, only into choices made per lattice cell (floor(p) first).
 fn hash12w(p: vec2f) -> f32 {
+    return f32(hash_u32(p)) * INV_U32_RANGE;
+}
+
+fn hash_u32(p: vec2f) -> u32 {
     var v = vec2u(bitcast<u32>(p.x), bitcast<u32>(p.y));
     v = v * LCG_MULTIPLIER + LCG_INCREMENT;
     v.x += v.y * LCG_MULTIPLIER;
@@ -2194,7 +2408,7 @@ fn hash12w(p: vec2f) -> f32 {
     v.x += v.y * LCG_MULTIPLIER;
     v.y += v.x * LCG_MULTIPLIER;
     v ^= v >> vec2u(16u);
-    return f32(v.x ^ v.y) * INV_U32_RANGE;
+    return v.x ^ v.y;
 }
 
 fn phase_hg(cos_theta: f32, g: f32) -> f32 {
@@ -2355,50 +2569,223 @@ const FOG_STEPS_HQ = 64;
 const FOG_SHADOW_STEPS_FAST = 10;
 const FOG_SHADOW_STEPS_HQ = 24;
 
-fn march_fog_once(origin: vec3f, dir: vec3f, max_t: f32, jitter: f32, steps: i32, shadow_steps: i32) -> VolumeResult {
+const FOG_TRACK_MIN_POINTS = 32.0;
+const FOG_TRACK_MAX_POINTS = 256;
+const FOG_TRACK_MIN_MAJORANT = 1e-5;
+
+struct FogTrack {
+    transmittance: f32,
+    window: f32,
+    photon_weight: f32,
+    photon_pos: vec3f,
+    photon_color: vec3f,
+    photon_g: f32,
+    light_weight: f32,
+    light_pos: vec3f,
+    light_color: vec3f,
+    light_g: f32,
+}
+
+fn fog_tracking_on() -> bool {
+    return u.mc_enabled > 0.5 && u.fog_tracking > 0.5;
+}
+
+fn fog_light_weight(light: Light, pos: vec3f, dir: vec3f, window: f32, color: vec3f, g: f32) -> f32 {
+    let ls = light_sample_ex(light, pos, dir, window);
+    if (max(ls.color.r, max(ls.color.g, ls.color.b)) < FOG_LIGHT_CUTOFF) {
+        return 0.0;
+    }
+    return dot(color * ls.color, LUMA_WEIGHTS) * phase_hg(dot(dir, ls.dir), g);
+}
+
+fn fog_track(origin: vec3f, dir: vec3f, span: f32, rng: ptr<function, u32>) -> FogTrack {
+    var tr: FogTrack;
+    tr.transmittance = 1.0;
+
+    var majorant = 0.0;
+    let count = min(i32(u.fog_count), MAX_FOG_EMITTERS);
+    for (var i = 0; i < count; i++) {
+        let fog = u.fog_emitters[i];
+        if (ray_meets_fog(origin, dir, span, fog)) {
+            majorant += max(fog.density, 0.0);
+        }
+    }
+    if (majorant < FOG_TRACK_MIN_MAJORANT || span <= 0.0) {
+        return tr;
+    }
+    let rate = max(majorant, FOG_TRACK_MIN_POINTS / span);
+    tr.window = 1.0 / rate;
+
+    let light_count = total_light_count();
+    let gather = photons_on();
+    var t = 0.0;
+    for (var i = 0; i < FOG_TRACK_MAX_POINTS; i++) {
+        t += -log(max(rand_from(rng), MIN_UNIFORM_SAMPLE)) / rate;
+        if (t >= span || tr.transmittance < VOLUME_MIN_TRANSMITTANCE) {
+            break;
+        }
+        let pos = origin + dir * t;
+        let fog = sample_fog(pos);
+        if (fog.extinction <= 0.0) {
+            continue;
+        }
+        let ratio = min(fog.extinction / rate, 1.0);
+        let a = tr.transmittance * ratio;
+        tr.transmittance *= 1.0 - ratio;
+
+        if (gather) {
+            tr.photon_weight += a;
+            if (rand_from(rng) * tr.photon_weight < a) {
+                tr.photon_pos = pos;
+                tr.photon_color = fog.color;
+                tr.photon_g = fog.anisotropy;
+            }
+        }
+
+        var lit = 0.0;
+        for (var li = 0; li < light_count; li++) {
+            lit += fog_light_weight(u.lights[li], pos, dir, tr.window, fog.color, fog.anisotropy);
+        }
+        let h = a * lit;
+        if (h > 0.0) {
+            tr.light_weight += h;
+            if (rand_from(rng) * tr.light_weight < h) {
+                tr.light_pos = pos;
+                tr.light_color = fog.color;
+                tr.light_g = fog.anisotropy;
+            }
+        }
+    }
+    return tr;
+}
+
+fn march_fog_once(origin: vec3f, dir: vec3f, max_t: f32, jitter: f32, steps: i32, shadow_steps: i32, seed: vec2f) -> VolumeResult {
     var result: VolumeResult;
     result.color = spec_splat(0.0);
     result.transmittance = 1.0;
+
+    let tracked = fog_tracking_on();
+    var rng = hash_u32(seed);
+    var tr: FogTrack;
+    if (tracked) {
+        tr = fog_track(origin, dir, max_t, &rng);
+    }
 
     let step_size = max_t / f32(steps);
     var t = step_size * jitter;
 
     let light_count = total_light_count();
-    for (var i = 0; i < steps; i++) {
-        if (t >= max_t || result.transmittance < VOLUME_MIN_TRANSMITTANCE) {
-            break;
-        }
-        let pos = origin + dir * t;
-        let fog = sample_fog(pos);
-        if (fog.extinction > VOLUME_MIN_EXTINCTION) {
+    let points = select(steps, 1, tracked);
+    for (var i = 0; i < points; i++) {
+        var p_pos: vec3f;
+        var p_color: vec3f;
+        var p_g: f32;
+        var p_weight: f32;
+        var p_span = 0.0;
+        var l_pos: vec3f;
+        var l_color: vec3f;
+        var l_g: f32;
+        var l_weight: f32;
+        var seg: f32;
+        var li_lo = 0;
+        var li_hi = light_count;
+
+        if (tracked) {
+            p_pos = tr.photon_pos;
+            p_color = tr.photon_color;
+            p_g = tr.photon_g;
+            p_weight = tr.photon_weight;
+            l_pos = tr.light_pos;
+            l_color = tr.light_color;
+            l_g = tr.light_g;
+            seg = tr.window;
+            l_weight = 0.0;
+            li_hi = 0;
+            if (tr.light_weight > 0.0) {
+                var weights: array<f32, MAX_LIGHTS>;
+                var total = 0.0;
+                for (var li = 0; li < light_count; li++) {
+                    weights[li] = fog_light_weight(u.lights[li], l_pos, dir, seg, l_color, l_g);
+                    total += weights[li];
+                }
+                if (total > 0.0) {
+                    let pick_at = rand_from(&rng) * total;
+                    var pick = 0;
+                    var running = 0.0;
+                    for (var li = 0; li < light_count; li++) {
+                        if (weights[li] <= 0.0) {
+                            continue;
+                        }
+                        pick = li;
+                        running += weights[li];
+                        if (running > pick_at) {
+                            break;
+                        }
+                    }
+                    li_lo = pick;
+                    li_hi = pick + 1;
+                    l_weight = tr.light_weight / weights[pick];
+                }
+            }
+        } else {
+            if (t >= max_t || result.transmittance < VOLUME_MIN_TRANSMITTANCE) {
+                break;
+            }
+            let pos = origin + dir * t;
+            t += step_size;
+            let fog = sample_fog(pos);
+            if (fog.extinction <= VOLUME_MIN_EXTINCTION) {
+                continue;
+            }
             let sigma_t = fog.extinction;
             let step_transmittance = exp(-sigma_t * step_size);
-
-            var inscatter = spec_from_rgb(photon_gather_volume(pos, dir, fog.anisotropy, step_size, jitter));
-            for (var li = 0; li < light_count; li++) {
-                let light = u.lights[li];
-                let ls = light_sample_ex(light, pos, dir, step_size);
-                if (max(ls.color.r, max(ls.color.g, ls.color.b)) < FOG_LIGHT_CUTOFF) {
-                    continue;
-                }
-                var vis = spec_splat(1.0);
-                if (light.cast_shadows > 0.5 && part_on(PART_SHADOWS)) {
-                    vis = fog_light_visibility(pos, ls.dir, ls.dist, shadow_steps);
-                }
-                let cos_theta = dot(dir, ls.dir);
-                let phase = phase_hg(cos_theta, fog.anisotropy);
-                inscatter = spec_add(inscatter, spec_scale(spec_mul(spec_from_rgb(ls.color), vis), phase));
-            }
-
             let integ = (1.0 - step_transmittance) / max(sigma_t, VOLUME_MIN_SIGMA);
-            result.color = spec_add(result.color,
-                spec_scale(spec_mul(spec_from_rgb(fog.color), inscatter),
-                           result.transmittance * sigma_t * integ));
+            let w = result.transmittance * sigma_t * integ;
             result.transmittance *= step_transmittance;
+            p_pos = pos;
+            p_color = fog.color;
+            p_g = fog.anisotropy;
+            p_weight = w;
+            p_span = step_size;
+            l_pos = pos;
+            l_color = fog.color;
+            l_g = fog.anisotropy;
+            l_weight = w;
+            seg = step_size;
         }
-        t += step_size;
+
+        var photon_in = vec3f(0.0);
+        if (p_weight > 0.0) {
+            if (p_span > 0.0) {
+                photon_in = photon_gather_volume(p_pos, dir, p_g, p_span, jitter);
+            } else {
+                photon_in = photon_gather_volume_at(p_pos, dir, p_g);
+            }
+        }
+
+        var light_in = spec_splat(0.0);
+        for (var li = li_lo; li < li_hi; li++) {
+            let light = u.lights[li];
+            let ls = light_sample_ex(light, l_pos, dir, seg);
+            if (max(ls.color.r, max(ls.color.g, ls.color.b)) < FOG_LIGHT_CUTOFF) {
+                continue;
+            }
+            var vis = spec_splat(1.0);
+            if (light.cast_shadows > 0.5 && part_on(PART_SHADOWS)) {
+                vis = fog_shadow(li, l_pos, ls, shadow_steps);
+            }
+            let phase = phase_hg(dot(dir, ls.dir), l_g);
+            light_in = spec_add(light_in, spec_scale(spec_mul(spec_from_rgb(ls.color), vis), phase));
+        }
+
+        result.color = spec_add(result.color, spec_add(
+            spec_scale(spec_mul(spec_from_rgb(p_color), spec_from_rgb(photon_in)), p_weight),
+            spec_scale(spec_mul(spec_from_rgb(l_color), light_in), l_weight)));
     }
 
+    if (tracked) {
+        result.transmittance = tr.transmittance;
+    }
     return result;
 }
 
@@ -2483,14 +2870,14 @@ fn march_fog(origin: vec3f, dir: vec3f, max_t: f32, screen_pos: vec2f) -> Volume
         return result;
     }
     let span_origin = origin + dir * span.x;
-    let samples = clamp(i32(u.fog_samples), 1, FOG_MAX_SAMPLES);
+    let samples = mc_inner_count(clamp(i32(u.fog_samples), 1, FOG_MAX_SAMPLES));
 
     let hot_prev = hot_enter(HOT_FOG);
     var accum_color = spec_splat(0.0);
     var accum_transmittance = 0.0;
     for (var s = 0; s < samples; s++) {
         let seed = screen_pos + vec2f(f32(s) * FOG_SEED_STRIDE_X, f32(s) * FOG_SEED_STRIDE_Y);
-        let one = march_fog_once(span_origin, dir, span.y - span.x, hash12(seed), steps, shadow_steps);
+        let one = march_fog_once(span_origin, dir, span.y - span.x, hash12(seed), steps, shadow_steps, seed);
         accum_color = spec_add(accum_color, one.color);
         accum_transmittance += one.transmittance;
     }
@@ -2644,7 +3031,22 @@ const SPEC_POWER_MAX = 128.0;
 const MATERIAL_EPSILON = 0.001;
 const SURFACE_LIGHT_CUTOFF = 1e-5;
 
-fn shade_local(pos: vec3f, dir: vec3f, normal: vec3f, mat: ColorStop, ambient_light: Spec, use_shadows: bool) -> Spec {
+struct LightTerms {
+    ndotl: f32,
+    specular: f32,
+}
+
+fn light_terms(ls: LightSample, normal: vec3f, view_dir: vec3f, translucency: f32, spec_power: f32, glossiness: f32) -> LightTerms {
+    let wrap = SSS_WRAP * translucency;
+    let ndotl = max((dot(normal, ls.dir) + wrap) / (1.0 + wrap), 0.0);
+    let half_dir = normalize(ls.dir + view_dir);
+    let specular = select(0.0, pow(max(dot(normal, half_dir), 0.0), spec_power) * glossiness, part_on(PART_SPECULAR));
+    return LightTerms(ndotl, specular);
+}
+
+const LIGHT_PICK_SEED_OFFSET = vec2f(47.23, 113.91);
+
+fn shade_local(pos: vec3f, dir: vec3f, normal: vec3f, mat: ColorStop, ambient_light: Spec, use_shadows: bool, seed: vec2f) -> Spec {
     let view_dir = -dir;
     let spec_power = mix(SPEC_POWER_MIN, SPEC_POWER_MAX, clamp(mat.glossiness, 0.0, 1.0));
     var albedo = spec_from_rgb(mat.color);
@@ -2654,6 +3056,7 @@ fn shade_local(pos: vec3f, dir: vec3f, normal: vec3f, mat: ColorStop, ambient_li
         film = thin_film_tint(dot(view_dir, film_normal(normal, pos, mat)), mat);
         albedo = spec_mul(albedo, film);
     }
+    g_shade_albedo = albedo;
 
     let sss = clamp(mat.subsurface, 0.0, 1.0);
     var translucency = 0.0;
@@ -2671,6 +3074,10 @@ fn shade_local(pos: vec3f, dir: vec3f, normal: vec3f, mat: ColorStop, ambient_li
     var sss_accum = spec_splat(0.0);
     let fake_bounce = approx_on(APPROX_FAKE_BOUNCE);
     let light_count = total_light_count();
+    let shadows_on = use_shadows && part_on(PART_SHADOWS);
+    let pick_one = shadows_on && u.mc_enabled > 0.5 && u.mc_light_pick > 0.5 && light_count > 1;
+    var pick_weights: array<f32, MAX_LIGHTS>;
+    var pick_total = 0.0;
     for (var i = 0; i < light_count; i++) {
         let light = u.lights[i];
         let ls = light_sample(light, pos);
@@ -2690,23 +3097,60 @@ fn shade_local(pos: vec3f, dir: vec3f, normal: vec3f, mat: ColorStop, ambient_li
             sss_accum = spec_add(sss_accum, spec_scale(light_spec, back * translucency));
         }
 
-        let wrap = SSS_WRAP * translucency;
-        let ndotl = max((dot(normal, ls.dir) + wrap) / (1.0 + wrap), 0.0);
-        if (ndotl <= 0.0) {
+        let terms = light_terms(ls, normal, view_dir, translucency, spec_power, mat.glossiness);
+        if (terms.ndotl <= 0.0) {
+            continue;
+        }
+        if (pick_one && light.cast_shadows > 0.5) {
+            let w = (ls.color.r + ls.color.g + ls.color.b) * (terms.ndotl + terms.specular);
+            pick_weights[i] = w;
+            pick_total += w;
             continue;
         }
         var shadow = spec_splat(1.0);
-        if (use_shadows && part_on(PART_SHADOWS)) {
+        if (shadows_on) {
+            if (WF_DEFER && g_wf_shadow_light < 0 && light.cast_shadows > 0.5) {
+                g_wf_shadow_light = i;
+                g_wf_shadow_w = spec_mul(light_spec, spec_add(spec_scale(albedo, terms.ndotl), spec_scale(film, terms.specular)));
+                continue;
+            }
             shadow = shadow_factor(pos, normal, light, ls.dir, ls.dist);
             if (spec_max(shadow) <= 0.0) {
                 continue;
             }
         }
-        let half_dir = normalize(ls.dir + view_dir);
-        let specular = select(0.0, pow(max(dot(normal, half_dir), 0.0), spec_power) * mat.glossiness, part_on(PART_SPECULAR));
         let reaching = spec_mul(light_spec, shadow);
-        diffuse_accum = spec_add(diffuse_accum, spec_scale(reaching, ndotl));
-        specular_accum = spec_add(specular_accum, spec_scale(reaching, specular));
+        diffuse_accum = spec_add(diffuse_accum, spec_scale(reaching, terms.ndotl));
+        specular_accum = spec_add(specular_accum, spec_scale(reaching, terms.specular));
+    }
+
+    if (pick_total > 0.0) {
+        let pick_at = hash12w(seed + LIGHT_PICK_SEED_OFFSET) * pick_total;
+        var pick = 0;
+        var running = 0.0;
+        for (var i = 0; i < light_count; i++) {
+            if (pick_weights[i] <= 0.0) {
+                continue;
+            }
+            pick = i;
+            running += pick_weights[i];
+            if (running > pick_at) {
+                break;
+            }
+        }
+        let light = u.lights[pick];
+        let ls = light_sample(light, pos);
+        let terms = light_terms(ls, normal, view_dir, translucency, spec_power, mat.glossiness);
+        let pick_scale = pick_total / pick_weights[pick];
+        if (WF_DEFER) {
+            g_wf_shadow_light = pick;
+            g_wf_shadow_w = spec_scale(spec_mul(spec_from_rgb(ls.color), spec_add(spec_scale(albedo, terms.ndotl), spec_scale(film, terms.specular))), pick_scale);
+        } else {
+            let shadow = shadow_factor(pos, normal, light, ls.dir, ls.dist);
+            let reaching = spec_scale(spec_mul(spec_from_rgb(ls.color), shadow), pick_scale);
+            diffuse_accum = spec_add(diffuse_accum, spec_scale(reaching, terms.ndotl));
+            specular_accum = spec_add(specular_accum, spec_scale(reaching, terms.specular));
+        }
     }
 
     return spec_add(spec_mul(albedo, spec_add(ambient_light, spec_add(diffuse_accum, sss_accum))),
@@ -2756,7 +3200,7 @@ fn indirect_light_traced(pos: vec3f, normal: vec3f, seed: vec2f) -> Spec {
     let hit_normal = estimate_normal(hit_pos, bounce.dist);
     var hit_mat = apply_part_mask(hit_material(hit_pos).mat);
     hit_mat.subsurface = 0.0;
-    return shade_local(hit_pos, dir, hit_normal, hit_mat, spec_splat(AMBIENT_INTENSITY), false);
+    return shade_local(hit_pos, dir, hit_normal, hit_mat, spec_splat(AMBIENT_INTENSITY), false, seed);
 }
 
 struct Refraction {
@@ -3058,9 +3502,89 @@ const PATH_DEPTH_SEED_OFFSET_Y = 7.7;
 const DISPERSION_PICK_SEED_OFFSET = vec2f(3.71, 8.13);
 const INDIRECT_SEED_OFFSET = vec2f(13.13, 71.71);
 const RR_SEED_OFFSET = vec2f(59.3, 23.9);
-
 var<private> g_primary_dist: f32 = 0.0;
 var<private> g_primary_normal: vec3f = vec3f(0.0);
+var<private> g_primary_slot: i32 = -1;
+var<private> g_second_slot: i32 = -1;
+
+const CACHE_HIT_BIT: u32 = 0x80000000u;
+const CACHE_NORMAL_BIT: u32 = 0x40000000u;
+const CACHE_STEPS_MASK: u32 = 0x3fffffffu;
+
+struct CachedHit {
+    valid: bool,
+    hit: bool,
+    has_normal: bool,
+    dist: f32,
+    steps: f32,
+    normal: vec3f,
+}
+
+fn oct_project(n: vec3f) -> vec2f {
+    var p = n.xy / (abs(n.x) + abs(n.y) + abs(n.z));
+    if (n.z < 0.0) {
+        p = (vec2f(1.0) - abs(p.yx)) * select(vec2f(-1.0), vec2f(1.0), p >= vec2f(0.0));
+    }
+    return p;
+}
+
+fn oct_unproject(f: vec2f) -> vec3f {
+    var n = vec3f(f, 1.0 - abs(f.x) - abs(f.y));
+    let t = max(-n.z, 0.0);
+    n.x += select(t, -t, n.x >= 0.0);
+    n.y += select(t, -t, n.y >= 0.0);
+    return normalize(n);
+}
+
+fn oct_encode(n: vec3f) -> u32 {
+    return pack2x16snorm(oct_project(n));
+}
+
+fn oct_decode(packed: u32) -> vec3f {
+    return oct_unproject(unpack2x16snorm(packed));
+}
+
+fn hit_cache_on() -> bool {
+    return g_primary_slot >= 0 || g_second_slot >= 0;
+}
+
+fn hit_cache_load() -> CachedHit {
+    var h = CachedHit(false, false, false, 0.0, 0.0, vec3f(0.0));
+    var e: vec4u;
+    if (g_primary_slot >= 0) {
+        e = adapt_stats[g_primary_slot].primary;
+    } else if (g_second_slot >= 0) {
+        e = adapt_stats[g_second_slot].second;
+    } else {
+        return h;
+    }
+    if (e.x != u32(u.primary_cache_key)) {
+        return h;
+    }
+    h.valid = true;
+    h.hit = (e.w & CACHE_HIT_BIT) != 0u;
+    h.has_normal = (e.w & CACHE_NORMAL_BIT) != 0u;
+    h.dist = bitcast<f32>(e.y);
+    h.steps = f32(e.w & CACHE_STEPS_MASK);
+    h.normal = oct_decode(e.z);
+    return h;
+}
+
+fn hit_cache_store(hit: bool, dist: f32, steps: f32, normal: u32, has_normal: bool) {
+    var flags = u32(max(steps, 0.0)) & CACHE_STEPS_MASK;
+    if (hit) {
+        flags |= CACHE_HIT_BIT;
+    }
+    if (has_normal) {
+        flags |= CACHE_NORMAL_BIT;
+    }
+    let e = vec4u(u32(u.primary_cache_key), bitcast<u32>(dist), normal, flags);
+    if (g_primary_slot >= 0) {
+        adapt_stats[g_primary_slot].primary = e;
+    } else if (g_second_slot >= 0) {
+        adapt_stats[g_second_slot].second = e;
+    }
+}
 
 struct FragOut {
     @location(0) color: vec4f,
@@ -3076,224 +3600,645 @@ fn frag_out(color: vec4f, dist: f32, normal: vec3f) -> FragOut {
     return out;
 }
 
-fn trace_path(ray_origin: vec3f, ray_dir: vec3f, screen_pos: vec2f) -> vec3f {
-    spectral_setup(hash12w(screen_pos + HERO_WAVELENGTH_SEED_OFFSET) + u.mc_sample * GOLDEN_RATIO_FRACT);
+struct PathState {
+    radiance: Spec,
+    throughput: Spec,
+    pos: vec3f,
+    dir: vec3f,
+    seed: vec2f,
+    hero: f32,
+    depth: i32,
+    alive: bool,
+    in_solid: bool,
+    inner_steps: i32,
+    lambda: f32,
+    reflected: bool,
+    disp: DispersionRecord,
+    slab: bool,
+    slab_sky: bool,
+    slab_dir: vec3f,
+    slab_color: vec3f,
+}
+
+struct PathSegment {
+    hit_t: f32,
+    hit_ok: bool,
+    steps: f32,
+}
+
+override WF_DEFER: bool = false;
+override WF_SURFACE_SPLIT: bool = false;
+var<private> g_wf_normal: vec3f;
+var<private> g_wf_mat: ColorStop;
+var<private> g_wf_ao: f32 = 1.0;
+var<private> g_wf_shadow_light: i32 = -1;
+var<private> g_wf_shadow_w: Spec;
+var<private> g_wf_indirect: bool = false;
+var<private> g_wf_indirect_w: Spec;
+var<private> g_wf_shade_pos: vec3f;
+var<private> g_wf_shade_normal: vec3f;
+var<private> g_shade_albedo: Spec;
+
+fn path_hero(screen_pos: vec2f) -> f32 {
+    return hash12w(screen_pos + HERO_WAVELENGTH_SEED_OFFSET) + u.mc_sample * GOLDEN_RATIO_FRACT;
+}
+
+fn path_begin(ray_origin: vec3f, ray_dir: vec3f, screen_pos: vec2f) -> PathState {
+    var st: PathState;
+    st.radiance = spec_splat(0.0);
+    st.throughput = spec_splat(1.0);
+    st.pos = ray_origin;
+    st.dir = ray_dir;
+    st.seed = screen_pos + vec2f(u.mc_sample * PATH_SEED_RATE_X, u.mc_sample * PATH_SEED_RATE_Y);
+    st.hero = path_hero(screen_pos);
+    st.depth = 0;
+    st.alive = true;
+    st.in_solid = false;
+    st.inner_steps = PATH_DEFAULT_INNER_STEPS;
+    st.lambda = 0.0;
+    st.reflected = false;
+    st.disp = DispersionRecord(false, vec3f(0.0), vec3f(0.0), 1.0, 0.0, false);
+    st.slab = false;
+    st.slab_sky = false;
+    st.slab_dir = vec3f(0.0);
+    st.slab_color = vec3f(1.0);
+    return st;
+}
+
+fn path_max_depth() -> i32 {
+    return clamp(i32(u.max_reflection_bounces) + PATH_TRANSPARENCY_FLOOR, 1, PATH_MAX_VERTICES);
+}
+
+fn path_seed(base_seed: vec2f, depth: i32) -> vec2f {
+    return base_seed + vec2f(f32(depth) * PATH_DEPTH_SEED_STRIDE_X + PATH_DEPTH_SEED_OFFSET_X, f32(depth) * PATH_DEPTH_SEED_STRIDE_Y + PATH_DEPTH_SEED_OFFSET_Y);
+}
+
+fn path_enter(depth: i32) {
+    g_coarse_march = depth > 0 && approx_on(APPROX_COARSE_SECONDARY);
+    g_hot_src = select(HOT_SECONDARY, HOT_PRIMARY, depth == 0);
+    if (depth >= 1) {
+        g_primary_slot = -1;
+    }
+    if (depth != 1) {
+        g_second_slot = -1;
+    }
+}
+
+fn path_extend(st: PathState) -> PathSegment {
+    path_enter(st.depth);
+    var seg = PathSegment(0.0, false, 0.0);
+    let primary = hit_cache_load();
+    if (st.in_solid) {
+        let ins = march_inside(st.pos, st.dir, st.inner_steps, INSIDE_STEP_BASE);
+        seg.hit_t = ins.dist;
+        seg.hit_ok = ins.exited;
+    } else if (primary.valid) {
+        seg.hit_t = primary.dist;
+        seg.hit_ok = primary.hit;
+        seg.steps = primary.steps;
+    } else {
+        let m = march(st.pos, st.dir);
+        seg.hit_t = m.dist;
+        seg.hit_ok = m.hit;
+        seg.steps = m.steps;
+        if (!m.hit) {
+            hit_cache_store(false, m.dist, m.steps, 0u, false);
+        }
+    }
+    return seg;
+}
+
+fn path_normal(hit_pos: vec3f, hit_t: f32, seg_steps: f32, in_solid: bool) -> vec3f {
+    let primary = hit_cache_load();
+    if (primary.valid && primary.has_normal) {
+        return primary.normal;
+    }
+    var normal = estimate_normal(hit_pos, hit_t);
+    if (hit_cache_on() && !in_solid) {
+        let packed = oct_encode(normal);
+        normal = oct_decode(packed);
+        hit_cache_store(true, hit_t, seg_steps, packed, true);
+    }
+    return normal;
+}
+
+fn path_needs_ao(depth: i32, reflected: bool) -> bool {
+    return !approx_on(APPROX_SKY_AMBIENT) && !(depth == 0 && u.mc_enabled > 0.5 && part_on(PART_MC_INDIRECT)) && !reflected;
+}
+
+fn path_shade(st_in: PathState, seg: PathSegment) -> PathState {
+    var st = st_in;
+    let depth = st.depth;
+    path_enter(depth);
+    let seed = path_seed(st.seed, depth);
+    let pos = st.pos;
+    let dir = st.dir;
+    let hit_t = seg.hit_t;
+    let hit_ok = seg.hit_ok;
+    let seg_steps = seg.steps;
+    let in_solid = st.in_solid;
 
     var radiance = spec_splat(0.0);
-    var throughput = spec_splat(1.0);
-    var pos = ray_origin;
-    var dir = ray_dir;
+    var throughput = st.throughput;
+    var seg_len = select(min(u.max_dist, max(hit_t, 0.0)), hit_t, hit_ok);
+    st.alive = false;
 
-    var in_solid = false;
-    var inner_steps = PATH_DEFAULT_INNER_STEPS;
-    var lambda = 0.0;
-    var reflected = false;
-    var disp = DispersionRecord(false, vec3f(0.0), vec3f(0.0), 1.0, 0.0, false);
-    var slab = false;
-    var slab_sky = false;
-    var slab_dir = vec3f(0.0);
-    var slab_color = vec3f(1.0);
-
-    let base_seed = screen_pos + vec2f(u.mc_sample * PATH_SEED_RATE_X, u.mc_sample * PATH_SEED_RATE_Y);
-    let max_depth = clamp(i32(u.max_reflection_bounces) + PATH_TRANSPARENCY_FLOOR, 1, PATH_MAX_VERTICES);
-
-    for (var depth = 0; depth < max_depth; depth++) {
-        let seed = base_seed + vec2f(f32(depth) * PATH_DEPTH_SEED_STRIDE_X + PATH_DEPTH_SEED_OFFSET_X, f32(depth) * PATH_DEPTH_SEED_STRIDE_Y + PATH_DEPTH_SEED_OFFSET_Y);
-
-        var hit_t = 0.0;
-        var hit_ok = false;
-        var seg_steps = 0.0;
-        g_coarse_march = depth > 0 && approx_on(APPROX_COARSE_SECONDARY);
-        g_hot_src = select(HOT_SECONDARY, HOT_PRIMARY, depth == 0);
-        if (in_solid) {
-            let ins = march_inside(pos, dir, inner_steps, INSIDE_STEP_BASE);
-            hit_t = ins.dist;
-            hit_ok = ins.exited;
-        } else {
-            let m = march(pos, dir);
-            hit_t = m.dist;
-            hit_ok = m.hit;
-            seg_steps = m.steps;
-        }
-        var seg_len = select(min(u.max_dist, max(hit_t, 0.0)), hit_t, hit_ok);
-
-        var dots = DotsHit(vec3f(0.0), -1.0, vec3f(0.0), -1.0);
-        if (!in_solid) {
-            dots = particle_dots(pos, dir, seg_len, false);
-            radiance = spec_add(radiance, spec_mul(throughput, spec_from_rgb(dots.emit)));
-            if (dots.hit_t >= 0.0) {
-                seg_len = dots.hit_t;
-            }
-        }
-
-        let vol = march_fog(pos, dir, seg_len, seed);
-        radiance = spec_add(radiance, spec_mul(throughput, vol.color));
-        throughput = spec_scale(throughput, vol.transmittance);
-
-        let fft_vol = march_fft_cloud(pos, dir, seg_len, seed);
-        radiance = spec_add(radiance, spec_mul(throughput, fft_vol.color));
-        throughput = spec_scale(throughput, fft_vol.transmittance);
-
+    var dots = DotsHit(vec3f(0.0), -1.0, vec3f(0.0), -1.0);
+    if (!in_solid) {
+        dots = particle_dots(pos, dir, seg_len, false);
+        radiance = spec_add(radiance, spec_mul(throughput, spec_from_rgb(dots.emit)));
         if (dots.hit_t >= 0.0) {
-            radiance = spec_add(radiance, spec_mul(throughput, spec_from_rgb(dots.hit_color)));
-            if (depth == 0) {
-                g_primary_dist = dots.hit_t;
-                g_primary_normal = -dir;
-            }
-            break;
-        }
-
-        if (slab) {
-            slab = false;
-            in_solid = false;
-            if (!hit_ok) {
-                break;
-            }
-            throughput = spec_mul(throughput, tint_beer(slab_color, hit_t));
-            if (slab_sky) {
-                radiance = spec_add(radiance, spec_mul(throughput, spec_from_rgb(escape_sky(dir, disp))));
-                break;
-            }
-            disp.valid = false;
-            pos = pos + dir * hit_t + slab_dir * TINT_EXIT_BIAS;
-            dir = slab_dir;
-            continue;
-        }
-
-        if (!hit_ok) {
-            radiance = spec_add(radiance, spec_mul(throughput, spec_from_rgb(escape_sky(dir, disp))));
-            break;
-        }
-        if (spec_max(throughput) < PATH_MIN_THROUGHPUT) {
-            break;
-        }
-
-        let hit_pos = pos + dir * hit_t;
-        let normal = estimate_normal(hit_pos, hit_t);
-        if (depth == 0) {
-            g_primary_dist = hit_t;
-            g_primary_normal = normal;
-        }
-        let mat = apply_part_mask(hit_material(hit_pos).mat);
-
-        let soft = radians(0.5 * u.photon_dispersion_soft);
-        var disp_weight = spec_splat(1.0);
-        let cheap_disp = approx_on(APPROX_CHEAP_DISPERSION);
-        if (lambda == 0.0 && mat.abbe > MIN_ABBE && !cheap_disp) {
-            let pick = min(i32(hash12w(seed + DISPERSION_PICK_SEED_OFFSET) * SPECTRAL_COUNT), i32(SPECTRAL_COUNT) - 1);
-            lambda = spec_lambda_um(pick);
-            if (soft <= 0.0) {
-                disp_weight = spec_collapse_mask(pick);
-            }
-        }
-
-        let sc = scatter_at(hit_pos, dir, normal, mat, in_solid, lambda, seed, false, soft);
-
-        if (sc.local_share > MIN_LOCAL_SHARE) {
-            var ambient_light = spec_splat(AMBIENT_INTENSITY);
-            if (approx_on(APPROX_SKY_AMBIENT)) {
-                ambient_light = spec_from_rgb(sky_ambient(normal) * step_ao(seg_steps));
-            } else if (depth == 0 && u.mc_enabled > 0.5 && part_on(PART_MC_INDIRECT)) {
-                ambient_light = indirect_light(hit_pos, normal, seed + INDIRECT_SEED_OFFSET);
-            } else if (!reflected) {
-                ambient_light = spec_scale(ambient_light, calc_ao(hit_pos, normal, hit_t));
-            }
-            radiance = spec_add(radiance, spec_scale(
-                spec_mul(throughput, shade_local(hit_pos, dir, normal, mat, ambient_light, !reflected)),
-                sc.local_share));
-        }
-
-        if (sc.kind == SCATTER_ABSORBED) {
-            break;
-        }
-        if (sc.kind == SCATTER_REFLECT && !in_solid && !part_on(PART_REFLECTIONS)) {
-            break;
-        }
-        if (spec_max(sc.disp_ang2) > 0.0) {
-            disp_weight = dispersion_weights(sc.disp_ang2, soft);
-        }
-
-        disp.valid = sc.kind == SCATTER_TRANSMIT && cheap_disp && mat.abbe > MIN_ABBE;
-        if (disp.valid) {
-            disp = DispersionRecord(true, dir, normal, max(mat.ior, 1.0), mat.abbe, in_solid);
-        }
-
-        if (sc.kind == SCATTER_REFLECT && !in_solid && approx_on(APPROX_SKY_REFLECTIONS)) {
-            throughput = spec_mul(throughput, spec_mul(disp_weight, sc.weight));
-            radiance = spec_add(radiance, spec_mul(throughput, spec_from_rgb(escape_sky(sc.dir, disp) * step_ao(seg_steps))));
-            break;
-        }
-
-        let thin_glass = approx_on(APPROX_THIN_GLASS);
-        let tint_approx = approx_on(APPROX_TINT);
-        if (sc.kind == SCATTER_TRANSMIT && !in_solid && (thin_glass || tint_approx)) {
-            if (!tint_approx) {
-                throughput = spec_mul(throughput, spec_mul(disp_weight, sc.weight));
-                radiance = spec_add(radiance, spec_mul(throughput, spec_from_rgb(escape_sky(sc.dir, disp))));
-                break;
-            }
-            throughput = spec_mul(throughput, disp_weight);
-            slab = true;
-            slab_sky = thin_glass;
-            slab_dir = dir;
-            slab_color = mat.color;
-            in_solid = true;
-            inner_steps = TINT_PROBES;
-            pos = hit_pos + sc.dir * max(SURFACE_EXIT_BIAS, EXIT_BIAS_EPS_SCALE * march_epsilon(hit_t));
-            dir = sc.dir;
-            continue;
-        }
-
-        throughput = spec_mul(throughput, spec_mul(disp_weight, sc.weight));
-        reflected = reflected || sc.kind == SCATTER_REFLECT;
-
-        if (sc.kind == SCATTER_TRANSMIT) {
-            in_solid = !in_solid;
-            if (in_solid) {
-                inner_steps = clamp(i32(mat.inner_max_steps), MIN_INNER_STEPS, MAX_INNER_STEPS);
-            }
-        }
-
-        let bias = max(SURFACE_EXIT_BIAS, EXIT_BIAS_EPS_SCALE * march_epsilon(hit_t));
-        pos = hit_pos + sc.dir * bias;
-        dir = sc.dir;
-
-        if (depth >= PATH_RR_START) {
-            let survive = clamp(spec_max(throughput), RR_MIN_SURVIVAL, 1.0);
-            if (hash12w(seed + RR_SEED_OFFSET) > survive) {
-                break;
-            }
-            throughput = spec_scale(throughput, 1.0 / survive);
+            seg_len = dots.hit_t;
         }
     }
 
-    return gamut_fit(spec_to_rgb(radiance));
+    let vol = march_fog(pos, dir, seg_len, seed);
+    radiance = spec_add(radiance, spec_mul(throughput, vol.color));
+    throughput = spec_scale(throughput, vol.transmittance);
+
+    let fft_vol = march_fft_cloud(pos, dir, seg_len, seed);
+    radiance = spec_add(radiance, spec_mul(throughput, fft_vol.color));
+    throughput = spec_scale(throughput, fft_vol.transmittance);
+    st.throughput = throughput;
+
+    if (dots.hit_t >= 0.0) {
+        radiance = spec_add(radiance, spec_mul(throughput, spec_from_rgb(dots.hit_color)));
+        if (depth == 0) {
+            g_primary_dist = dots.hit_t;
+            g_primary_normal = -dir;
+        }
+        st.radiance = spec_add(st.radiance, radiance);
+        return st;
+    }
+
+    if (st.slab) {
+        st.slab = false;
+        st.in_solid = false;
+        if (!hit_ok) {
+            st.radiance = spec_add(st.radiance, radiance);
+        return st;
+        }
+        throughput = spec_mul(throughput, tint_beer(st.slab_color, hit_t));
+        st.throughput = throughput;
+        if (st.slab_sky) {
+            radiance = spec_add(radiance, spec_mul(throughput, spec_from_rgb(escape_sky(dir, st.disp))));
+            st.radiance = spec_add(st.radiance, radiance);
+        return st;
+        }
+        st.disp.valid = false;
+        st.pos = pos + dir * hit_t + st.slab_dir * TINT_EXIT_BIAS;
+        st.dir = st.slab_dir;
+        st.depth = depth + 1;
+        st.alive = true;
+        st.radiance = spec_add(st.radiance, radiance);
+        return st;
+    }
+
+    if (!hit_ok) {
+        radiance = spec_add(radiance, spec_mul(throughput, spec_from_rgb(escape_sky(dir, st.disp))));
+        st.radiance = spec_add(st.radiance, radiance);
+        return st;
+    }
+    if (spec_max(throughput) < PATH_MIN_THROUGHPUT) {
+        st.radiance = spec_add(st.radiance, radiance);
+        return st;
+    }
+
+    let hit_pos = pos + dir * hit_t;
+    var normal: vec3f;
+    var mat: ColorStop;
+    if (WF_SURFACE_SPLIT) {
+        normal = g_wf_normal;
+        mat = g_wf_mat;
+    } else {
+        normal = path_normal(hit_pos, hit_t, seg_steps, in_solid);
+        mat = apply_part_mask(hit_material(hit_pos).mat);
+    }
+    if (depth == 0) {
+        g_primary_dist = hit_t;
+        g_primary_normal = normal;
+    }
+
+    let soft = radians(0.5 * u.photon_dispersion_soft);
+    var disp_weight = spec_splat(1.0);
+    let cheap_disp = approx_on(APPROX_CHEAP_DISPERSION);
+    if (st.lambda == 0.0 && mat.abbe > MIN_ABBE && !cheap_disp) {
+        let pick = min(i32(hash12w(seed + DISPERSION_PICK_SEED_OFFSET) * SPECTRAL_COUNT), i32(SPECTRAL_COUNT) - 1);
+        st.lambda = spec_lambda_um(pick);
+        if (soft <= 0.0) {
+            disp_weight = spec_collapse_mask(pick);
+        }
+    }
+
+    let sc = scatter_at(hit_pos, dir, normal, mat, in_solid, st.lambda, seed, false, soft);
+
+    if (sc.local_share > MIN_LOCAL_SHARE) {
+        var ambient_light = spec_splat(AMBIENT_INTENSITY);
+        var defer_indirect = false;
+        if (approx_on(APPROX_SKY_AMBIENT)) {
+            ambient_light = spec_from_rgb(sky_ambient(normal) * step_ao(seg_steps));
+        } else if (depth == 0 && u.mc_enabled > 0.5 && part_on(PART_MC_INDIRECT)) {
+            if (WF_DEFER) {
+                ambient_light = spec_splat(0.0);
+                defer_indirect = true;
+            } else {
+                ambient_light = indirect_light(hit_pos, normal, seed + INDIRECT_SEED_OFFSET);
+            }
+        } else if (!st.reflected) {
+            if (WF_SURFACE_SPLIT) {
+                ambient_light = spec_scale(ambient_light, g_wf_ao);
+            } else {
+                ambient_light = spec_scale(ambient_light, calc_ao(hit_pos, normal, hit_t));
+            }
+        }
+        let lit = shade_local(hit_pos, dir, normal, mat, ambient_light, !st.reflected, seed);
+        radiance = spec_add(radiance, spec_scale(spec_mul(throughput, lit), sc.local_share));
+        if (WF_DEFER) {
+            g_wf_shade_pos = hit_pos;
+            g_wf_shade_normal = normal;
+            if (g_wf_shadow_light >= 0) {
+                g_wf_shadow_w = spec_scale(spec_mul(throughput, g_wf_shadow_w), sc.local_share);
+            }
+            if (defer_indirect) {
+                g_wf_indirect = true;
+                g_wf_indirect_w = spec_scale(spec_mul(throughput, g_shade_albedo), sc.local_share);
+            }
+        }
+    }
+
+    if (sc.kind == SCATTER_ABSORBED) {
+        st.radiance = spec_add(st.radiance, radiance);
+        return st;
+    }
+    if (sc.kind == SCATTER_REFLECT && !in_solid && !part_on(PART_REFLECTIONS)) {
+        st.radiance = spec_add(st.radiance, radiance);
+        return st;
+    }
+    if (spec_max(sc.disp_ang2) > 0.0) {
+        disp_weight = dispersion_weights(sc.disp_ang2, soft);
+    }
+
+    st.disp.valid = sc.kind == SCATTER_TRANSMIT && cheap_disp && mat.abbe > MIN_ABBE;
+    if (st.disp.valid) {
+        st.disp = DispersionRecord(true, dir, normal, max(mat.ior, 1.0), mat.abbe, in_solid);
+    }
+
+    if (sc.kind == SCATTER_REFLECT && !in_solid && approx_on(APPROX_SKY_REFLECTIONS)) {
+        throughput = spec_mul(throughput, spec_mul(disp_weight, sc.weight));
+        st.throughput = throughput;
+        radiance = spec_add(radiance, spec_mul(throughput, spec_from_rgb(escape_sky(sc.dir, st.disp) * step_ao(seg_steps))));
+        st.radiance = spec_add(st.radiance, radiance);
+        return st;
+    }
+
+    let thin_glass = approx_on(APPROX_THIN_GLASS);
+    let tint_approx = approx_on(APPROX_TINT);
+    if (sc.kind == SCATTER_TRANSMIT && !in_solid && (thin_glass || tint_approx)) {
+        if (!tint_approx) {
+            throughput = spec_mul(throughput, spec_mul(disp_weight, sc.weight));
+            st.throughput = throughput;
+            radiance = spec_add(radiance, spec_mul(throughput, spec_from_rgb(escape_sky(sc.dir, st.disp))));
+            st.radiance = spec_add(st.radiance, radiance);
+        return st;
+        }
+        throughput = spec_mul(throughput, disp_weight);
+        st.throughput = throughput;
+        st.slab = true;
+        st.slab_sky = thin_glass;
+        st.slab_dir = dir;
+        st.slab_color = mat.color;
+        st.in_solid = true;
+        st.inner_steps = TINT_PROBES;
+        st.pos = hit_pos + sc.dir * max(SURFACE_EXIT_BIAS, EXIT_BIAS_EPS_SCALE * march_epsilon(hit_t));
+        st.dir = sc.dir;
+        st.depth = depth + 1;
+        st.alive = true;
+        st.radiance = spec_add(st.radiance, radiance);
+        return st;
+    }
+
+    throughput = spec_mul(throughput, spec_mul(disp_weight, sc.weight));
+    st.reflected = st.reflected || sc.kind == SCATTER_REFLECT;
+
+    if (sc.kind == SCATTER_TRANSMIT) {
+        st.in_solid = !in_solid;
+        if (st.in_solid) {
+            st.inner_steps = clamp(i32(mat.inner_max_steps), MIN_INNER_STEPS, MAX_INNER_STEPS);
+        }
+    }
+
+    let bias = max(SURFACE_EXIT_BIAS, EXIT_BIAS_EPS_SCALE * march_epsilon(hit_t));
+    st.pos = hit_pos + sc.dir * bias;
+    st.dir = sc.dir;
+
+    if (depth >= PATH_RR_START) {
+        let survive = clamp(spec_max(throughput), RR_MIN_SURVIVAL, 1.0);
+        if (hash12w(seed + RR_SEED_OFFSET) > survive) {
+            st.throughput = throughput;
+            st.radiance = spec_add(st.radiance, radiance);
+        return st;
+        }
+        throughput = spec_scale(throughput, 1.0 / survive);
+    }
+    let rough = clamp(mat.roughness, 0.0, 1.0);
+    let mirror = depth == 0 && !in_solid && sc.kind == SCATTER_REFLECT && rough * rough <= MIN_ROUGHNESS;
+    g_second_slot = select(-1, g_primary_slot, mirror);
+    st.throughput = throughput;
+    st.depth = depth + 1;
+    st.alive = true;
+    st.radiance = spec_add(st.radiance, radiance);
+        return st;
 }
 
-const SLICE_HALO_PIXELS = 24.0;
-const SLICE_HALO_STRENGTH = 0.35;
+fn trace_path(ray_origin: vec3f, ray_dir: vec3f, screen_pos: vec2f) -> vec3f {
+    var st = path_begin(ray_origin, ray_dir, screen_pos);
+    spectral_setup(st.hero);
+    let max_depth = path_max_depth();
+    for (var depth = 0; depth < max_depth; depth++) {
+        st = path_shade(st, path_extend(st));
+        if (!st.alive) {
+            break;
+        }
+    }
+    return gamut_fit(spec_to_rgb(st.radiance));
+}
 
 fn undo_tonemap(color: vec3f) -> vec3f {
     let c = clamp(color, vec3f(0.0), vec3f(1.0));
     return c / max(vec3f(1.0) - c, vec3f(1.0 / UNORM8_MAX));
 }
 
-fn slice_color(plane_pos: vec3f, pixel_world: f32) -> vec3f {
-    let px = max(pixel_world, EPSILON_TINY);
-    let sp = hit_material(plane_pos);
-    let inside = 1.0 - smoothstep(0.0, px, sp.de);
-    let halo = exp(-max(sp.de, 0.0) / (px * SLICE_HALO_PIXELS));
-    let amount = clamp(max(inside, halo * SLICE_HALO_STRENGTH), 0.0, 1.0);
-    return undo_tonemap(sp.mat.color * amount);
+const FLAT_SECTION = 0;
+const FLAT_ESCAPE = 1;
+const FLAT_DISTANCE = 2;
+const FLAT_ORBIT = 3;
+const FLAT_INTERIOR_RADIUS = 1;
+const FLAT_INTERIOR_DARK = 2;
+const FLAT_HALO_PIXELS = 24.0;
+const FLAT_MIN_BAILOUT = 1.0001;
+const FLAT_MAX_EXTRA_ITERS = 256;
+const FLAT_MAX_SLICES = 32;
+const FLAT_DISTANCE_FLOOR_PX = 0.01;
+const FLAT_ESCAPE_HEIGHT = 0.1;
+const FLAT_DISTANCE_HEIGHT = 0.25;
+const FLAT_SECTION_RIM = 0.5;
+const FLAT_RELIEF_MAX_SLOPE = 4.0;
+const FLAT_LIGHT_COS = 0.70710678;
+const FLAT_LIGHT_SIN = 0.70710678;
+const FLAT_DEG_TO_RAD = PI / 180.0;
+const FLAT_CONTOUR_WIDTH_PX = 1.0;
+const FLAT_SLAB_FADE = 0.6;
+const FLAT_SLAB_MIN_TRANSMIT = 0.004;
+const FLAT_JITTER_R3 = vec3f(0.81917251, 0.67104360, 0.54970047);
+
+struct FlatOrbit {
+    de: f32,
+    trap: f32,
+    escape: f32,
+    min_r: f32,
+}
+
+fn flat_escape_at(it: f32, r_lo: f32, r_hi: f32, bail: f32) -> f32 {
+    let lo = log(max(r_lo, EPSILON_FINE));
+    let hi = log(max(r_hi, EPSILON_FINE));
+    return max(it + clamp((log(bail) - lo) / max(hi - lo, EPSILON_FINE), 0.0, 1.0), 0.0);
+}
+
+fn flat_orbit(local: vec3f, slot: i32) -> FlatOrbit {
+    let base_code = instance_code(slot);
+    let base_p = instance_params(slot);
+    let mixed = u.instances[slot].mixin_count > 0.5;
+    let mixin_count = select(0, min(i32(u.instances[slot].mixin_count), MAX_MIXINS), mixed);
+    let plain_n = max(eval_iterations(base_code, base_p), 0);
+    let base_n = select(plain_n, max(i32(u.instances[slot].hybrid_base_iters), 0), mixed);
+    let total = select(plain_n, max(i32(u.instances[slot].hybrid_total_iters), 0), mixed);
+    let cycle_len = hybrid_cycle_len(slot, base_n, mixin_count);
+    let extra = clamp(i32(u.flat_extra_iters + 0.5), 0, FLAT_MAX_EXTRA_ITERS);
+    let bail = max(u.flat_bailout, FLAT_MIN_BAILOUT);
+
+    let trap_spec = orbit_trap(slot);
+    var trap = orbit_trap_begin(trap_spec);
+    var carry = IterCarry(local, 1.0);
+    var kept = carry;
+    var escape_bail = -1.0;
+    var escape_bulb = -1.0;
+    var froze = false;
+    var r_prev = length(local);
+    var min_r = r_prev;
+    for (var it = 0; it < total + extra; it++) {
+        let st = hybrid_step(slot, it, base_n, cycle_len, mixin_count, base_code, base_p);
+        let z_prev = carry.z;
+        if (st.have) {
+            g_image_slot = st.image_slot;
+            carry = eval_step(st.code, carry, local, st.p);
+        }
+        if (it < total) {
+            trap = orbit_trap_update(trap, trap_spec, carry.z, z_prev, it);
+            kept = carry;
+        }
+        let r = length(carry.z);
+        froze = froze || (st.have && r > BULB_BAILOUT && all(carry.z == z_prev));
+        if (escape_bulb < 0.0 && r > BULB_BAILOUT) {
+            escape_bulb = flat_escape_at(f32(it), r_prev, r, BULB_BAILOUT);
+        }
+        if (escape_bail < 0.0 && r > bail) {
+            escape_bail = flat_escape_at(f32(it), r_prev, r, bail);
+        }
+        min_r = min(min_r, r);
+        r_prev = r;
+    }
+    g_image_slot = slot * IMAGE_SLOTS_PER_FRACTAL;
+    return FlatOrbit(eval_finalize(base_code, kept), orbit_trap_finish(trap, trap_spec, total), select(escape_bail, escape_bulb, froze), min_r);
+}
+
+fn flat_instance(pos: vec3f, slot: i32) -> FlatOrbit {
+    if (instance_ft_hidden(slot)) {
+        return FlatOrbit(NO_SURFACE_DE, 0.0, -1.0, 0.0);
+    }
+    var o = flat_orbit(instance_local(pos, slot), slot);
+    o.de *= instance_de_factor(slot);
+    return o;
+}
+
+struct FlatPoint {
+    de: f32,
+    mat: ColorStop,
+    slot: i32,
+    orbit: FlatOrbit,
+}
+
+fn flat_point(pos: vec3f) -> FlatPoint {
+    let wp = warp_domain(pos);
+    let count = max(i32(u.instance_count), 1);
+    var d = empty_scene_de();
+    var first = true;
+    var mat = default_material();
+    var slot = -1;
+    var orbit = FlatOrbit(NO_SURFACE_DE, 0.0, -1.0, 0.0);
+    for (var i = 0; i < count; i++) {
+        if (instance_hidden(i)) {
+            continue;
+        }
+        let o = flat_instance(wp.p, i);
+        let mat_i = sample_gradient(i, orbit_trap_to_strip(i, o.trap));
+        if (first) {
+            d = o.de;
+            mat = mat_i;
+            slot = i;
+            orbit = o;
+            first = false;
+            continue;
+        }
+        let c = combine_de(i32(u.instances[i].combine_mode + 0.5), d, o.de, u.instances[i].blend_k);
+        mat = mix_material(mat, mat_i, c.y);
+        if (c.y < 0.5) {
+            slot = i;
+            orbit = o;
+        }
+        d = c.x;
+    }
+    let ps = particles_hit_material(pos, SurfacePoint(mat, select(d * wp.de_scale, d, first)), !first);
+    return FlatPoint(apply_carves(pos, ps.sp.de), ps.sp.mat, slot, orbit);
+}
+
+fn flat_strip(slot: i32, v: f32) -> f32 {
+    if (slot < 0) {
+        return 0.0;
+    }
+    return orbit_trap_to_strip(slot, v);
+}
+
+fn flat_gradient(slot: i32, t: f32) -> vec3f {
+    if (slot < 0) {
+        return default_material().color;
+    }
+    return sample_gradient(slot, t).color;
+}
+
+fn flat_band(v: f32) -> f32 {
+    return fract(v * u.flat_band_density + u.flat_band_offset);
+}
+
+fn flat_solid(de: f32, px: f32) -> f32 {
+    return 1.0 - smoothstep(0.0, px, de);
+}
+
+fn flat_octaves(de: f32, px: f32) -> f32 {
+    return log2(max(de, px * FLAT_DISTANCE_FLOOR_PX) / px);
+}
+
+fn flat_interior_color(fp: FlatPoint) -> vec3f {
+    let mode = i32(u.flat_interior + 0.5);
+    if (mode == FLAT_INTERIOR_RADIUS) {
+        return flat_gradient(fp.slot, flat_band(fp.orbit.min_r));
+    }
+    if (mode == FLAT_INTERIOR_DARK) {
+        return vec3f(0.0);
+    }
+    return fp.mat.color;
+}
+
+struct FlatShade {
+    interior: vec3f,
+    exterior: vec3f,
+    inside: f32,
+    height: f32,
+}
+
+fn flat_shade(fp: FlatPoint, px: f32) -> FlatShade {
+    let mode = i32(u.flat_coloring + 0.5);
+    let trap_t = flat_strip(fp.slot, fp.orbit.trap);
+    let solid = flat_solid(fp.de, px);
+    var s = FlatShade(flat_interior_color(fp), vec3f(0.0), solid, solid * trap_t);
+    if (mode == FLAT_ESCAPE) {
+        let escaped = fp.orbit.escape >= 0.0;
+        s.inside = select(1.0, 0.0, escaped);
+        s.exterior = flat_gradient(fp.slot, flat_band(fp.orbit.escape));
+        s.height = select(trap_t, fp.orbit.escape * FLAT_ESCAPE_HEIGHT, escaped);
+    } else if (mode == FLAT_DISTANCE) {
+        let v = flat_octaves(fp.de, px);
+        s.exterior = flat_gradient(fp.slot, flat_band(v));
+        s.height = mix(-v * FLAT_DISTANCE_HEIGHT, trap_t, solid);
+    } else if (mode == FLAT_ORBIT) {
+        s.interior = fp.mat.color;
+        s.inside = 1.0;
+        s.height = trap_t;
+    } else {
+        let halo = exp(-max(fp.de, 0.0) / (px * FLAT_HALO_PIXELS));
+        s.exterior = fp.mat.color * halo * u.flat_halo;
+        s.height = solid * (FLAT_SECTION_RIM + FLAT_SECTION_RIM * trap_t);
+    }
+    return s;
+}
+
+fn flat_jitter() -> vec3f {
+    if (u.flat_samples < 1.5) {
+        return vec3f(0.0);
+    }
+    return fract(vec3f(0.5) + u.mc_sample * FLAT_JITTER_R3) - vec3f(0.5);
+}
+
+struct FlatComposite {
+    color: vec3f,
+    height: f32,
+}
+
+fn flat_composite(plane_pos: vec3f, front: FlatShade, px: f32, jitter: f32) -> FlatComposite {
+    let slices = clamp(i32(u.flat_slab_slices + 0.5), 1, FLAT_MAX_SLICES);
+    if (slices == 1) {
+        return FlatComposite(mix(front.exterior, front.interior, front.inside), front.height);
+    }
+    let depth = max(u.flat_slab_depth, 0.0) * u.slice_zoom;
+    let spacing = depth / f32(slices - 1);
+    let opacity = clamp(u.flat_slab_opacity, 0.0, 1.0);
+    var a = front.inside * opacity;
+    var acc = front.interior * a;
+    var near = a * depth;
+    var trans = 1.0 - a;
+    for (var k = 1; k < slices; k++) {
+        if (trans < FLAT_SLAB_MIN_TRANSMIT) {
+            break;
+        }
+        let z = clamp((f32(k) + jitter) * spacing, 0.0, depth);
+        let fp = flat_point(plane_pos + u.camera_forward * z);
+        a = flat_solid(fp.de, px) * opacity * trans;
+        acc += flat_interior_color(fp) * a * (1.0 - FLAT_SLAB_FADE * z / max(depth, EPSILON_TINY));
+        near += a * (depth - z);
+        trans *= 1.0 - flat_solid(fp.de, px) * opacity;
+    }
+    return FlatComposite(acc + front.exterior * trans, near / px);
+}
+
+fn flat_relief_shade(height: f32) -> f32 {
+    let g = clamp(vec2f(dpdxFine(height), dpdyFine(height)) * u.flat_relief, vec2f(-FLAT_RELIEF_MAX_SLOPE), vec2f(FLAT_RELIEF_MAX_SLOPE));
+    let n = normalize(vec3f(-g.x, g.y, 1.0));
+    let angle = u.flat_light_angle * FLAT_DEG_TO_RAD;
+    let l = vec3f(cos(angle) * FLAT_LIGHT_COS, sin(angle) * FLAT_LIGHT_COS, FLAT_LIGHT_SIN);
+    return max(dot(n, l), 0.0) / FLAT_LIGHT_SIN;
+}
+
+fn flat_contour_line(de: f32, px: f32) -> f32 {
+    let v = flat_octaves(de, px) * u.flat_contour_density;
+    let w = max(fwidth(v), EPSILON_FINE) * FLAT_CONTOUR_WIDTH_PX;
+    return (1.0 - smoothstep(0.0, w, abs(fract(v + 0.5) - 0.5))) * (1.0 - flat_solid(de, px));
 }
 
 @fragment
 fn fs_slice(in: VertexOut) -> FragOut {
     let aspect = u.resolution.x / u.resolution.y;
-    let uv = vec2f(in.uv.x * aspect, in.uv.y);
+    let pixel_uv = 2.0 / max(u.resolution.y, 1.0);
+    let jitter = flat_jitter();
+    let uv = vec2f(in.uv.x * aspect, in.uv.y) + jitter.xy * pixel_uv;
     let plane_pos = u.camera_pos + (uv.x * u.camera_right + uv.y * u.camera_up) * u.slice_zoom;
-    let pixel_world = 2.0 * u.slice_zoom / max(u.resolution.y, 1.0);
-    return frag_out(vec4f(slice_color(plane_pos, pixel_world), 0.0), 0.0, vec3f(0.0));
+    let px = max(u.slice_zoom * pixel_uv, EPSILON_TINY);
+
+    let front = flat_point(plane_pos);
+    let shade = flat_shade(front, px);
+    let image = flat_composite(plane_pos, shade, px, jitter.z);
+    let relief = flat_relief_shade(image.height);
+    let contour = flat_contour_line(front.de, px);
+    let color = image.color * relief * (1.0 - clamp(u.flat_contours, 0.0, 1.0) * contour);
+    return frag_out(vec4f(undo_tonemap(color), 0.0), 0.0, vec3f(0.0));
 }
 
 const SIMPLE_ALBEDO = vec3f(0.72, 0.72, 0.73);
@@ -3617,7 +4562,13 @@ fn dof_coc_px(eff_aperture: f32, hit_t: f32, focus_t: f32) -> f32 {
     return world_radius * px_per_world_unit;
 }
 
-@group(5) @binding(1) var<storage, read_write> adapt_stats: array<vec4f>;
+struct PixelState {
+    stats: vec4f,
+    primary: vec4u,
+    second: vec4u,
+}
+
+@group(5) @binding(1) var<storage, read_write> adapt_stats: array<PixelState>;
 
 const ADAPT_DARK_FLOOR = 0.05;
 const ADAPT_MIN_VARIANCE_SAMPLES = 2.0;
@@ -3640,15 +4591,19 @@ fn fs_main(in: VertexOut) -> FragOut {
     let uv = vec2f(in.uv.x * aspect, in.uv.y);
     let dir = normalize(u.camera_forward + uv.x * u.camera_right + uv.y * u.camera_up);
 
-    let adapt_idx = u32(in.clip_pos.y) * u32(max(u.adapt_row_width, 0.0)) + u32(in.clip_pos.x);
-    let adapt = u.adapt_enabled > 0.5 && u.mc_enabled > 0.5 && u32(in.clip_pos.x) < u32(max(u.adapt_row_width, 0.0)) &&
-        adapt_idx < arrayLength(&adapt_stats);
+    let row_width = u32(max(u.adapt_row_width, 0.0));
+    let adapt_idx = u32(in.clip_pos.y) * row_width + u32(in.clip_pos.x);
+    let pixel_ok = u32(in.clip_pos.x) < row_width && adapt_idx < arrayLength(&adapt_stats);
+    let adapt = u.adapt_enabled > 0.5 && u.mc_enabled > 0.5 && pixel_ok;
     var stats = vec4f(0.0);
     if (adapt && u.mc_sample > 0.5) {
-        stats = adapt_stats[adapt_idx];
+        stats = adapt_stats[adapt_idx].stats;
         if (stats.w > 0.5) {
             discard;
         }
+    }
+    if (pixel_ok && u.primary_cache_key > 0.5) {
+        g_primary_slot = i32(adapt_idx);
     }
 
     detect_scene_transparency();
@@ -3669,12 +4624,18 @@ fn fs_main(in: VertexOut) -> FragOut {
         if (u.mc_enabled < 0.5 && !hq) {
             post_blur = true;
         } else {
-            let hot_prev = hot_enter(HOT_DOF);
-            let probe = march(u.camera_pos, dir);
-            g_hot_src = hot_prev;
-            eff_aperture = dof_aperture(select(u.max_dist, probe.dist, probe.hit), focus_t);
+            let cached = hit_cache_load();
+            var probe_t = select(u.max_dist, cached.dist, cached.hit);
+            if (!cached.valid) {
+                let hot_prev = hot_enter(HOT_DOF);
+                let probe = march(u.camera_pos, dir);
+                g_hot_src = hot_prev;
+                probe_t = select(u.max_dist, probe.dist, probe.hit);
+                hit_cache_store(probe.hit, probe.dist, probe.steps, 0u, false);
+            }
+            eff_aperture = dof_aperture(probe_t, focus_t);
             if (eff_aperture > DOF_MIN_APERTURE) {
-                samples = select(DOF_SAMPLES_FAST, DOF_SAMPLES_HQ, hq);
+                samples = mc_inner_count(select(DOF_SAMPLES_FAST, DOF_SAMPLES_HQ, hq));
             }
         }
     }
@@ -3687,6 +4648,7 @@ fn fs_main(in: VertexOut) -> FragOut {
         var sample_dir = dir;
         var seed = base_seed;
         if (eff_aperture > DOF_MIN_APERTURE && coc_px <= 0.0) {
+            g_primary_slot = -1;
             seed = base_seed + vec2f(f32(s) * DOF_LENS_SEED_STRIDE_X, f32(s) * DOF_LENS_SEED_STRIDE_Y);
             let disk = sample_unit_disk(seed) * eff_aperture;
             sample_origin = u.camera_pos + u.camera_right * disk.x + u.camera_up * disk.y;
@@ -3709,7 +4671,7 @@ fn fs_main(in: VertexOut) -> FragOut {
     }
 
     if (adapt) {
-        adapt_stats[adapt_idx] = adapt_update(stats, color);
+        adapt_stats[adapt_idx].stats = adapt_update(stats, color);
     }
 
     return frag_out(vec4f(color, coc_px), g_primary_dist, g_primary_normal);
@@ -3760,6 +4722,517 @@ fn fs_aov(in: VertexOut) -> AovOut {
     return out;
 }
 
+const WF_WORKGROUP: u32 = 64u;
+const WF_BLOCK_WORDS: u32 = 64u;
+const WF_RECT_X: u32 = 0u;
+const WF_RECT_Y: u32 = 1u;
+const WF_RECT_W: u32 = 2u;
+const WF_RECT_H: u32 = 3u;
+const WF_TARGET_W: u32 = 4u;
+const WF_TARGET_H: u32 = 5u;
+const WF_INNER: u32 = 6u;
+const WF_QUEUE_STRIDE: u32 = 7u;
+const WF_PHASE: u32 = 8u;
+const WF_COUNT_PATHS: u32 = 16u;
+const WF_COUNT_SHADOW: u32 = 18u;
+const WF_COUNT_INDIRECT: u32 = 19u;
+const WF_STATS_INDIRECT: u32 = 20u;
+const WF_COUNT_BACK: u32 = 21u;
+const WF_COUNT_HITS: u32 = 24u;
+const WF_COUNT_MISSES: u32 = 25u;
+const WF_STATS_PATHS: u32 = 32u;
+const WF_STATS_SHADOW: u32 = 48u;
+const WF_STATS_DEPTHS: u32 = 16u;
+const WF_ARGS_WORDS: u32 = 16u;
+const WF_ARGS_PATHS: u32 = 0u;
+const WF_ARGS_SHADOW: u32 = 4u;
+const WF_ARGS_INDIRECT: u32 = 8u;
+const WF_ARGS_HITS: u32 = 12u;
+const WF_QUEUE_SHADOW: u32 = 2u;
+const WF_QUEUE_INDIRECT: u32 = 3u;
+const WF_QUEUE_SHADE: u32 = 4u;
+
+const WF_IN_SOLID: u32 = 1u;
+const WF_REFLECTED: u32 = 2u;
+const WF_SLAB: u32 = 4u;
+const WF_SLAB_SKY: u32 = 8u;
+const WF_DISP_VALID: u32 = 16u;
+const WF_DISP_INSIDE: u32 = 32u;
+const WF_HIT: u32 = 64u;
+
+const WF_OUT_VALID = 1.0;
+const WF_OUT_PRIMARY = 3.0;
+
+struct WfPath {
+    throughput: Spec,
+    shadow_w: Spec,
+    indirect_w: Spec,
+    pos: vec3f,
+    hero: f32,
+    dir: vec3f,
+    depth: i32,
+    seed: vec2f,
+    lambda: f32,
+    flags: u32,
+    disp_in_dir: vec3f,
+    disp_ior: f32,
+    disp_normal: vec3f,
+    disp_abbe: f32,
+    slab_dir: vec3f,
+    inner_steps: i32,
+    slab_color: vec3f,
+    adapt_slot: i32,
+    shade_pos: vec3f,
+    shadow_light: i32,
+    shade_normal: vec3f,
+    hit_t: f32,
+    seg_steps: f32,
+    _pad0: f32,
+    _pad1: f32,
+    _pad2: f32,
+}
+
+struct WfSurface {
+    normal: vec3f,
+    ao: f32,
+    mat: ColorStop,
+}
+
+struct WfOut {
+    color: vec4f,
+    normal: vec4f,
+}
+
+@group(6) @binding(0) var<storage, read_write> wf_paths: array<WfPath>;
+@group(6) @binding(1) var<storage, read_write> wf_queues: array<u32>;
+@group(6) @binding(2) var<storage, read_write> wf_block: array<atomic<u32>, WF_BLOCK_WORDS>;
+@group(6) @binding(3) var<storage, read_write> wf_out: array<WfOut>;
+@group(6) @binding(4) var<storage, read> wf_block_r: array<u32, WF_BLOCK_WORDS>;
+@group(6) @binding(5) var<storage, read> wf_out_r: array<WfOut>;
+@group(6) @binding(6) var<storage, read_write> wf_args: array<u32, WF_ARGS_WORDS>;
+@group(6) @binding(7) var<storage, read_write> wf_surf: array<WfSurface>;
+
+var<workgroup> wf_wg_count: array<atomic<u32>, 4>;
+var<workgroup> wf_wg_base: array<u32, 4>;
+
+fn wf_flag(on: bool, bit: u32) -> u32 {
+    return select(0u, bit, on);
+}
+
+fn wf_has(flags: u32, bit: u32) -> bool {
+    return (flags & bit) != 0u;
+}
+
+fn wf_load(slot: u32) -> PathState {
+    let p = wf_paths[slot];
+    var st: PathState;
+    st.throughput = p.throughput;
+    st.pos = p.pos;
+    st.dir = p.dir;
+    st.seed = p.seed;
+    st.hero = p.hero;
+    st.depth = p.depth;
+    st.alive = true;
+    st.radiance = spec_splat(0.0);
+    st.in_solid = wf_has(p.flags, WF_IN_SOLID);
+    st.inner_steps = p.inner_steps;
+    st.lambda = p.lambda;
+    st.reflected = wf_has(p.flags, WF_REFLECTED);
+    st.disp = DispersionRecord(wf_has(p.flags, WF_DISP_VALID), p.disp_in_dir, p.disp_normal, p.disp_ior, p.disp_abbe, wf_has(p.flags, WF_DISP_INSIDE));
+    st.slab = wf_has(p.flags, WF_SLAB);
+    st.slab_sky = wf_has(p.flags, WF_SLAB_SKY);
+    st.slab_dir = p.slab_dir;
+    st.slab_color = p.slab_color;
+    return st;
+}
+
+fn wf_store(slot: u32, st: PathState, adapt_slot: i32) {
+    var p: WfPath;
+    p.throughput = st.throughput;
+    p.shadow_w = g_wf_shadow_w;
+    p.indirect_w = g_wf_indirect_w;
+    p.pos = st.pos;
+    p.hero = st.hero;
+    p.dir = st.dir;
+    p.depth = st.depth;
+    p.seed = st.seed;
+    p.lambda = st.lambda;
+    p.flags = wf_flag(st.in_solid, WF_IN_SOLID) | wf_flag(st.reflected, WF_REFLECTED) | wf_flag(st.slab, WF_SLAB) |
+        wf_flag(st.slab_sky, WF_SLAB_SKY) | wf_flag(st.disp.valid, WF_DISP_VALID) | wf_flag(st.disp.inside, WF_DISP_INSIDE);
+    p.disp_in_dir = st.disp.in_dir;
+    p.disp_ior = st.disp.ior;
+    p.disp_normal = st.disp.normal;
+    p.disp_abbe = st.disp.abbe;
+    p.slab_dir = st.slab_dir;
+    p.inner_steps = st.inner_steps;
+    p.slab_color = st.slab_color;
+    p.adapt_slot = adapt_slot;
+    p.shade_pos = g_wf_shade_pos;
+    p.shadow_light = g_wf_shadow_light;
+    p.shade_normal = g_wf_shade_normal;
+    p.hit_t = 0.0;
+    p.seg_steps = 0.0;
+    p._pad0 = 0.0;
+    p._pad1 = 0.0;
+    p._pad2 = 0.0;
+    wf_paths[slot] = p;
+}
+
+fn wf_word(i: u32) -> u32 {
+    return atomicLoad(&wf_block[i]);
+}
+
+fn wf_cur() -> u32 {
+    return wf_word(WF_PHASE) & 1u;
+}
+
+fn wf_queue_at(queue: u32, i: u32) -> u32 {
+    return wf_queues[queue * wf_word(WF_QUEUE_STRIDE) + i];
+}
+
+fn wf_split_at(queue: u32, front: u32, i: u32) -> u32 {
+    let stride = wf_word(WF_QUEUE_STRIDE);
+    if (i < front) {
+        return wf_queues[queue * stride + i];
+    }
+    return wf_queues[queue * stride + stride - 1u - (i - front)];
+}
+
+fn wf_put_front(queue: u32, i: u32, slot: u32) {
+    wf_queues[queue * wf_word(WF_QUEUE_STRIDE) + i] = slot;
+}
+
+fn wf_put_back(queue: u32, i: u32, slot: u32) {
+    let stride = wf_word(WF_QUEUE_STRIDE);
+    wf_queues[queue * stride + stride - 1u - i] = slot;
+}
+
+fn wf_reserve(lid: u32, want: vec4u, counters: vec4u) -> vec4u {
+    if (lid == 0u) {
+        for (var k = 0u; k < 4u; k++) {
+            atomicStore(&wf_wg_count[k], 0u);
+        }
+    }
+    workgroupBarrier();
+    var local = vec4u(0u);
+    for (var k = 0u; k < 4u; k++) {
+        if (want[k] > 0u) {
+            local[k] = atomicAdd(&wf_wg_count[k], want[k]);
+        }
+    }
+    workgroupBarrier();
+    if (lid == 0u) {
+        for (var k = 0u; k < 4u; k++) {
+            let n = atomicLoad(&wf_wg_count[k]);
+            wf_wg_base[k] = select(0u, atomicAdd(&wf_block[counters[k]], n), n > 0u);
+        }
+    }
+    workgroupBarrier();
+    return vec4u(wf_wg_base[0], wf_wg_base[1], wf_wg_base[2], wf_wg_base[3]) + local;
+}
+
+fn wf_dispatch_size(n: u32) -> u32 {
+    return (n + WF_WORKGROUP - 1u) / WF_WORKGROUP;
+}
+
+@compute @workgroup_size(WF_WORKGROUP)
+fn cs_wf_generate(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_index) lid: u32) {
+    let rect_w = wf_word(WF_RECT_W);
+    let pixels = rect_w * wf_word(WF_RECT_H);
+    let inner = max(wf_word(WF_INNER), 1u);
+    let live = gid.x < pixels;
+    var samples = 0u;
+    if (live) {
+        let px = wf_word(WF_RECT_X) + gid.x % rect_w;
+        let py = wf_word(WF_RECT_Y) + gid.x / rect_w;
+        let frag = vec2f(f32(px) + 0.5, f32(py) + 0.5);
+        let target_size = vec2f(f32(wf_word(WF_TARGET_W)), f32(wf_word(WF_TARGET_H)));
+        let ndc = vec2f(frag.x / target_size.x * 2.0 - 1.0, 1.0 - frag.y / target_size.y * 2.0);
+        let p_full = ndc * u.tile_scale + u.tile_bias;
+        let aspect = u.resolution.x / u.resolution.y;
+        let uv = vec2f(p_full.x * aspect, -p_full.y);
+        let dir = normalize(u.camera_forward + uv.x * u.camera_right + uv.y * u.camera_up);
+
+        let first = gid.x * inner;
+        for (var s = 0u; s < inner; s++) {
+            wf_out[first + s] = WfOut(vec4f(0.0), vec4f(0.0));
+        }
+
+        let row_width = u32(max(u.adapt_row_width, 0.0));
+        let adapt_idx = py * row_width + px;
+        let pixel_ok = px < row_width && adapt_idx < arrayLength(&adapt_stats);
+        let adapt = u.adapt_enabled > 0.5 && u.mc_enabled > 0.5 && pixel_ok;
+        var converged = false;
+        if (adapt && u.mc_sample > 0.5) {
+            converged = adapt_stats[adapt_idx].stats.w > 0.5;
+        }
+        if (!converged) {
+            if (pixel_ok && u.primary_cache_key > 0.5) {
+                g_primary_slot = i32(adapt_idx);
+            }
+            detect_scene_transparency();
+
+            var n = 1;
+            var focus_point = vec3f(0.0);
+            var eff_aperture = 0.0;
+            if (u.dof_enabled > 0.5 && u.aperture > DOF_MIN_APERTURE && part_on(PART_DEPTH_OF_FIELD)) {
+                let focus_t = u.focus_distance / max(dot(dir, u.camera_forward), EPSILON);
+                focus_point = u.camera_pos + dir * focus_t;
+                let cached = hit_cache_load();
+                var probe_t = select(u.max_dist, cached.dist, cached.hit);
+                if (!cached.valid) {
+                    let probe = march(u.camera_pos, dir);
+                    probe_t = select(u.max_dist, probe.dist, probe.hit);
+                    hit_cache_store(probe.hit, probe.dist, probe.steps, 0u, false);
+                }
+                eff_aperture = dof_aperture(probe_t, focus_t);
+                if (eff_aperture > DOF_MIN_APERTURE) {
+                    n = mc_inner_count(DOF_SAMPLES_HQ);
+                }
+            }
+            samples = min(u32(n), inner);
+
+            let base_seed = frag + vec2f(u.mc_sample * MC_SEED_RATE_X, u.mc_sample * MC_SEED_RATE_Y);
+            for (var s = 0u; s < samples; s++) {
+                var origin = u.camera_pos;
+                var sample_dir = dir;
+                var seed = base_seed;
+                if (eff_aperture > DOF_MIN_APERTURE) {
+                    g_primary_slot = -1;
+                    seed = base_seed + vec2f(f32(s) * DOF_LENS_SEED_STRIDE_X, f32(s) * DOF_LENS_SEED_STRIDE_Y);
+                    let disk = sample_unit_disk(seed) * eff_aperture;
+                    origin = u.camera_pos + u.camera_right * disk.x + u.camera_up * disk.y;
+                    sample_dir = normalize(focus_point - origin);
+                }
+                wf_store(first + s, path_begin(origin, sample_dir, seed), g_primary_slot);
+                wf_out[first + s].normal.w = WF_OUT_VALID;
+            }
+        }
+    }
+    let base = wf_reserve(lid, vec4u(samples, 0u, 0u, 0u), vec4u(WF_COUNT_PATHS, WF_COUNT_PATHS, WF_COUNT_PATHS, WF_COUNT_PATHS));
+    for (var s = 0u; s < samples; s++) {
+        wf_put_front(0u, base.x + s, gid.x * inner + s);
+    }
+}
+
+@compute @workgroup_size(1)
+fn cs_wf_args_begin() {
+    let cur = wf_cur();
+    let n = atomicLoad(&wf_block[WF_COUNT_PATHS + cur]) + atomicLoad(&wf_block[WF_COUNT_BACK + cur]);
+    atomicStore(&wf_block[WF_STATS_PATHS + min(wf_word(WF_PHASE), WF_STATS_DEPTHS - 1u)], n);
+    wf_args[WF_ARGS_PATHS] = wf_dispatch_size(n);
+    wf_args[WF_ARGS_PATHS + 1u] = 1u;
+    wf_args[WF_ARGS_PATHS + 2u] = 1u;
+    atomicStore(&wf_block[WF_COUNT_PATHS + 1u - cur], 0u);
+    atomicStore(&wf_block[WF_COUNT_BACK + 1u - cur], 0u);
+    atomicStore(&wf_block[WF_COUNT_SHADOW], 0u);
+    atomicStore(&wf_block[WF_COUNT_INDIRECT], 0u);
+    atomicStore(&wf_block[WF_COUNT_HITS], 0u);
+    atomicStore(&wf_block[WF_COUNT_MISSES], 0u);
+}
+
+@compute @workgroup_size(1)
+fn cs_wf_args_hits() {
+    wf_args[WF_ARGS_HITS] = wf_dispatch_size(atomicLoad(&wf_block[WF_COUNT_HITS]));
+    wf_args[WF_ARGS_HITS + 1u] = 1u;
+    wf_args[WF_ARGS_HITS + 2u] = 1u;
+}
+
+@compute @workgroup_size(WF_WORKGROUP)
+fn cs_wf_surface(@builtin(global_invocation_id) gid: vec3u) {
+    if (gid.x >= atomicLoad(&wf_block[WF_COUNT_HITS])) {
+        return;
+    }
+    let slot = wf_queue_at(WF_QUEUE_SHADE, gid.x);
+    let p = wf_paths[slot];
+    if (wf_has(p.flags, WF_SLAB)) {
+        return;
+    }
+    path_enter(p.depth);
+    g_primary_slot = select(-1, p.adapt_slot, p.depth == 0);
+    g_second_slot = select(-1, p.adapt_slot, p.depth == 1);
+    let hit_pos = p.pos + p.dir * p.hit_t;
+    let normal = path_normal(hit_pos, p.hit_t, p.seg_steps, wf_has(p.flags, WF_IN_SOLID));
+    let mat = apply_part_mask(hit_material(hit_pos).mat);
+    var ao = 1.0;
+    if (path_needs_ao(p.depth, wf_has(p.flags, WF_REFLECTED))) {
+        ao = calc_ao(hit_pos, normal, p.hit_t);
+    }
+    wf_surf[slot] = WfSurface(normal, ao, mat);
+}
+
+@compute @workgroup_size(1)
+fn cs_wf_args_mid() {
+    wf_args[WF_ARGS_SHADOW] = wf_dispatch_size(atomicLoad(&wf_block[WF_COUNT_SHADOW]));
+    wf_args[WF_ARGS_SHADOW + 1u] = 1u;
+    wf_args[WF_ARGS_SHADOW + 2u] = 1u;
+    wf_args[WF_ARGS_INDIRECT] = wf_dispatch_size(atomicLoad(&wf_block[WF_COUNT_INDIRECT]));
+    wf_args[WF_ARGS_INDIRECT + 1u] = 1u;
+    wf_args[WF_ARGS_INDIRECT + 2u] = 1u;
+    atomicStore(&wf_block[WF_STATS_SHADOW + min(wf_word(WF_PHASE), WF_STATS_DEPTHS - 1u)], atomicLoad(&wf_block[WF_COUNT_SHADOW]));
+    atomicAdd(&wf_block[WF_STATS_INDIRECT], atomicLoad(&wf_block[WF_COUNT_INDIRECT]));
+    atomicAdd(&wf_block[WF_PHASE], 1u);
+}
+
+@compute @workgroup_size(WF_WORKGROUP)
+fn cs_wf_extend(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_index) lid: u32) {
+    let cur = wf_cur();
+    let front = atomicLoad(&wf_block[WF_COUNT_PATHS + cur]);
+    let live = gid.x < front + atomicLoad(&wf_block[WF_COUNT_BACK + cur]);
+    var slot = 0u;
+    var want = vec4u(0u);
+    if (live) {
+        slot = wf_split_at(cur, front, gid.x);
+        var st = wf_load(slot);
+        g_primary_slot = select(-1, wf_paths[slot].adapt_slot, st.depth == 0);
+        g_second_slot = select(-1, wf_paths[slot].adapt_slot, st.depth == 1);
+        let seg = path_extend(st);
+        wf_paths[slot].hit_t = seg.hit_t;
+        wf_paths[slot].seg_steps = seg.steps;
+        wf_paths[slot].flags = (wf_paths[slot].flags & ~WF_HIT) | wf_flag(seg.hit_ok, WF_HIT);
+        want = vec4u(select(0u, 1u, seg.hit_ok), select(1u, 0u, seg.hit_ok), 0u, 0u);
+    }
+    let base = wf_reserve(lid, want, vec4u(WF_COUNT_HITS, WF_COUNT_MISSES, WF_COUNT_HITS, WF_COUNT_HITS));
+    if (want.x > 0u) {
+        wf_put_front(WF_QUEUE_SHADE, base.x, slot);
+    }
+    if (want.y > 0u) {
+        wf_put_back(WF_QUEUE_SHADE, base.y, slot);
+    }
+}
+
+@compute @workgroup_size(WF_WORKGROUP)
+fn cs_wf_shade(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_index) lid: u32) {
+    let cur = wf_cur();
+    let hits = atomicLoad(&wf_block[WF_COUNT_HITS]);
+    let live = gid.x < hits + atomicLoad(&wf_block[WF_COUNT_MISSES]);
+    var slot = 0u;
+    var want = vec4u(0u);
+    if (live) {
+        slot = wf_split_at(WF_QUEUE_SHADE, hits, gid.x);
+        let p = wf_paths[slot];
+        var st = wf_load(slot);
+        spectral_setup(st.hero);
+        detect_scene_transparency();
+        g_primary_slot = select(-1, p.adapt_slot, st.depth == 0);
+        g_second_slot = select(-1, p.adapt_slot, st.depth == 1);
+        if (gid.x < hits) {
+            let surf = wf_surf[slot];
+            g_wf_normal = surf.normal;
+            g_wf_ao = surf.ao;
+            g_wf_mat = surf.mat;
+        }
+        let depth = st.depth;
+        st = path_shade(st, PathSegment(p.hit_t, wf_has(p.flags, WF_HIT), p.seg_steps));
+        let radiance = st.radiance;
+
+        var o = wf_out[slot];
+        o.color = vec4f(o.color.rgb + spec_to_rgb(radiance), o.color.w);
+        if (depth == 0 && g_primary_dist > 0.0) {
+            o.color.w = g_primary_dist;
+            o.normal = vec4f(g_primary_normal, WF_OUT_PRIMARY);
+        }
+        wf_out[slot] = o;
+
+        let next = st.alive && st.depth < path_max_depth();
+        want = vec4u(select(0u, 1u, next && !st.in_solid), select(0u, 1u, next && st.in_solid), select(0u, 1u, g_wf_shadow_light >= 0), select(0u, 1u, g_wf_indirect));
+        if (any(want > vec4u(0u))) {
+            wf_store(slot, st, select(-1, g_second_slot, st.depth == 1));
+        }
+    }
+    let next_queue = 1u - cur;
+    let base = wf_reserve(lid, want, vec4u(WF_COUNT_PATHS + next_queue, WF_COUNT_BACK + next_queue, WF_COUNT_SHADOW, WF_COUNT_INDIRECT));
+    if (want.x > 0u) {
+        wf_put_front(next_queue, base.x, slot);
+    }
+    if (want.y > 0u) {
+        wf_put_back(next_queue, base.y, slot);
+    }
+    if (want.z > 0u) {
+        wf_put_front(WF_QUEUE_SHADOW, base.z, slot);
+    }
+    if (want.w > 0u) {
+        wf_put_front(WF_QUEUE_INDIRECT, base.w, slot);
+    }
+}
+
+@compute @workgroup_size(WF_WORKGROUP)
+fn cs_wf_shadow(@builtin(global_invocation_id) gid: vec3u) {
+    if (gid.x >= atomicLoad(&wf_block[WF_COUNT_SHADOW])) {
+        return;
+    }
+    let slot = wf_queue_at(WF_QUEUE_SHADOW, gid.x);
+    let p = wf_paths[slot];
+    spectral_setup(p.hero);
+    detect_scene_transparency();
+    let light = u.lights[p.shadow_light];
+    let ls = light_sample(light, p.shade_pos);
+    let vis = shadow_factor(p.shade_pos, p.shade_normal, light, ls.dir, ls.dist);
+    let add = spec_to_rgb(spec_mul(vis, p.shadow_w));
+    wf_out[slot].color = wf_out[slot].color + vec4f(add, 0.0);
+}
+
+@compute @workgroup_size(WF_WORKGROUP)
+fn cs_wf_indirect(@builtin(global_invocation_id) gid: vec3u) {
+    if (gid.x >= atomicLoad(&wf_block[WF_COUNT_INDIRECT])) {
+        return;
+    }
+    let slot = wf_queue_at(WF_QUEUE_INDIRECT, gid.x);
+    let p = wf_paths[slot];
+    spectral_setup(p.hero);
+    detect_scene_transparency();
+    let ambient = indirect_light(p.shade_pos, p.shade_normal, path_seed(p.seed, 0) + INDIRECT_SEED_OFFSET);
+    let add = spec_to_rgb(spec_mul(ambient, p.indirect_w));
+    wf_out[slot].color = wf_out[slot].color + vec4f(add, 0.0);
+}
+
+@fragment
+fn fs_wf_resolve(in: VertexOut) -> FragOut {
+    let px = u32(in.clip_pos.x);
+    let py = u32(in.clip_pos.y);
+    let rx = wf_block_r[WF_RECT_X];
+    let ry = wf_block_r[WF_RECT_Y];
+    let rw = wf_block_r[WF_RECT_W];
+    let rh = wf_block_r[WF_RECT_H];
+    if (px < rx || py < ry || px >= rx + rw || py >= ry + rh) {
+        discard;
+    }
+    let inner = max(wf_block_r[WF_INNER], 1u);
+    let first = ((py - ry) * rw + (px - rx)) * inner;
+    var sum = vec3f(0.0);
+    var n = 0.0;
+    var dist = 0.0;
+    var normal = vec3f(0.0);
+    for (var s = 0u; s < inner; s++) {
+        let o = wf_out_r[first + s];
+        if (o.normal.w < WF_OUT_VALID - 0.5) {
+            continue;
+        }
+        sum += gamut_fit(o.color.rgb);
+        n += 1.0;
+        if (o.normal.w > WF_OUT_PRIMARY - 0.5) {
+            dist = o.color.w;
+            normal = o.normal.xyz;
+        }
+    }
+    if (n < 0.5) {
+        discard;
+    }
+    let color = sum / n;
+
+    let row_width = u32(max(u.adapt_row_width, 0.0));
+    let adapt_idx = py * row_width + px;
+    let pixel_ok = px < row_width && adapt_idx < arrayLength(&adapt_stats);
+    if (u.adapt_enabled > 0.5 && u.mc_enabled > 0.5 && pixel_ok) {
+        var stats = vec4f(0.0);
+        if (u.mc_sample > 0.5) {
+            stats = adapt_stats[adapt_idx].stats;
+        }
+        adapt_stats[adapt_idx].stats = adapt_update(stats, color);
+    }
+    return frag_out(vec4f(color, 0.0), dist, normal);
+}
+
 @group(1) @binding(1) var accel_out: texture_storage_3d<r32float, write>;
 
 @compute @workgroup_size(VOXEL_WORKGROUP_SIZE, VOXEL_WORKGROUP_SIZE, VOXEL_WORKGROUP_SIZE)
@@ -3782,6 +5255,30 @@ fn cs_build_accel(@builtin(global_invocation_id) gid: vec3u) {
     let safe = max(d - HALF_SQRT3 * cell, 0.0) * u.accel_safety;
 
     textureStore(accel_out, vec3i(i32(gid.x), i32(gid.y), i32(gz)), vec4f(safe, 0.0, 0.0, 0.0));
+}
+
+@group(2) @binding(15) var fog_vis_out: texture_storage_3d<rgba16float, write>;
+
+const FOG_VIS_BUILD_HERO = 0.5;
+
+@compute @workgroup_size(VOXEL_WORKGROUP_SIZE, VOXEL_WORKGROUP_SIZE, VOXEL_WORKGROUP_SIZE)
+fn cs_build_fog_vis(@builtin(global_invocation_id) gid: vec3u) {
+    let dims = vec3u(u.fog_vis_dims);
+    let layers = u32(u.fog_vis_layers);
+    let gz = gid.z + u32(u.fog_vis_z_offset);
+    if (gid.x >= dims.x || gid.y >= dims.y || gz >= dims.z * layers) {
+        return;
+    }
+
+    let layer = gz / dims.z;
+    let li = i32(u.fog_vis_layer_light[layer / 4u][layer % 4u]);
+    detect_scene_transparency();
+    spectral_setup(FOG_VIS_BUILD_HERO);
+
+    let p = u.fog_vis_origin + (vec3f(f32(gid.x), f32(gid.y), f32(gz % dims.z)) + 0.5) * u.fog_vis_cell;
+    let ls = light_sample(u.lights[li], p);
+    let vis = spec_to_rgb(fog_light_visibility(p, ls.dir, ls.dist, FOG_SHADOW_STEPS_HQ));
+    textureStore(fog_vis_out, vec3i(i32(gid.x), i32(gid.y), i32(gz)), vec4f(clamp(vis, vec3f(0.0), vec3f(1.0)), 1.0));
 }
 
 @group(1) @binding(0) var<storage, read_write> fft_density: array<f32>;
@@ -3936,7 +5433,7 @@ fn cs_fft_finalize(@builtin(global_invocation_id) gid: vec3u) {
     textureStore(fft_magnitude_out, vec3i(i32(gid.x), i32(gid.y), i32(gid.z)), vec4f(mag, 0.0, 0.0, 0.0));
 }
 
-@group(2) @binding(4) var<storage, read_write> photon_cells_rw: array<Photon>;
+@group(2) @binding(4) var<storage, read_write> photon_cells_rw: array<vec4f>;
 @group(2) @binding(5) var<storage, read_write> photon_counts_rw: array<atomic<u32>>;
 @group(2) @binding(6) var<storage, read_write> photon_keys_rw: array<atomic<u32>>;
 @group(2) @binding(7) var<storage, read_write> photon_offsets_rw: array<u32>;
@@ -4143,6 +5640,23 @@ fn photon_store(ph: Photon, cell: vec3i, kind: u32) {
     photon_place(ph, h);
 }
 
+fn photon_bucket_invocation(gid: vec3u, groups: vec3u) -> u32 {
+    return gid.x + gid.y * groups.x * u32(LINEAR_WORKGROUP_SIZE);
+}
+
+fn photon_power_index_rw(i: u32) -> u32 {
+    return arrayLength(&photon_cells_rw) / PHOTON_POOL_SECTIONS + i;
+}
+
+fn photon_prefiltered_index_rw(i: u32) -> u32 {
+    return arrayLength(&photon_cells_rw) / PHOTON_POOL_SECTIONS * 2u + i;
+}
+
+fn photon_write(i: u32, geo: vec4f, power: vec4f) {
+    photon_cells_rw[i] = geo;
+    photon_cells_rw[photon_power_index_rw(i)] = power;
+}
+
 fn photon_place(ph: Photon, h: u32) {
     let stored = atomicLoad(&photon_counts_rw[h]);
     if (stored == 0u) {
@@ -4151,7 +5665,7 @@ fn photon_place(ph: Photon, h: u32) {
     let room = min(stored, photon_cap_surface());
     let slot = atomicAdd(&photon_cursor_rw[h], 1u);
     if (slot < room) {
-        photon_cells_rw[photon_offsets_rw[h] + slot] = ph;
+        photon_write(photon_offsets_rw[h] + slot, vec4f(ph.pos, bitcast<f32>(oct_encode(ph.normal))), vec4f(ph.power, 0.0));
     }
 }
 
@@ -4164,6 +5678,154 @@ fn cs_scatter_photons(@builtin(global_invocation_id) gid: vec3u) {
     let h = bitcast<u32>(ph._pad0);
     ph._pad0 = 0.0;
     photon_place(ph, h);
+}
+
+@compute @workgroup_size(LINEAR_WORKGROUP_SIZE)
+fn cs_sort_photons(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) groups: vec3u) {
+    let b = photon_bucket_invocation(gid, groups);
+    if (b >= u32(u.photon_table)) {
+        return;
+    }
+    let stored = atomicLoad(&photon_counts_rw[b]);
+    if (stored == 0u) {
+        return;
+    }
+    let kind = atomicLoad(&photon_keys_rw[b]) & PHOTON_TAG_KIND_MASK;
+    if (!photon_kind_is_surface(kind)) {
+        return;
+    }
+    let kept = min(stored, photon_cap_surface());
+    let base = photon_offsets_rw[b];
+
+    for (var s = 0u; s < kept; s++) {
+        photon_cells_rw[photon_prefiltered_index_rw(base + s)].w = bitcast<f32>(kind);
+    }
+
+    if (kept < PHOTON_OCTANT_HEADER_PHOTONS) {
+        return;
+    }
+
+    var start: array<u32, 9>;
+    for (var s = 0u; s < kept; s++) {
+        start[photon_octant(photon_cells_rw[base + s].xyz, kind) + 1u]++;
+    }
+    for (var o = 1u; o <= PHOTON_OCTANTS; o++) {
+        start[o] += start[o - 1u];
+    }
+    var next = start;
+    for (var o = 0u; o < PHOTON_OCTANTS; o++) {
+        while (next[o] < start[o + 1u]) {
+            let home = base + next[o];
+            var geo = photon_cells_rw[home];
+            var power = photon_cells_rw[photon_power_index_rw(home)];
+            var t = photon_octant(geo.xyz, kind);
+            while (t != o) {
+                let j = base + next[t];
+                next[t]++;
+                let geo_j = photon_cells_rw[j];
+                let power_j = photon_cells_rw[photon_power_index_rw(j)];
+                photon_write(j, geo, power);
+                geo = geo_j;
+                power = power_j;
+                t = photon_octant(geo.xyz, kind);
+            }
+            photon_write(home, geo, power);
+            next[o]++;
+        }
+    }
+
+    var head = vec3u(0u);
+    for (var o = 1u; o < PHOTON_OCTANTS; o++) {
+        let i = o - 1u;
+        head[i / PHOTON_OCTANTS_PER_WORD] |= start[o] << ((i % PHOTON_OCTANTS_PER_WORD) * PHOTON_OCTANT_BITS);
+    }
+    for (var w = 0u; w < PHOTON_OCTANT_HEADER_PHOTONS; w++) {
+        photon_cells_rw[photon_power_index_rw(base + w)].w = bitcast<f32>(head[w]);
+    }
+}
+
+fn photon_octant_start_rw(base: u32, o: u32, kept: u32) -> u32 {
+    if (o == 0u) {
+        return 0u;
+    }
+    if (o >= PHOTON_OCTANTS) {
+        return kept;
+    }
+    let i = o - 1u;
+    let packed = bitcast<u32>(photon_cells_rw[photon_power_index_rw(base + i / PHOTON_OCTANTS_PER_WORD)].w);
+    return min((packed >> ((i % PHOTON_OCTANTS_PER_WORD) * PHOTON_OCTANT_BITS)) & PHOTON_OCTANT_MASK, kept);
+}
+
+fn photon_scan_rw(base: u32, begin: u32, end: u32, pos: vec3f, normal: vec3f, r: f32) -> vec3f {
+    var sum = vec3f(0.0);
+    for (var s = base + begin; s < base + end; s++) {
+        let geo = photon_cells_rw[s];
+        let d = geo.xyz - pos;
+        let d2 = dot(d, d);
+        if (d2 > r * r || dot(oct_decode(bitcast<u32>(geo.w)), normal) < PHOTON_NORMAL_MIN_COS) {
+            continue;
+        }
+        sum += photon_cells_rw[photon_power_index_rw(s)].xyz * (1.0 - sqrt(d2) / r);
+    }
+    return sum;
+}
+
+fn photon_gather_kind_rw(pos: vec3f, normal: vec3f, kind: u32) -> vec3f {
+    let edge = photon_grid_edge(kind);
+    let r = PHOTON_GATHER_RADIUS_CELLS * edge;
+    let qlo = (pos - vec3f(r)) / edge;
+    let qhi = (pos + vec3f(r)) / edge;
+    let lo = vec3i(floor(qlo));
+    let hi = vec3i(floor(qhi));
+
+    var sum = vec3f(0.0);
+    for (var z = lo.z; z <= hi.z; z++) {
+        for (var y = lo.y; y <= hi.y; y++) {
+            for (var x = lo.x; x <= hi.x; x++) {
+                let h = photon_bucket_lookup_rw(vec3i(x, y, z), kind);
+                if (h == PHOTON_NO_BUCKET) {
+                    continue;
+                }
+                let stored = atomicLoad(&photon_counts_rw[h]);
+                if (stored == 0u) {
+                    continue;
+                }
+                let kept = min(stored, photon_cap_surface());
+                let overflow = f32(stored) / f32(kept);
+                let base = photon_offsets_rw[h];
+                if (kept < PHOTON_OCTANT_HEADER_PHOTONS) {
+                    sum += photon_scan_rw(base, 0u, kept, pos, normal, r) * overflow;
+                    continue;
+                }
+                let mid = vec3f(vec3i(x, y, z)) + 0.5;
+                let first = select(vec3u(0u), vec3u(1u), qlo >= mid);
+                let last = select(vec3u(0u), vec3u(1u), qhi >= mid);
+                for (var oz = first.z; oz <= last.z; oz++) {
+                    for (var oy = first.y; oy <= last.y; oy++) {
+                        let row = (oy << 1u) | (oz << 2u);
+                        let begin = photon_octant_start_rw(base, row | first.x, kept);
+                        let end = photon_octant_start_rw(base, (row | last.x) + 1u, kept);
+                        sum += photon_scan_rw(base, begin, end, pos, normal, r) * overflow;
+                    }
+                }
+            }
+        }
+    }
+    return sum / (r * r);
+}
+
+@compute @workgroup_size(LINEAR_WORKGROUP_SIZE)
+fn cs_prefilter_photons(@builtin(global_invocation_id) gid: vec3u) {
+    if (gid.x >= min(atomicLoad(&photon_stats_rw[PHOTON_STAT_POOL]), u32(u.photon_pool))) {
+        return;
+    }
+    let slot = photon_prefiltered_index_rw(gid.x);
+    let mark = photon_cells_rw[slot].w;
+    if (bitcast<u32>(mark) != PHOTON_GRID_BOUNCE) {
+        return;
+    }
+    let geo = photon_cells_rw[gid.x];
+    photon_cells_rw[slot] = vec4f(photon_gather_kind_rw(geo.xyz, oct_decode(bitcast<u32>(geo.w)), PHOTON_GRID_BOUNCE), mark);
 }
 
 const FIXED_POINT_LIMIT = 2147483000.0;
@@ -4223,8 +5885,8 @@ fn photon_volume_accumulate(p: vec3f, value: vec3f, dir: vec3f, kind: u32, salt:
 }
 
 @compute @workgroup_size(LINEAR_WORKGROUP_SIZE)
-fn cs_alloc_photons(@builtin(global_invocation_id) gid: vec3u) {
-    let b = gid.x;
+fn cs_alloc_photons(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) groups: vec3u) {
+    let b = photon_bucket_invocation(gid, groups);
     if (b >= u32(u.photon_table)) {
         return;
     }
@@ -4437,8 +6099,9 @@ fn cs_photon_aim(@builtin(global_invocation_id) gid: vec3u) {
 }
 
 @compute @workgroup_size(LINEAR_WORKGROUP_SIZE)
-fn cs_clear_photons(@builtin(global_invocation_id) gid: vec3u) {
-    if (gid.x == 0u) {
+fn cs_clear_photons(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) groups: vec3u) {
+    let b = photon_bucket_invocation(gid, groups);
+    if (b == 0u) {
         atomicStore(&photon_stats_rw[PHOTON_STAT_POOL], 0u);
         atomicStore(&photon_stats_rw[PHOTON_STAT_NO_BUCKET], 0u);
         atomicStore(&photon_stats_rw[PHOTON_STAT_NO_POOL], 0u);
@@ -4446,14 +6109,14 @@ fn cs_clear_photons(@builtin(global_invocation_id) gid: vec3u) {
         atomicStore(&photon_stats_rw[PHOTON_STAT_CELLS_VOLUME], 0u);
         atomicStore(&photon_stats_rw[PHOTON_STAT_STAGED], 0u);
     }
-    if (gid.x >= u32(u.photon_table)) {
+    if (b >= u32(u.photon_table)) {
         return;
     }
-    atomicStore(&photon_counts_rw[gid.x], 0u);
-    atomicStore(&photon_keys_rw[gid.x], 0u);
-    atomicStore(&photon_cursor_rw[gid.x], 0u);
-    photon_offsets_rw[gid.x] = 0u;
-    let base = gid.x * PHOTON_VOLUME_WORDS;
+    atomicStore(&photon_counts_rw[b], 0u);
+    atomicStore(&photon_keys_rw[b], 0u);
+    atomicStore(&photon_cursor_rw[b], 0u);
+    photon_offsets_rw[b] = 0u;
+    let base = b * PHOTON_VOLUME_WORDS;
     for (var w = 0u; w < PHOTON_VOLUME_WORDS; w++) {
         atomicStore(&photon_volume_rw[base + w], 0u);
     }
