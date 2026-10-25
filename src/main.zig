@@ -862,13 +862,14 @@ pub fn main(init: std.process.Init.Minimal) !void {
         perf.mark("acquire");
 
         if (march_needed) {
-            if (render_mode == .march and mc_active and !stereo_preview and !render_parts.diagnosticView()) {
-                _ = fractal.prepareLiveWavefront(&gpu_ctx, frame.encoder, &uniforms);
+            const wave_drawn = render_mode == .march and mc_active and !stereo_preview and !render_parts.diagnosticView() and
+                fractal.drawLiveWavefront(&gpu_ctx, frame.encoder, &uniforms, load_existing, blend_constant);
+            if (!wave_drawn) {
+                const offscreen_pass = fractal.beginOffscreenPass(frame.encoder, load_existing);
+                fractal.draw(offscreen_pass, blend_constant, render_mode, parts_pipeline);
+                wgpu.wgpuRenderPassEncoderEnd(offscreen_pass);
+                wgpu.wgpuRenderPassEncoderRelease(offscreen_pass);
             }
-            const offscreen_pass = fractal.beginOffscreenPass(frame.encoder, load_existing);
-            fractal.draw(offscreen_pass, blend_constant, render_mode, parts_pipeline);
-            wgpu.wgpuRenderPassEncoderEnd(offscreen_pass);
-            wgpu.wgpuRenderPassEncoderRelease(offscreen_pass);
             drawn_generation = generation;
             drawn_mode = render_mode;
         }

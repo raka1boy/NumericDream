@@ -941,8 +941,6 @@ const WaveEncoder = struct {
     }
 };
 
-const LiveBand = struct { rect: wavefront.Band, block: u32 };
-
 const Rect = struct {
     x: u32,
     y: u32,
@@ -1812,8 +1810,6 @@ pub const FractalRenderer = struct {
     wavefront_pipeline_layout: wgpu.WGPUPipelineLayout = null,
     wavefront_args_pipeline_layout: wgpu.WGPUPipelineLayout = null,
     wavefront_resolve_pipeline_layout: wgpu.WGPUPipelineLayout = null,
-    live_bands: [live_band_capacity]LiveBand = undefined,
-    live_band_count: usize = 0,
 
     content_generation: u32 = 0,
 
@@ -4231,9 +4227,7 @@ pub const FractalRenderer = struct {
     }
 
     pub fn draw(self: *FractalRenderer, pass: wgpu.WGPURenderPassEncoder, blend_constant: f32, mode: RenderMode, parts_pipeline: wgpu.WGPURenderPipeline) void {
-        if (mode == .march and self.live_band_count > 0) {
-            self.drawLiveWavefront(pass, blend_constant);
-        } else if (mode == .march and parts_pipeline != null) {
+        if (mode == .march and parts_pipeline != null) {
             self.drawPipeline(pass, blend_constant, parts_pipeline, 0);
         } else {
             self.drawSlot(pass, blend_constant, mode, 0);
@@ -4270,11 +4264,12 @@ pub const FractalRenderer = struct {
 
     pub fn drawSampleNow(self: *FractalRenderer, ctx: *const Context, uniforms: *const Uniforms, blend_constant: f32, parts_pipeline: wgpu.WGPURenderPipeline) void {
         const encoder = wgpu.wgpuDeviceCreateCommandEncoder(ctx.device, null) orelse return;
-        _ = self.prepareLiveWavefront(ctx, encoder, uniforms);
-        const pass = self.beginOffscreenPass(encoder, true);
-        self.draw(pass, blend_constant, .march, parts_pipeline);
-        wgpu.wgpuRenderPassEncoderEnd(pass);
-        wgpu.wgpuRenderPassEncoderRelease(pass);
+        if (!self.drawLiveWavefront(ctx, encoder, uniforms, true, blend_constant)) {
+            const pass = self.beginOffscreenPass(encoder, true);
+            self.draw(pass, blend_constant, .march, parts_pipeline);
+            wgpu.wgpuRenderPassEncoderEnd(pass);
+            wgpu.wgpuRenderPassEncoderRelease(pass);
+        }
         const cmd = wgpu.wgpuCommandEncoderFinish(encoder, null);
         wgpu.wgpuCommandEncoderRelease(encoder);
         wgpu.wgpuQueueSubmit(ctx.queue, 1, &[_]wgpu.WGPUCommandBuffer{cmd});
@@ -4330,8 +4325,7 @@ pub const FractalRenderer = struct {
         wgpu.wgpuRenderPassEncoderDraw(pass, 3, 1, 0, 0);
     }
 
-    pub fn prepareLiveWavefront(self: *FractalRenderer, ctx: *const Context, encoder: wgpu.WGPUCommandEncoder, uniforms: *const Uniforms) bool {
-        self.live_band_count = 0;
+    pub fn drawLiveWavefront(self: *FractalRenderer, ctx: *const Context, encoder: wgpu.WGPUCommandEncoder, uniforms: *const Uniforms, load_existing: bool, blend_constant: f32) bool {
         if (!self.wavefrontWanted(uniforms)) return false;
         self.collectWaveJob(false);
         if (!self.pipelines.has(.wavefront)) {
@@ -4351,19 +4345,13 @@ pub const FractalRenderer = struct {
             const band = wavefront.Band{ .x = 0, .y = y, .w = w, .h = @min(rows, h - y) };
             const block = self.wave.reserveBlock(ctx, band, w, h, inner);
             self.encodeWavefront(encoder, 0, block, band.w * band.h, depth, true);
-            self.live_bands[self.live_band_count] = .{ .rect = band, .block = block };
-            self.live_band_count += 1;
+            const pass = self.beginOffscreenPass(encoder, load_existing or y > 0);
+            wgpu.wgpuRenderPassEncoderSetScissorRect(pass, band.x, band.y, band.w, band.h);
+            self.drawWavefrontResolve(pass, blend_constant, 0, block);
+            wgpu.wgpuRenderPassEncoderEnd(pass);
+            wgpu.wgpuRenderPassEncoderRelease(pass);
         }
         return true;
-    }
-
-    fn drawLiveWavefront(self: *FractalRenderer, pass: wgpu.WGPURenderPassEncoder, blend_constant: f32) void {
-        for (self.live_bands[0..self.live_band_count]) |b| {
-            wgpu.wgpuRenderPassEncoderSetScissorRect(pass, b.rect.x, b.rect.y, b.rect.w, b.rect.h);
-            self.drawWavefrontResolve(pass, blend_constant, 0, b.block);
-        }
-        wgpu.wgpuRenderPassEncoderSetScissorRect(pass, 0, 0, self.offscreen_width, self.offscreen_height);
-        self.live_band_count = 0;
     }
 
     fn bindSceneGroups(self: *FractalRenderer, pass: wgpu.WGPURenderPassEncoder) void {
