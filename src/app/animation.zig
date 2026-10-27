@@ -41,6 +41,7 @@ pub const ColorStopSnapshot = struct {
     reflectiveness: f32 = 0,
     ior: f32 = 1.5,
     subsurface: f32 = 0,
+    subsurface_radius: f32 = 0.1,
     abbe: f32 = 0,
     inner_max_steps: f32 = 64,
     roughness: f32 = 0,

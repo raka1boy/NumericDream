@@ -38,6 +38,7 @@ pub const ColorStopState = struct {
     reflectiveness: f32 = 0.1,
     ior: f32 = 1.5,
     subsurface: f32 = 0.0,
+    subsurface_radius: f32 = 0.1,
     abbe: f32 = 0.0,
     inner_max_steps: f32 = 64.0,
     roughness: f32 = 0.0,
@@ -52,6 +53,7 @@ pub const ColorStopState = struct {
     reflectiveness_range: SliderRange = .{ .min = 0, .max = 1 },
     ior_range: SliderRange = .{ .min = 1, .max = 3 },
     subsurface_range: SliderRange = .{ .min = 0, .max = 1 },
+    subsurface_radius_range: SliderRange = .{ .min = 0.005, .max = 0.5 },
     abbe_range: SliderRange = .{ .min = 0, .max = 120 },
     inner_max_steps_range: SliderRange = .{ .min = 8, .max = 256 },
     roughness_range: SliderRange = .{ .min = 0, .max = 1 },
@@ -80,6 +82,7 @@ pub const ColorStopState = struct {
             .film_angle_scale = self.film_angle_scale,
             .film_perturb = self.film_perturb,
             .film_perturb_scale = self.film_perturb_scale,
+            .subsurface_radius = self.subsurface_radius,
         };
     }
 };

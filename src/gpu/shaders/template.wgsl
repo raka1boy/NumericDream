@@ -15,7 +15,7 @@ struct ColorStop {
     film_angle_scale: f32,
     film_perturb: f32,
     film_perturb_scale: f32,
-    _pad_film0: f32,
+    subsurface_radius: f32,
     _pad_film1: f32,
 }
 
@@ -1765,7 +1765,12 @@ const TETRAHEDRAL_TAPS = 4;
 
 fn estimate_normal(pos: vec3f, t: f32) -> vec3f {
     let hot_prev = hot_enter(HOT_NORMALS);
-    let e = march_epsilon(t);
+    let grad = tetra_gradient(pos, march_epsilon(t));
+    g_hot_src = hot_prev;
+    return normalize(grad);
+}
+
+fn tetra_gradient(pos: vec3f, e: f32) -> vec3f {
     var grad = vec3f(0.0);
     for (var i = 0; i < TETRAHEDRAL_TAPS; i++) {
         var k = vec3f(1.0, -1.0, -1.0);
@@ -1778,8 +1783,7 @@ fn estimate_normal(pos: vec3f, t: f32) -> vec3f {
         }
         grad += k * scene_de(pos + k * e);
     }
-    g_hot_src = hot_prev;
-    return normalize(grad);
+    return grad;
 }
 
 struct MarchResult {
@@ -1949,10 +1953,11 @@ const DEFAULT_FILM_THICKNESS_NM = 400.0;
 const DEFAULT_FILM_IOR = 1.8;
 const DEFAULT_FILM_ANGLE_SCALE = 1.0;
 const DEFAULT_FILM_PERTURB_SCALE = 0.2;
+const DEFAULT_SSS_RADIUS = 0.1;
 const GRADIENT_MIN_SPAN = 0.0001;
 
 fn default_material() -> ColorStop {
-    return ColorStop(DEFAULT_ALBEDO, 0.0, DEFAULT_GLOSSINESS, 0.0, 0.0, DEFAULT_IOR, 0.0, 0.0, DEFAULT_INNER_STEPS, 0.0, DEFAULT_FILM_THICKNESS_NM, DEFAULT_FILM_IOR, 0.0, DEFAULT_FILM_ANGLE_SCALE, 0.0, DEFAULT_FILM_PERTURB_SCALE, 0.0, 0.0);
+    return ColorStop(DEFAULT_ALBEDO, 0.0, DEFAULT_GLOSSINESS, 0.0, 0.0, DEFAULT_IOR, 0.0, 0.0, DEFAULT_INNER_STEPS, 0.0, DEFAULT_FILM_THICKNESS_NM, DEFAULT_FILM_IOR, 0.0, DEFAULT_FILM_ANGLE_SCALE, 0.0, DEFAULT_FILM_PERTURB_SCALE, DEFAULT_SSS_RADIUS, 0.0);
 }
 
 fn mix_material(a: ColorStop, b: ColorStop, h: f32) -> ColorStop {
@@ -1973,7 +1978,7 @@ fn mix_material(a: ColorStop, b: ColorStop, h: f32) -> ColorStop {
     result.film_angle_scale = mix(b.film_angle_scale, a.film_angle_scale, h);
     result.film_perturb = mix(b.film_perturb, a.film_perturb, h);
     result.film_perturb_scale = mix(b.film_perturb_scale, a.film_perturb_scale, h);
-    result._pad_film0 = 0.0;
+    result.subsurface_radius = mix(b.subsurface_radius, a.subsurface_radius, h);
     result._pad_film1 = 0.0;
     return result;
 }
@@ -2998,7 +3003,7 @@ const INSIDE_EXIT_SLOPE = 0.0005;
 const INSIDE_EXIT_BIAS = 0.00005;
 const INSIDE_STEP_BASE = 0.004;
 
-fn march_inside(origin: vec3f, dir: vec3f, max_inner_steps: i32, step_base: f32) -> InsideMarch {
+fn march_inside(origin: vec3f, dir: vec3f, max_inner_steps: i32, step_base: f32, max_t: f32) -> InsideMarch {
     var t = 0.0;
     let steps = max(max_inner_steps, 1);
     let growth = 1.0 + INSIDE_STEP_GROWTH / f32(steps);
@@ -3006,26 +3011,46 @@ fn march_inside(origin: vec3f, dir: vec3f, max_inner_steps: i32, step_base: f32)
     for (var i = 0; i < steps; i++) {
         let pos = origin + dir * t;
         let d = scene_de(pos);
-        if (i > INSIDE_WARMUP_STEPS && d > INSIDE_EXIT_SLOPE * t + INSIDE_EXIT_BIAS) {
+        if (i > INSIDE_WARMUP_STEPS && inside_exited(d, t)) {
             return InsideMarch(true, t);
         }
         t += max(abs(d), step_floor);
         step_floor *= growth;
-        if (t > u.max_dist) {
+        if (t > max_t) {
             break;
         }
     }
     return InsideMarch(false, t);
 }
 
-const SSS_DISTORTION = 0.35;
-const SSS_POWER = 4.0;
-const SSS_WRAP = 0.6;
-const SSS_ABSORB_THIN = 14.0;
-const SSS_ABSORB_THICK = 2.0;
-const SSS_PROBE_OFFSET = 0.003;
-const SSS_PROBE_STEP = 0.003;
+fn inside_exited(d: f32, t: f32) -> bool {
+    return d > INSIDE_EXIT_SLOPE * t + INSIDE_EXIT_BIAS;
+}
+
+fn refine_inside_exit(origin: vec3f, dir: vec3f, inside_t: f32, outside_t: f32, iterations: i32) -> f32 {
+    var lo = inside_t;
+    var hi = outside_t;
+    for (var i = 0; i < iterations; i++) {
+        let mid = 0.5 * (lo + hi);
+        if (inside_exited(scene_de(origin + dir * mid), mid)) {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    return hi;
+}
+
+const SSS_WRAP = 0.75;
+const SSS_REACH_FLOOR = 0.05;
+const SSS_MIN_RADIUS = 0.0005;
+const SSS_BLUR_PER_RADIUS = 0.5;
+const SSS_BLUR_TAP_FRACTION = 0.5;
+const SSS_PROBE_STEP_PER_RADIUS = 0.05;
+const SSS_PROBE_DEPTH_RADII = 6.0;
 const SSS_MAX_STEPS = 64;
+const SSS_PATH_MAX_STEPS = 128;
+const SSS_EXIT_REFINE_STEPS = 7;
 const SPEC_POWER_MIN = 4.0;
 const SPEC_POWER_MAX = 128.0;
 const MATERIAL_EPSILON = 0.001;
@@ -3036,12 +3061,143 @@ struct LightTerms {
     specular: f32,
 }
 
-fn light_terms(ls: LightSample, normal: vec3f, view_dir: vec3f, translucency: f32, spec_power: f32, glossiness: f32) -> LightTerms {
-    let wrap = SSS_WRAP * translucency;
-    let ndotl = max((dot(normal, ls.dir) + wrap) / (1.0 + wrap), 0.0);
+fn light_terms(ls: LightSample, normal: vec3f, view_dir: vec3f, spec_power: f32, glossiness: f32) -> LightTerms {
+    let ndotl = max(dot(normal, ls.dir), 0.0);
     let half_dir = normalize(ls.dir + view_dir);
     let specular = select(0.0, pow(max(dot(normal, half_dir), 0.0), spec_power) * glossiness, part_on(PART_SPECULAR));
     return LightTerms(ndotl, specular);
+}
+
+struct Subsurface {
+    amount: f32,
+    radius: f32,
+    reach: Spec,
+    blur_normal: vec3f,
+}
+
+fn subsurface_setup(pos: vec3f, normal: vec3f, mat: ColorStop, albedo: Spec) -> Subsurface {
+    var s: Subsurface;
+    s.amount = clamp(mat.subsurface, 0.0, 1.0);
+    s.radius = max(mat.subsurface_radius, SSS_MIN_RADIUS);
+    s.blur_normal = normal;
+    if (s.amount <= MATERIAL_EPSILON) {
+        s.amount = 0.0;
+        return s;
+    }
+    let peak = max(spec_max(albedo), EPSILON);
+    let rel_lo = albedo.lo / peak;
+    let rel_hi = albedo.hi / peak;
+    s.reach = Spec(max(rel_lo * rel_lo, vec4f(SSS_REACH_FLOOR)), max(rel_hi * rel_hi, vec4f(SSS_REACH_FLOOR)));
+
+    let hot_prev = hot_enter(HOT_SUBSURFACE);
+    let blur = s.radius * SSS_BLUR_PER_RADIUS;
+    let grad = tetra_gradient(pos + normal * blur, blur * SSS_BLUR_TAP_FRACTION);
+    g_hot_src = hot_prev;
+    let len = length(grad);
+    if (len > EPSILON_TINY) {
+        s.blur_normal = grad / len;
+    }
+    return s;
+}
+
+fn subsurface_wrap_lanes(ndl_fine: f32, ndl_blur: f32, reach: vec4f) -> vec4f {
+    let ndl = mix(vec4f(ndl_fine), vec4f(ndl_blur), reach);
+    let w = SSS_WRAP * reach;
+    return max(ndl + w, vec4f(0.0)) / (vec4f(1.0) + w);
+}
+
+fn subsurface_wrap(s: Subsurface, ndl_fine: f32, light_dir: vec3f) -> Spec {
+    let ndl_blur = dot(s.blur_normal, light_dir);
+    return Spec(subsurface_wrap_lanes(ndl_fine, ndl_blur, s.reach.lo), subsurface_wrap_lanes(ndl_fine, ndl_blur, s.reach.hi));
+}
+
+fn diffuse_weight(s: Subsurface, ndl: f32, light_dir: vec3f) -> Spec {
+    if (s.amount <= 0.0) {
+        return spec_splat(max(ndl, 0.0));
+    }
+    let profile = spec_add(subsurface_wrap(s, ndl, light_dir), spec_splat(max(-ndl, 0.0)));
+    return spec_add(spec_splat((1.0 - s.amount) * max(ndl, 0.0)), spec_scale(profile, s.amount));
+}
+
+fn subsurface_transmit(s: Subsurface, depth: f32) -> Spec {
+    return Spec(exp(-depth / (s.radius * s.reach.lo)), exp(-depth / (s.radius * s.reach.hi)));
+}
+
+fn subsurface_light_path(pos: vec3f, normal: vec3f, start_inside: bool, s: Subsurface, light: Light, ls: LightSample, occlusion: bool) -> Spec {
+    if (!start_inside && !occlusion) {
+        return spec_splat(1.0);
+    }
+    let dir = ls.dir;
+    let origin = select(pos + normal * SHADOW_BIAS, pos, start_inside);
+    let cap = s.radius * SSS_PROBE_DEPTH_RADII;
+    let step_base = max(s.radius * SSS_PROBE_STEP_PER_RADIUS, INSIDE_MIN_STEP);
+    let growth = 1.0 + INSIDE_STEP_GROWTH / f32(SSS_MAX_STEPS);
+    let steps = min(i32(u.max_steps), SSS_PATH_MAX_STEPS);
+    var inside = start_inside;
+    var t = 0.0;
+    var prev = 0.0;
+    var entry = 0.0;
+    var depth = 0.0;
+    var inner = 0;
+    var step_floor = step_base;
+    let hot_prev = hot_enter(HOT_SUBSURFACE);
+    for (var i = 0; i < steps; i++) {
+        if (t >= ls.dist) {
+            break;
+        }
+        let p = origin + dir * t;
+        if (!inside) {
+            let skip = accel_skip(p);
+            if (skip > SHADOW_MIN_STEP) {
+                t += skip;
+                continue;
+            }
+        }
+        let d = scene_de(p);
+
+        if (inside) {
+            if (inner > INSIDE_WARMUP_STEPS && inside_exited(d, t)) {
+                let exit_t = refine_inside_exit(origin, dir, prev, t, SSS_EXIT_REFINE_STEPS);
+                depth += exit_t - entry;
+                inside = false;
+                if (!occlusion) {
+                    break;
+                }
+                t = exit_t + SHADOW_BIAS;
+                continue;
+            }
+            prev = t;
+            t += max(abs(d), step_floor);
+            step_floor *= growth;
+            inner += 1;
+            if (depth + t - entry > cap) {
+                g_hot_src = hot_prev;
+                return spec_splat(0.0);
+            }
+            continue;
+        }
+
+        if (d < SHADOW_HIT_EPS) {
+            if (apply_part_mask(hit_material(p).mat).subsurface <= MATERIAL_EPSILON) {
+                let rest = shadow_factor(p - dir * (2.0 * SHADOW_BIAS), dir, light, dir, ls.dist - t + 2.0 * SHADOW_BIAS);
+                g_hot_src = hot_prev;
+                return spec_mul(subsurface_transmit(s, depth), rest);
+            }
+            inside = true;
+            entry = t;
+            prev = t;
+            inner = 1;
+            step_floor = step_base;
+            t += step_floor;
+            continue;
+        }
+        t += max(d, SHADOW_MIN_STEP);
+    }
+    g_hot_src = hot_prev;
+    if (inside) {
+        depth += min(t, ls.dist) - entry;
+    }
+    return subsurface_transmit(s, depth);
 }
 
 const LIGHT_PICK_SEED_OFFSET = vec2f(47.23, 113.91);
@@ -3058,20 +3214,10 @@ fn shade_local(pos: vec3f, dir: vec3f, normal: vec3f, mat: ColorStop, ambient_li
     }
     g_shade_albedo = albedo;
 
-    let sss = clamp(mat.subsurface, 0.0, 1.0);
-    var translucency = 0.0;
-    if (sss > MATERIAL_EPSILON) {
-        let hot_prev = hot_enter(HOT_SUBSURFACE);
-        let inside = march_inside(pos - normal * SSS_PROBE_OFFSET, -normal, min(i32(u.max_steps), SSS_MAX_STEPS), SSS_PROBE_STEP);
-        g_hot_src = hot_prev;
-        if (inside.exited) {
-            translucency = sss * exp(-inside.dist * mix(SSS_ABSORB_THIN, SSS_ABSORB_THICK, sss));
-        }
-    }
+    let sss = subsurface_setup(pos, normal, mat, albedo);
 
     var diffuse_accum = spec_from_rgb(photon_gather_surface(pos, normal));
     var specular_accum = spec_splat(0.0);
-    var sss_accum = spec_splat(0.0);
     let fake_bounce = approx_on(APPROX_FAKE_BOUNCE);
     let light_count = total_light_count();
     let shadows_on = use_shadows && part_on(PART_SHADOWS);
@@ -3091,18 +3237,27 @@ fn shade_local(pos: vec3f, dir: vec3f, normal: vec3f, mat: ColorStop, ambient_li
             diffuse_accum = spec_add(diffuse_accum, spec_mul(albedo, spec_scale(light_spec, u.approx_bounce * facing_away)));
         }
 
-        if (translucency > 0.0) {
-            let back_dir = normalize(ls.dir + normal * SSS_DISTORTION);
-            let back = pow(max(dot(view_dir, -back_dir), 0.0), SSS_POWER);
-            sss_accum = spec_add(sss_accum, spec_scale(light_spec, back * translucency));
+        let terms = light_terms(ls, normal, view_dir, spec_power, mat.glossiness);
+        if (sss.amount > 0.0) {
+            let ndl = dot(normal, ls.dir);
+            let sss_w = diffuse_weight(sss, ndl, ls.dir);
+            let sss_spec = select(0.0, terms.specular, ndl > 0.0);
+            if (spec_max(sss_w) <= 0.0 && sss_spec <= 0.0) {
+                continue;
+            }
+            let occlusion = shadows_on && light.cast_shadows > 0.5;
+            let reaching = spec_mul(light_spec, subsurface_light_path(pos, normal, ndl <= 0.0, sss, light, ls, occlusion));
+            diffuse_accum = spec_add(diffuse_accum, spec_mul(reaching, sss_w));
+            specular_accum = spec_add(specular_accum, spec_scale(reaching, sss_spec));
+            continue;
         }
 
-        let terms = light_terms(ls, normal, view_dir, translucency, spec_power, mat.glossiness);
         if (terms.ndotl <= 0.0) {
             continue;
         }
+        let diffuse_w = diffuse_weight(sss, terms.ndotl, ls.dir);
         if (pick_one && light.cast_shadows > 0.5) {
-            let w = (ls.color.r + ls.color.g + ls.color.b) * (terms.ndotl + terms.specular);
+            let w = (ls.color.r + ls.color.g + ls.color.b) * (spec_max(diffuse_w) + terms.specular);
             pick_weights[i] = w;
             pick_total += w;
             continue;
@@ -3111,7 +3266,7 @@ fn shade_local(pos: vec3f, dir: vec3f, normal: vec3f, mat: ColorStop, ambient_li
         if (shadows_on) {
             if (WF_DEFER && g_wf_shadow_light < 0 && light.cast_shadows > 0.5) {
                 g_wf_shadow_light = i;
-                g_wf_shadow_w = spec_mul(light_spec, spec_add(spec_scale(albedo, terms.ndotl), spec_scale(film, terms.specular)));
+                g_wf_shadow_w = spec_mul(light_spec, spec_add(spec_mul(albedo, diffuse_w), spec_scale(film, terms.specular)));
                 continue;
             }
             shadow = shadow_factor(pos, normal, light, ls.dir, ls.dist);
@@ -3120,7 +3275,7 @@ fn shade_local(pos: vec3f, dir: vec3f, normal: vec3f, mat: ColorStop, ambient_li
             }
         }
         let reaching = spec_mul(light_spec, shadow);
-        diffuse_accum = spec_add(diffuse_accum, spec_scale(reaching, terms.ndotl));
+        diffuse_accum = spec_add(diffuse_accum, spec_mul(reaching, diffuse_w));
         specular_accum = spec_add(specular_accum, spec_scale(reaching, terms.specular));
     }
 
@@ -3140,20 +3295,21 @@ fn shade_local(pos: vec3f, dir: vec3f, normal: vec3f, mat: ColorStop, ambient_li
         }
         let light = u.lights[pick];
         let ls = light_sample(light, pos);
-        let terms = light_terms(ls, normal, view_dir, translucency, spec_power, mat.glossiness);
+        let terms = light_terms(ls, normal, view_dir, spec_power, mat.glossiness);
+        let diffuse_w = diffuse_weight(sss, terms.ndotl, ls.dir);
         let pick_scale = pick_total / pick_weights[pick];
         if (WF_DEFER) {
             g_wf_shadow_light = pick;
-            g_wf_shadow_w = spec_scale(spec_mul(spec_from_rgb(ls.color), spec_add(spec_scale(albedo, terms.ndotl), spec_scale(film, terms.specular))), pick_scale);
+            g_wf_shadow_w = spec_scale(spec_mul(spec_from_rgb(ls.color), spec_add(spec_mul(albedo, diffuse_w), spec_scale(film, terms.specular))), pick_scale);
         } else {
             let shadow = shadow_factor(pos, normal, light, ls.dir, ls.dist);
             let reaching = spec_scale(spec_mul(spec_from_rgb(ls.color), shadow), pick_scale);
-            diffuse_accum = spec_add(diffuse_accum, spec_scale(reaching, terms.ndotl));
+            diffuse_accum = spec_add(diffuse_accum, spec_mul(reaching, diffuse_w));
             specular_accum = spec_add(specular_accum, spec_scale(reaching, terms.specular));
         }
     }
 
-    return spec_add(spec_mul(albedo, spec_add(ambient_light, spec_add(diffuse_accum, sss_accum))),
+    return spec_add(spec_mul(albedo, spec_add(ambient_light, diffuse_accum)),
                     spec_mul(specular_accum, film));
 }
 
@@ -3689,7 +3845,7 @@ fn path_extend(st: PathState) -> PathSegment {
     var seg = PathSegment(0.0, false, 0.0);
     let primary = hit_cache_load();
     if (st.in_solid) {
-        let ins = march_inside(st.pos, st.dir, st.inner_steps, INSIDE_STEP_BASE);
+        let ins = march_inside(st.pos, st.dir, st.inner_steps, INSIDE_STEP_BASE, u.max_dist);
         seg.hit_t = ins.dist;
         seg.hit_ok = ins.exited;
     } else if (primary.valid) {
@@ -6206,7 +6362,7 @@ fn cs_trace_photons(@builtin(global_invocation_id) gid: vec3u) {
         var hit_t = 0.0;
         var hit_ok = false;
         if (in_solid) {
-            let ins = march_inside(origin, dir, inner_steps, INSIDE_STEP_BASE);
+            let ins = march_inside(origin, dir, inner_steps, INSIDE_STEP_BASE, u.max_dist);
             hit_t = ins.dist;
             hit_ok = ins.exited;
         } else {

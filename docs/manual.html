@@ -803,7 +803,7 @@
               <li><strong>Ambient occlusion</strong>: the five probes per surface hit.</li>
               <li><strong>Fog</strong>: everything a fog march costs, including its own shadow rays towards the lights.</li>
               <li><strong>Reflection and refraction</strong>: every march after the first along the path, inside glass and out.</li>
-              <li><strong>Subsurface scattering</strong>: the thickness probe of translucent materials.</li>
+              <li><strong>Subsurface scattering</strong>: the softened-normal taps and per-light translucent light rays of subsurface materials (once such a ray reaches a non-translucent object, the rest counts as Shadows).</li>
               <li><strong>MC indirect light</strong>: the whole bounce ray of MC Render, its own normals and shading included.</li>
               <li><strong>Depth of field probe</strong>: the extra march that finds how blurred a pixel is.</li>
             </ul>
@@ -1273,8 +1273,13 @@
           </div>
           <div class="param">
             <div class="param-head"><span class="param-name">Subsurface scattering</span><span class="chip">default 0</span><span class="chip">range 0–1</span></div>
-            <p>How much light travels <em>through</em> the material and comes back out toward the camera — the wax, jade, marble and skin family of looks, as opposed to Transparency's see-through glass. Above 0 the renderer probes how deep the solid runs behind the hit and applies Beer–Lambert absorption over that depth, so thin spines, fins and edges glow while thick masses stay solid. The transmitted light is tinted by the stop's own color on the way out.</p>
-            <p>The slider is strength <em>and</em> reach at once: low values absorb quickly, lighting only a thin rim; high values let light carry much deeper for a soft, lit-from-within body. It also softens the terminator, letting diffuse light bleed a little past the point where the surface turns away from a light.</p>
+            <p>How much of the stop's diffuse light enters the material, wanders around under the surface and comes back out somewhere else — the skin, wax, jade and marble family of looks, as opposed to Transparency's see-through glass. At 0 the surface is ordinary matte; at 1 all of its diffuse light is subsurface light. Specular highlights and reflections stay on the surface either way.</p>
+            <p>Three things happen as you raise it. Fine surface detail softens, because the light that comes out at a point went in over a whole neighbourhood around it. Light bleeds past the terminator into the side facing away from the lamp, so shadow edges on the body turn soft and warm instead of cutting off. And light that hits the far side of a thin part shines straight through it: ears, fins, spines and thin shells glow when a light is behind them, while thick masses stay dark.</p>
+            <p>The color comes from the stop's own color. Wavelengths the material reflects strongly also travel furthest inside it, so a pinkish or orange stop bleeds and glows deep red the way skin does, a green one turns jade, and a white or grey one scatters every color equally into a milky wax look. Thin parts lit from behind show this most strongly, because the color deepens the further the light has to travel.</p>
+          </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">Subsurface radius</span><span class="chip">default 0.1</span><span class="chip">range 0.005–0.5</span></div>
+            <p>How far light travels under the surface, in scene units: the distance over which the most strongly reflected color fades to about a third. Everything Subsurface scattering does is measured against it. Detail smaller than the radius is softened away, the warm bleed past shadow edges is about this wide, and parts thinner than a few radii glow when lit from behind. Size it to the features you want to glow: a radius much smaller than the fractal's fine structure gives a thin waxy skin, and one larger than the whole object turns it into a glowing, nearly featureless blob. Has no effect while Subsurface scattering is 0.</p>
           </div>
         </div>
 
@@ -1311,7 +1316,7 @@
 
         <div class="note">
           <span class="tag">Where subsurface scattering costs you</span>
-          <p>It is the only material slider that adds a march of its own: one probe into the interior at every visible hit where it is above 0. Left at 0 the whole path is skipped and costs nothing, so a scene that does not use it is unaffected. The back-scatter term deliberately ignores shadows — the surface's own body is exactly what a shadow ray would find in the way, and a lit-from-behind edge is the case the effect exists for. Reflection bounces and MC Render's indirect bounces shade without it, the same way they already shade without shadows.</p>
+          <p>It is the only material slider that adds marches of its own. Every visible hit where it is above 0 takes four extra distance evaluations for the softened normal. Its light then reaches it along one combined ray per light instead of the usual shadow ray. The ray adds up how much translucent material lies between the point and the light, its own body and any other translucent part in the way, and dims the light by that thickness, so translucent parts cast soft colored shadows rather than black ones. Where the ray meets a non-translucent object it continues as an ordinary shadow ray, softness included. Light through more than about six radii of material counts as blocked, so a small radius is cheaper than a large one. These points do not take part in MC Render's one-light-per-sample shortcut. Every light is traced for them every sample. Left at 0 the whole path is skipped and costs nothing, so a scene that does not use it is unaffected. Reflection bounces and MC Render's indirect bounces shade without it.</p>
         </div>
 
         <p>A fresh fractal starts with three stops: near-black blue at 0, ember orange at 0.5, and pale sand at 1.0, with glossiness and reflectiveness rising along the strip.</p>
@@ -2533,7 +2538,7 @@ fn de_finalize(carry: IterCarry) -&gt; f32</code></pre>
           </div>
           <div class="stage indent-1">
             <div class="stage-name">shade_local</div>
-            <div class="stage-desc">The share of the light that stays at a surface: per-light diffuse and specular with marched shadows, plus whatever the photon map deposited nearby. Where a stop&rsquo;s Subsurface scattering is above 0, one extra march into the interior measures the material&rsquo;s depth and adds an unshadowed back-scatter term. With MC Render on, the primary hit&rsquo;s ambient term is a traced indirect bounce instead of a constant &mdash; reduced, while the photon map is on, to a sky-visibility probe, since the map already carries everything else.</div>
+            <div class="stage-desc">The share of the light that stays at a surface: per-light diffuse and specular with marched shadows, plus whatever the photon map deposited nearby. Where a stop&rsquo;s Subsurface scattering is above 0, diffuse light is spread per wavelength over a softened normal. Each light reaches it along one combined ray that measures all the translucent material between it and the light and dims the light by that thickness. The ray only becomes an ordinary shadow ray at a non-translucent object. With MC Render on, the primary hit&rsquo;s ambient term is a traced indirect bounce instead of a constant &mdash; reduced, while the photon map is on, to a sky-visibility probe, since the map already carries everything else.</div>
           </div>
           <div class="stage indent-1">
             <div class="stage-name">scatter_at</div>

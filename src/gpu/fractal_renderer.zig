@@ -97,7 +97,7 @@ pub const ColorStop = extern struct {
     film_angle_scale: f32 = 1,
     film_perturb: f32 = 0,
     film_perturb_scale: f32 = 0.2,
-    _pad_film0: f32 = 0,
+    subsurface_radius: f32 = 0.1,
     _pad_film1: f32 = 0,
 };
 

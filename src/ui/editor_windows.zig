@@ -321,6 +321,7 @@ fn buildColorStripSection(ctx: *nk.nk_context, inst: anytype) void {
             widgets.sliderFloat(ctx, "Transparency", &stop.transparency, &stop.transparency_range);
             widgets.sliderFloat(ctx, "Reflectiveness", &stop.reflectiveness, &stop.reflectiveness_range);
             widgets.sliderFloat(ctx, "Subsurface scattering", &stop.subsurface, &stop.subsurface_range);
+            widgets.sliderFloat(ctx, "Subsurface radius", &stop.subsurface_radius, &stop.subsurface_radius_range);
 
             if (widgets.beginSubsection(ctx, "refraction", "Refraction", .closed)) {
                 defer widgets.endSection(ctx);
