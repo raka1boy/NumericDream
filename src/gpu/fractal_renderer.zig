@@ -44,7 +44,8 @@ const light_shafts_source = @embedFile("shaders/light_shafts.wgsl");
 pub const max_instances = 4;
 pub const max_mixins = 3;
 pub const max_color_stops = 16;
-pub const max_params = 8;
+pub const max_params = 16;
+pub const PackedParams = [max_params / 4][4]f32;
 pub const max_lights = 8;
 pub const max_fog_emitters = 4;
 pub const max_warps = 4;
@@ -56,6 +57,7 @@ pub const image_slots_per_fractal = 1 + max_mixins;
 
 comptime {
     std.debug.assert(height_maps.max_slots == max_instances * image_slots_per_fractal);
+    std.debug.assert(max_params % 4 == 0);
 }
 
 pub const uniform_ring_slots: u32 = 32;
@@ -108,8 +110,7 @@ comptime {
 }
 
 pub const MixinParams = extern struct {
-    params0: [4]f32 = .{ 0, 0, 0, 0 },
-    params1: [4]f32 = .{ 0, 0, 0, 0 },
+    params: PackedParams = @splat(@splat(0)),
     iterations: f32 = 1,
     code: f32 = no_code,
     formula_key: f32 = 0,
@@ -127,8 +128,7 @@ pub const FractalInstance = extern struct {
     code: f32 = no_code,
     rotation: [3]f32 = .{ 0, 0, 0 },
     formula_key: f32 = 0,
-    params0: [4]f32,
-    params1: [4]f32,
+    params: PackedParams,
     mixin_count: f32 = 0,
     hybrid_base_iters: f32 = 2,
     hybrid_total_iters: f32 = 12,
@@ -434,6 +434,22 @@ fn collectTopLevelNames(allocator: std.mem.Allocator, source: []const u8) ![][]c
 
 const contract_fn_names = [_][]const u8{ "de_step", "de_finalize", "de_iterations" };
 
+const legacy_params_decl = "p: array<f32, 8>";
+const params_decl = "p: Params";
+
+pub fn appendParamsCompat(allocator: std.mem.Allocator, out: *std.ArrayList(u8), source: []const u8) !void {
+    var i: usize = 0;
+    while (i < source.len) {
+        if (matchesWordAt(source, i, legacy_params_decl)) {
+            try out.appendSlice(allocator, params_decl);
+            i += legacy_params_decl.len;
+        } else {
+            try out.append(allocator, source[i]);
+            i += 1;
+        }
+    }
+}
+
 fn appendRenamedFormula(allocator: std.mem.Allocator, out: *std.ArrayList(u8), source: []const u8, slot: usize) !void {
     const names = try collectTopLevelNames(allocator, source);
     defer allocator.free(names);
@@ -445,6 +461,11 @@ fn appendRenamedFormula(allocator: std.mem.Allocator, out: *std.ArrayList(u8), s
 
     var i: usize = 0;
     outer: while (i < source.len) {
+        if (matchesWordAt(source, i, legacy_params_decl)) {
+            try out.appendSlice(allocator, params_decl);
+            i += legacy_params_decl.len;
+            continue;
+        }
         for (names) |name| {
             if (matchesWordAt(source, i, name)) {
                 try out.appendSlice(allocator, name);
@@ -469,7 +490,7 @@ fn appendRenamedFormula(allocator: std.mem.Allocator, out: *std.ArrayList(u8), s
 fn appendFormulaWrapper(allocator: std.mem.Allocator, out: *std.ArrayList(u8), code: usize) !void {
     const wrapper = try std.fmt.allocPrint(allocator,
         \\
-        \\fn formula_{0}(pos: vec3f, p: array<f32, 8>, slot: i32) -> vec2f {{
+        \\fn formula_{0}(pos: vec3f, p: Params, slot: i32) -> vec2f {{
         \\    g_image_slot = slot * IMAGE_SLOTS_PER_FRACTAL;
         \\    var carry = IterCarry(pos, 1.0);
         \\    let trap_spec = orbit_trap(slot);
@@ -511,10 +532,10 @@ fn appendDispatch(
 }
 
 fn appendDispatchers(allocator: std.mem.Allocator, out: *std.ArrayList(u8), table: *const CodeTable) !void {
-    try appendDispatch(allocator, out, table, "\nfn eval_formula(code: i32, slot: i32, pos: vec3f, p: array<f32, 8>) -> vec2f {\n", "formula_{0d}(pos, p, slot)", true, "    return vec2f(NO_SURFACE_DE, 0.0);\n}\n");
-    try appendDispatch(allocator, out, table, "\nfn eval_step(code: i32, carry: IterCarry, pos: vec3f, p: array<f32, 8>) -> IterCarry {\n", "de_step_{0d}(carry, pos, p)", false, "    return carry;\n}\n");
+    try appendDispatch(allocator, out, table, "\nfn eval_formula(code: i32, slot: i32, pos: vec3f, p: Params) -> vec2f {\n", "formula_{0d}(pos, p, slot)", true, "    return vec2f(NO_SURFACE_DE, 0.0);\n}\n");
+    try appendDispatch(allocator, out, table, "\nfn eval_step(code: i32, carry: IterCarry, pos: vec3f, p: Params) -> IterCarry {\n", "de_step_{0d}(carry, pos, p)", false, "    return carry;\n}\n");
     try appendDispatch(allocator, out, table, "\nfn eval_finalize(code: i32, carry: IterCarry) -> f32 {\n", "de_finalize_{0d}(carry)", false, "    return NO_SURFACE_DE;\n}\n");
-    try appendDispatch(allocator, out, table, "\nfn eval_iterations(code: i32, p: array<f32, 8>) -> i32 {\n", "de_iterations_{0d}(p)", false, "    return 0;\n}\n");
+    try appendDispatch(allocator, out, table, "\nfn eval_iterations(code: i32, p: Params) -> i32 {\n", "de_iterations_{0d}(p)", false, "    return 0;\n}\n");
 }
 
 pub fn sourceHash(source: []const u8) u64 {
@@ -3033,7 +3054,10 @@ pub const FractalRenderer = struct {
             };
         }
         if (self.shaft_pipeline == null) return null;
-        return .{ .pipeline = self.shaft_pipeline, .params0 = params[0..4].*, .params1 = params[4..8].* };
+        var packed_params: PackedParams = @splat(@splat(0));
+        packed_params[0] = params[0..4].*;
+        packed_params[1] = params[4..8].*;
+        return .{ .pipeline = self.shaft_pipeline, .params = packed_params };
     }
 
     pub fn writeUniformSlot(self: *FractalRenderer, ctx: *const Context, slot: u32, uniforms: Uniforms) void {
@@ -3503,6 +3527,24 @@ pub const FractalRenderer = struct {
         return self.export_session and valid and key == stored_key and drift <= accel.recenterDistance(max_dist);
     }
 
+    const ExportPhotonTrace = struct { seed: f32, radius: f32, paths: u32 };
+
+    fn exportPhotonTrace(self: *const FractalRenderer, samples: *const SampleSet, s: u32) ExportPhotonTrace {
+        const mc = samples.count() > 1;
+        const sample: f32 = @floatFromInt(s);
+        const per_sample = mc and self.photon_settings.refine_per_sample;
+        return .{
+            .seed = if (per_sample) sample + 1 else 1,
+            .radius = self.photon_settings.sampleRadius(mc, sample),
+            .paths = self.photon_settings.tracePathCount(mc, sample),
+        };
+    }
+
+    fn exportPhotonStale(self: *const FractalRenderer, want: ExportPhotonTrace) bool {
+        const map = &self.photon_map;
+        return map.stored_hash_salt != want.seed or map.stored_radius != want.radius or map.last_paths != want.paths;
+    }
+
     pub fn renderToImage(self: *FractalRenderer, ctx: *const Context, samples: *const SampleSet, width: u32, height: u32, allocator: std.mem.Allocator, progress: ?RenderProgress) ![]u8 {
         std.debug.assert(samples.count() >= 1);
         try self.ensureDrawable(ctx, samples.is2d());
@@ -3559,7 +3601,8 @@ pub const FractalRenderer = struct {
         if (!(want_photons and self.exportReuse(self.photon_map.valid, photon_key, self.export_photon_key, self.photon_map.drift(first.camera_pos), first.max_dist))) {
             self.photon_map.invalidate();
             if (want_photons) {
-                if (self.tracePhotons(ctx, first, 1.0, self.photon_settings.baseRadius(), self.photon_settings.pathCount())) {
+                const trace = self.exportPhotonTrace(samples, 0);
+                if (self.tracePhotons(ctx, first, trace.seed, trace.radius, trace.paths)) {
                     self.export_photon_key = photon_key;
                 } else |err| {
                     std.debug.print("[photons] export trace failed ({s}); rendering without caustics\n", .{@errorName(err)});
@@ -3702,6 +3745,18 @@ pub const FractalRenderer = struct {
         while (s < sample_count) : (s += 1) {
             if (batch.cmd_encoder != null and s - batch.first_sample >= uniform_ring_slots) {
                 try self.flushExport(ctx, &batch, &pacer, tracker);
+            }
+            if (self.photon_map.valid) {
+                const trace = self.exportPhotonTrace(samples, s);
+                if (self.exportPhotonStale(trace)) {
+                    if (batch.cmd_encoder != null) try self.flushExport(ctx, &batch, &pacer, tracker);
+                    var scene = samples.at(0).*;
+                    self.stampApproxUniforms(&scene);
+                    self.tracePhotons(ctx, scene, trace.seed, trace.radius, trace.paths) catch |err| {
+                        std.debug.print("[photons] export retrace failed ({s}); rendering the rest without caustics\n", .{@errorName(err)});
+                        self.photon_map.invalidate();
+                    };
+                }
             }
             const slot = s % uniform_ring_slots;
             var uniforms = samples.at(s).*;

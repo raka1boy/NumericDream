@@ -37,7 +37,7 @@ fn uni_hue(h: f32, s: f32) -> vec3f {
     return mix(vec3f(1.0), clamp(k, vec3f(0.0), vec3f(1.0)), s);
 }
 
-fn effect(uv: vec2f, color: vec4f, p: array<f32, 8>) -> vec4f {
+fn effect(uv: vec2f, color: vec4f, p: Params) -> vec4f {
     let ramp_len = text_length(UNI_RAMP_FIELD);
     if (ramp_len == 0u) {
         return color;

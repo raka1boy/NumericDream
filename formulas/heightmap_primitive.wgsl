@@ -7,11 +7,11 @@
 // @param Blue scale min=-1 max=1 default=0.0722
 // @param Alpha scale min=-1 max=1 default=0
 // @param Invert min=0 max=1 default=0 int
-fn de_iterations(p: array<f32, 8>) -> i32 {
+fn de_iterations(p: Params) -> i32 {
     return primitive_de_iterations();
 }
 
-fn de_step(carry: IterCarry, pos: vec3f, p: array<f32, 8>) -> IterCarry {
+fn de_step(carry: IterCarry, pos: vec3f, p: Params) -> IterCarry {
     let size = max(p[0], EPSILON);
     let q = carry.z / (size * max(abs(carry.dr), EPSILON_FINE));
     let lift = p[1];

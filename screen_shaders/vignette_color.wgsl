@@ -5,7 +5,7 @@
 
 const VIGNETTE_INNER_RATIO = 0.35;
 
-fn effect(uv: vec2f, color: vec4f, p: array<f32, 8>) -> vec4f {
+fn effect(uv: vec2f, color: vec4f, p: Params) -> vec4f {
     var c = color.rgb * p[0];
 
     let grey = luminance(c);

@@ -36,7 +36,7 @@ fn lens_sample(uv: vec2f, mode: i32) -> vec3f {
     return scene_color(uv);
 }
 
-fn effect(uv: vec2f, color: vec4f, p: array<f32, 8>) -> vec4f {
+fn effect(uv: vec2f, color: vec4f, p: Params) -> vec4f {
     let c = lens_to_centred(uv);
     let r2 = dot(c, c);
     let warped = c * (1.0 + p[0] * r2 + p[1] * r2 * r2) / max(p[2], LENS_MIN_ZOOM);

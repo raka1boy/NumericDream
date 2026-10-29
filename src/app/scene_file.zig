@@ -760,6 +760,7 @@ pub fn applyScene(
         timeline.playhead = 0;
         timeline.playing = false;
         timeline.dirty = true;
+        timeline.key_selected = false;
     }
 
     const kept_camera = camera.*;

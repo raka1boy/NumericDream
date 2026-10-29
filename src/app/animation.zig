@@ -29,7 +29,27 @@ const max_particle_systems = fractal_gpu.max_particle_systems;
 
 pub const max_keyframes = 64;
 
-pub const FormulaParamsSnapshot = struct { values: [max_params]f32 = std.mem.zeroes([max_params]f32) };
+const legacy_param_count = 8;
+
+pub const FormulaParamsSnapshot = struct {
+    values: [max_params]f32 = std.mem.zeroes([max_params]f32),
+    count: u32 = 0,
+
+    pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !FormulaParamsSnapshot {
+        const saved = try std.json.innerParse(struct { values: []const f32 = &.{}, count: ?u32 = null }, allocator, source, options);
+        var out = FormulaParamsSnapshot{};
+        const n = @min(saved.values.len, max_params);
+        @memcpy(out.values[0..n], saved.values[0..n]);
+        out.count = @intCast(@min(saved.count orelse legacy_param_count, n));
+        return out;
+    }
+};
+
+fn lerpParams(a: FormulaParamsSnapshot, b: FormulaParamsSnapshot, t: f32) FormulaParamsSnapshot {
+    var out = FormulaParamsSnapshot{ .count = @min(a.count, b.count) };
+    for (0..max_params) |i| out.values[i] = lerpF32(a.values[i], b.values[i], t);
+    return out;
+}
 
 pub const MixinSnapshot = struct { params: FormulaParamsSnapshot = .{} };
 
@@ -169,14 +189,13 @@ pub const TimelineState = struct {
     playhead: f32 = 0.0,
     playing: bool = false,
     dirty: bool = false,
+    key_selected: bool = false,
 };
 
 pub const AnimRenderState = struct {
     window_open: bool = false,
     fps: f32 = 30.0,
     fps_range: SliderRange = .{ .min = 1.0, .max = 120.0 },
-    width: i32 = 1280,
-    height: i32 = 720,
     fog_samples: f32 = 1,
     fog_samples_range: SliderRange = .{ .min = 1, .max = 16 },
     motion_blur: f32 = 0.0,
@@ -205,7 +224,12 @@ fn lerpAny(comptime T: type, a: T, b: T, t: f32) T {
         const bv = @field(b, name);
         switch (@typeInfo(FieldType)) {
             .float => @field(out, name) = lerpF32(av, bv, t),
-            .@"struct" => @field(out, name) = if (FieldType == Vec3) lerpVec3(av, bv, t) else lerpAny(FieldType, av, bv, t),
+            .@"struct" => @field(out, name) = if (FieldType == Vec3)
+                lerpVec3(av, bv, t)
+            else if (FieldType == FormulaParamsSnapshot)
+                lerpParams(av, bv, t)
+            else
+                lerpAny(FieldType, av, bv, t),
             .array => |arr_info| {
                 var arr: FieldType = undefined;
                 if (arr_info.child == f32) {
@@ -262,13 +286,14 @@ fn apply(snap: anytype, dst: anytype) void {
 const CustomParam = @import("formula.zig").CustomParam;
 
 fn captureParamList(params: []const CustomParam, count: usize) FormulaParamsSnapshot {
-    var out = FormulaParamsSnapshot{};
-    for (0..@min(count, max_params)) |p| out.values[p] = params[p].value;
+    const n = @min(count, max_params);
+    var out = FormulaParamsSnapshot{ .count = @intCast(n) };
+    for (0..n) |p| out.values[p] = params[p].value;
     return out;
 }
 
 fn applyParamList(snap: *const FormulaParamsSnapshot, params: []CustomParam, count: usize) void {
-    for (0..@min(count, max_params)) |p| params[p].value = snap.values[p];
+    for (0..@min(count, snap.count)) |p| params[p].value = snap.values[p];
 }
 
 fn captureParams(formula: *const FormulaState) FormulaParamsSnapshot {
@@ -382,7 +407,7 @@ pub fn evaluate(timeline: *const TimelineState, t_in: f32) AnimSnapshot {
 }
 
 pub fn parkedKeyframe(timeline: *const TimelineState) ?usize {
-    if (timeline.playing) return null;
+    if (timeline.playing or !timeline.key_selected) return null;
     for (0..timeline.keyframe_count) |i| {
         if (timeline.keyframes[i].time == timeline.playhead) return i;
     }
@@ -394,6 +419,31 @@ pub fn autoKey(timeline: *TimelineState, snapshot: *const AnimSnapshot) void {
     const kf = &timeline.keyframes[idx].snapshot;
     if (std.mem.eql(u8, std.mem.asBytes(kf), std.mem.asBytes(snapshot))) return;
     kf.* = snapshot.*;
+}
+
+pub fn propagateEdit(timeline: *TimelineState, before: *const AnimSnapshot, after: *const AnimSnapshot) void {
+    var edited = after.*;
+    edited.camera.position = before.camera.position;
+    edited.camera.forward = before.camera.forward;
+    edited.camera.up = before.camera.up;
+    edited.camera.zoom_2d = before.camera.zoom_2d;
+    if (std.mem.eql(u8, std.mem.asBytes(before), std.mem.asBytes(&edited))) return;
+    for (timeline.keyframes[0..timeline.keyframe_count]) |*kf| shiftAny(AnimSnapshot, &kf.snapshot, before, &edited);
+}
+
+fn shiftAny(comptime T: type, dst: *T, a: *const T, b: *const T) void {
+    switch (@typeInfo(T)) {
+        .float => if (a.* != b.*) {
+            dst.* = if (dst.* == a.*) b.* else dst.* + (b.* - a.*);
+        },
+        .@"struct" => |info| inline for (info.field_names, info.field_types) |name, FieldType| {
+            shiftAny(FieldType, &@field(dst, name), &@field(a, name), &@field(b, name));
+        },
+        .array => |arr_info| for (dst, a, b) |*d, *x, *y| shiftAny(arr_info.child, d, x, y),
+        else => if (!std.meta.eql(a.*, b.*)) {
+            dst.* = b.*;
+        },
+    }
 }
 
 pub fn addKeyframe(timeline: *TimelineState, time_in: f32, snapshot: AnimSnapshot) ?usize {
@@ -419,6 +469,19 @@ pub fn addKeyframe(timeline: *TimelineState, time_in: f32, snapshot: AnimSnapsho
 pub fn updateKeyframeAt(timeline: *TimelineState, index: usize, snapshot: AnimSnapshot) void {
     timeline.keyframes[index].snapshot = snapshot;
     timeline.dirty = true;
+}
+
+pub fn moveKeyframe(timeline: *TimelineState, index: usize, time_in: f32) usize {
+    var i = index;
+    timeline.keyframes[i].time = std.math.clamp(time_in, 0, timeline.duration);
+    while (i > 0 and timeline.keyframes[i].time < timeline.keyframes[i - 1].time) : (i -= 1) {
+        std.mem.swap(Keyframe, &timeline.keyframes[i], &timeline.keyframes[i - 1]);
+    }
+    while (i + 1 < timeline.keyframe_count and timeline.keyframes[i].time > timeline.keyframes[i + 1].time) : (i += 1) {
+        std.mem.swap(Keyframe, &timeline.keyframes[i], &timeline.keyframes[i + 1]);
+    }
+    timeline.dirty = true;
+    return i;
 }
 
 pub fn removeKeyframeAt(timeline: *TimelineState, index: usize) void {

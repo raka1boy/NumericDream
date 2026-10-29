@@ -24,7 +24,7 @@ fn dr_chroma(h: f32) -> vec3f {
     return c - vec3f(luminance(c));
 }
 
-fn effect(uv: vec2f, color: vec4f, p: array<f32, 8>) -> vec4f {
+fn effect(uv: vec2f, color: vec4f, p: Params) -> vec4f {
     let hdr = max(color.rgb, vec3f(0.0)) * p[0];
     var d = pow(hdr / (hdr + vec3f(1.0)), vec3f(1.0 / DR_GAMMA));
 

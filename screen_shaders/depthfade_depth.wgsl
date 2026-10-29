@@ -7,7 +7,7 @@
 
 const DEPTHFADE_MIN_RANGE = 1e-3;
 
-fn effect(uv: vec2f, color: vec4f, p: array<f32, 8>) -> vec4f {
+fn effect(uv: vec2f, color: vec4f, p: Params) -> vec4f {
     let d = scene_depth(uv);
     let dist = select(pp.max_dist, d, d > 0.0);
 

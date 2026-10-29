@@ -12,7 +12,7 @@ const TREE_ROOT_SCALE = 0.6;
 const TREE_ROOT_OFFSET = vec3f(0.0, 1.0, 0.0);
 const TREE_LIMB_TIP = vec3f(0.0, 1.0, 0.0);
 
-fn de_iterations(p: array<f32, 8>) -> i32 {
+fn de_iterations(p: Params) -> i32 {
     return i32(p[0]);
 }
 
@@ -35,7 +35,7 @@ fn tree_pack(m: f32, level: u32) -> f32 {
     return bitcast<f32>((bitcast<u32>(safe) & ~TREE_LEVEL_MASK) | level);
 }
 
-fn de_step(carry: IterCarry, pos: vec3f, p: array<f32, 8>) -> IterCarry {
+fn de_step(carry: IterCarry, pos: vec3f, p: Params) -> IterCarry {
     let level = bitcast<u32>(carry.dr) & TREE_LEVEL_MASK;
     let ratio = p[3];
     let thick = p[5];

@@ -8,18 +8,18 @@
 // @param Time min=0 max=100 default=1
 // @param Extent min=1 max=500 default=60
 // @param Depth min=0 max=50 default=4
+// @param FreqGain min=1.2 max=3 default=1.9
+// @param AmpGain min=0.05 max=0.6 default=0.22
+// @param ChoppyRelax min=0 max=1 default=0.2
 const SEASCAPE_MAX_OCTAVES = 8;
 const SEASCAPE_SQUASH_X = 0.75;
 const SEASCAPE_OCTAVE_M = mat2x2f(1.6, 1.2, -1.2, 1.6);
 const SEASCAPE_OCTAVE_STRETCH = 2.0;
-const SEASCAPE_FREQ_GAIN = 1.9;
-const SEASCAPE_AMP_GAIN = 0.22;
-const SEASCAPE_CHOPPY_RELAX = 0.2;
 const SEASCAPE_SHARPNESS = 0.65;
 const SEASCAPE_SLOPE_BASE = 3.5;
 const SEASCAPE_SLOPE_PER_CHOPPY = 1.05;
 
-fn de_iterations(p: array<f32, 8>) -> i32 {
+fn de_iterations(p: Params) -> i32 {
     return primitive_de_iterations();
 }
 
@@ -55,7 +55,7 @@ fn seascape_octave(uv_in: vec2f, choppy: f32) -> f32 {
     return pow(max(1.0 - crest, 0.0), choppy);
 }
 
-fn de_step(carry: IterCarry, pos: vec3f, p: array<f32, 8>) -> IterCarry {
+fn de_step(carry: IterCarry, pos: vec3f, p: Params) -> IterCarry {
     let octaves = clamp(i32(p[0]), 1, SEASCAPE_MAX_OCTAVES);
     let size = max(p[1], EPSILON);
     let q = carry.z / (size * max(abs(carry.dr), EPSILON_FINE));
@@ -63,8 +63,11 @@ fn de_step(carry: IterCarry, pos: vec3f, p: array<f32, 8>) -> IterCarry {
     let time = p[5];
     let extent = max(p[6], EPSILON);
     let depth = max(p[7], 0.0);
+    let freq_gain = max(p[8], 0.0);
+    let amp_gain = clamp(p[9], 0.0, 0.95);
+    let choppy_relax = clamp(p[10], 0.0, 1.0);
 
-    let h_max = 2.0 * sea_height * (1.0 - pow(SEASCAPE_AMP_GAIN, f32(octaves))) / (1.0 - SEASCAPE_AMP_GAIN);
+    let h_max = 2.0 * sea_height * (1.0 - pow(amp_gain, f32(octaves))) / (1.0 - amp_gain);
     var reach = h_max;
     var above = q.y - reach;
     var below = -q.y;
@@ -85,10 +88,10 @@ fn de_step(carry: IterCarry, pos: vec3f, p: array<f32, 8>) -> IterCarry {
         above = max(above, (q.y - h - max(reach, 0.0)) / s);
         below = max(below, (h - q.y) / s);
         uv = uv * SEASCAPE_OCTAVE_M;
-        freq *= SEASCAPE_FREQ_GAIN;
-        amp *= SEASCAPE_AMP_GAIN;
+        freq *= freq_gain;
+        amp *= amp_gain;
         stretch *= SEASCAPE_OCTAVE_STRETCH;
-        choppy = mix(choppy, 1.0, SEASCAPE_CHOPPY_RELAX);
+        choppy = mix(choppy, 1.0, choppy_relax);
     }
     let wave = select(-below, above, q.y >= h);
 

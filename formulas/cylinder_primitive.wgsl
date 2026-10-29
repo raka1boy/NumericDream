@@ -1,9 +1,9 @@
 // @param Size min=0.02 max=8 default=1
-fn de_iterations(p: array<f32, 8>) -> i32 {
+fn de_iterations(p: Params) -> i32 {
     return primitive_de_iterations();
 }
 
-fn de_step(carry: IterCarry, pos: vec3f, p: array<f32, 8>) -> IterCarry {
+fn de_step(carry: IterCarry, pos: vec3f, p: Params) -> IterCarry {
     return primitive_de_step(carry, p[0]);
 }
 

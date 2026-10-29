@@ -276,13 +276,10 @@ pub const FractalInstanceState = struct {
     visible: bool = true,
 
     pub fn toGpu(self: FractalInstanceState) GpuFractalInstance {
-        const params = self.formula.packedParams();
-
         var mixins: [max_mixins]GpuMixinParams = undefined;
         for (0..self.mixin_count) |j| {
             const m = &self.mixins[j];
-            const mp = m.formula.packedParams();
-            mixins[j] = .{ .params0 = mp[0], .params1 = mp[1], .iterations = m.iterations };
+            mixins[j] = .{ .params = m.formula.packedParams(), .iterations = m.iterations };
         }
         for (self.mixin_count..max_mixins) |j| mixins[j] = .{};
 
@@ -310,8 +307,7 @@ pub const FractalInstanceState = struct {
             .blend_k = self.blend_k,
             .combine_mode = @floatFromInt(@backingInt(self.combine_mode)),
             .color_count = @floatFromInt(self.color_count),
-            .params0 = params[0],
-            .params1 = params[1],
+            .params = self.formula.packedParams(),
             .mixin_count = @floatFromInt(self.mixin_count),
             .hybrid_base_iters = self.hybrid_base_iters,
             .hybrid_total_iters = self.hybrid_total_iters,

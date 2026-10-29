@@ -60,7 +60,7 @@ fn hh_fbm(p: vec3f, octaves: i32) -> f32 {
     return sum / max(norm, HH_EPS);
 }
 
-fn effect(uv: vec2f, color: vec4f, p: array<f32, 8>) -> vec4f {
+fn effect(uv: vec2f, color: vec4f, p: Params) -> vec4f {
     let d = scene_depth(uv);
     let dist = select(pp.max_dist, d, d > 0.0);
 

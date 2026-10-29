@@ -19,7 +19,7 @@ fn shaft_light_uv(world_dir: vec3f) -> vec3f {
     return vec3f(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5, ahead);
 }
 
-fn effect(uv: vec2f, color: vec4f, p: array<f32, 8>) -> vec4f {
+fn effect(uv: vec2f, color: vec4f, p: Params) -> vec4f {
     let strength = p[3];
     let directional = p[7] > 0.5;
     let light_ref = vec3f(p[0], p[1], p[2]);

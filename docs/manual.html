@@ -451,7 +451,7 @@
       <div class="fact"><b>2</b><span>Particle systems</span></div>
       <div class="fact"><b>8</b><span>Screen shaders</span></div>
       <div class="fact"><b>16</b><span>Color stops</span></div>
-      <div class="fact"><b>8</b><span>Formula params</span></div>
+      <div class="fact"><b>16</b><span>Formula params</span></div>
       <div class="fact"><b>64</b><span>Keyframes</span></div>
     </div>
   </header>
@@ -1064,7 +1064,7 @@
             <p>Reads the file, checks it defines the three required functions, parses its <code>// @param</code> declarations into sliders, and rebuilds the shader with it in place. The rebuild runs in the background: the fractal keeps showing its old formula until the new one is ready, and if the formula is already in the shader (another fractal uses it) there is nothing to rebuild and the change is instant (<a href="#ch3">Chapter 3</a>). On failure the previous formula stays loaded and the error appears in red underneath.</p>
           </div>
           <div class="param">
-            <div class="param-head"><span class="param-name">Parameters</span><span class="chip">up to 8</span></div>
+            <div class="param-head"><span class="param-name">Parameters</span><span class="chip">up to 16</span></div>
             <p>One slider per <code>@param</code> the file declares, in declaration order, with the name, range, and default the file itself specifies. These are the formula's own knobs — Power and Iterations for the Mandelbulb, Scale/MinRadius/FixedRadius/FoldingLimit/Iterations for the Amazing Box, and so on. Changing them is instant: they are uniforms, not code, so no recompile is involved.</p>
           </div>
         </div>
@@ -1096,6 +1096,33 @@
         <p>Naming your own formulas to this convention is all it takes to have them appear with working filter labels.</p>
 
         <p>The same browser serves screen-space shaders, pointed at <code>screen_shaders/</code> instead (<a href="#ch17">Chapter 17</a>). It is a separate window with its own scan and its own filter state, so opening one does not disturb the other.</p>
+
+        <h3>Sliders shared across formulas</h3>
+        <p>Many shipped formulas end their slider list with a few knobs that mean the same thing wherever they appear. Every one of them defaults to a value that leaves the shape exactly as it was before the slider existed, and they come after <em>Iterations</em> so older keyframes still line up with the sliders they were recorded on.</p>
+        <div class="params">
+          <div class="param">
+            <div class="param-head"><span class="param-name">RotXDeg / RotYDeg / RotZDeg</span><span class="chip">default 0</span><span class="chip">range −180–180</span></div>
+            <p>Rotates space inside every iteration, about x, then y, then z, in degrees. In the box and Apollonian formulas it acts after the folds and before the scale; in the folding IFS formulas it acts right after the symmetry fold. Small angles break the fractal's symmetry into twisted, asymmetric detail; the <code>twist</code> formulas already had a rotation about z and gain only the x and y angles. A rotation never changes distances, so it costs no accuracy, and at 0 on all three it is skipped entirely.</p>
+          </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">CScale</span><span class="chip">default 1</span><span class="chip">range −2–2</span></div>
+            <p>How much of the sample position is added back each iteration in most escape-time formulas (box, Apollonian, bulb, Kleinian). 1 is the ordinary Mandelbox, Mandelbulb or Kleinian; 0 removes the position entirely, so only the Julia constant below is added and the formula becomes its Julia set. Values between morph smoothly from one to the other, which keyframes well.</p>
+          </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">JuliaX / JuliaY / JuliaZ</span><span class="chip">default 0</span></div>
+            <p>A constant added each iteration alongside the scaled position. With <em>CScale</em> at 1 it shifts the Mandelbox-style set; with <em>CScale</em> at 0 it is the Julia seed. Formulas that are already Julia variants keep their own Julia sliders and do not get these.</p>
+          </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">OffsetX / OffsetY / OffsetZ</span></div>
+            <p>The point each folding IFS copy is scaled away from. The tetrahedral, Menger-style and Stark formulas used a fixed (1, 1, 1) and now default to it (range 0–2). The icosahedral formulas already had X and Y and gain <em>OffsetZ</em>, default 0. Unequal offsets stretch the copies along one axis.</p>
+          </div>
+          <div class="param">
+            <div class="param-head"><span class="param-name">ThetaPhaseDeg / PhiPhaseDeg</span><span class="chip">default 0</span><span class="chip">range −180–180</span></div>
+            <p>In the power formulas, shift the two spherical angles after they are multiplied by the power, in degrees. This turns the bulb's lobes and twists its symmetry. In the dual-power bulb both stages are shifted.</p>
+          </div>
+        </div>
+
+        <p>A few formulas also expose constants they used to hard-code. <code>menger3</code> gets <em>Scale</em> (it was always 3). <code>kleinianjulia</code> gets <em>CellSize</em>, the lattice its pseudo-Kleinian sibling already exposed. <code>mandalay</code> gets <em>FoldingLimit</em> for its initial box fold, <em>GapX/GapY/GapZ</em> (the per-axis weights that <em>Gap</em> multiplies) and a Julia offset. <code>wobblekifs</code> gets its ripple amounts and frequencies, its two jitters, and the initial <em>Sway</em> and <em>Tilt</em>. <code>seascape</code> gets <em>FreqGain</em>, <em>AmpGain</em> and <em>ChoppyRelax</em>, the per-octave changes, and its distance bound follows them, so they cannot make it overshoot. <code>recursivesphere</code> gets <em>Outness</em>, which moves the carved corner holes relative to the sphere.</p>
 
         <h3>Height maps</h3>
         <p><code>heightmap_primitive.wgsl</code> turns a picture into a solid: a plate the shape of the image, with its top pushed up (or its bottom pushed down) by each pixel's brightness. Load it like any other formula and an extra <strong>Height map</strong> block appears above the parameters. Any formula can ask for an image this way (<a href="#ch24">Chapter 24</a>); this is the one that ships.</p>
@@ -1956,7 +1983,7 @@
           </div>
           <div class="param">
             <div class="param-head"><span class="param-name">Parameters</span></div>
-            <p>One slider per <code>@param</code>, in declaration order, up to eight — the same grammar, the same <code>int</code> keyword, the same right-click range editing as a formula's (<a href="#ch24">Chapter 24</a>). These are uniforms, so moving them is instant and never recompiles.</p>
+            <p>One slider per <code>@param</code>, in declaration order, up to sixteen — the same grammar, the same <code>int</code> keyword, the same right-click range editing as a formula's (<a href="#ch24">Chapter 24</a>). These are uniforms, so moving them is instant and never recompiles.</p>
           </div>
           <div class="param">
             <div class="param-head"><span class="param-name">Symbols</span><span class="chip">only for files with @text</span></div>
@@ -1977,6 +2004,7 @@
               <tr><td>dreamglow</td><td>A dreamy soft glow: an Orton-style wide blur added back over the image, tinted halation around highlights above a threshold, and an optional slight soft focus.</td><td>Reads the HDR range, so put it before tonemap or dreamgrade. <em>Drift</em> slowly varies the glow's size and strength across the frame and over time, which needs <em>Animated</em> to move in the viewport. <em>Taps</em> is the cost dial.</td></tr>
               <tr><td>fxaa</td><td>FXAA 3.11 edge antialiasing.</td><td><strong>Put it before any noise effect</strong> — it smooths geometry, and given grain it will happily smooth that instead. Its luma is taken through a Reinhard and square-rooted first, because in raw linear HDR everything above 1.0 reads as flat white and bright edges go undetected.</td></tr>
               <tr><td>vignette</td><td>Exposure, saturation, soft vignette.</td><td>Colour only; the cheapest thing here and a reasonable default finisher.</td></tr>
+              <tr><td>spectrum</td><td>Brightens or dims each colour of a dispersed spectrum. <em>Red gain</em>, <em>Orange gain</em>, <em>Yellow gain</em>, <em>Green gain</em>, <em>Cyan gain</em>, <em>Blue gain</em> and <em>Violet gain</em> scale their own band: 1 leaves it alone, above 1 brightens it, below 1 dims it, and 0 turns it black. Hues between two bands blend smoothly between their gains, and magenta sits between violet and red. <em>Min saturation</em> keeps it off anything less vivid than a rainbow. Hue and saturation are measured in OKLab, so the bands sit where the eye sees those colours, not where RGB puts them.</td><td>A physically correct spectrum looks like broad red, green and blue with only thin yellow and cyan between them, because pure wavelengths lie outside what a screen can show. The defaults lift yellow, cyan and violet for the album-cover look; this is a stylistic grade, not a correction. Reads the HDR range, so put it before tonemap or dreamgrade.</td></tr>
               <tr><td>filmgrain</td><td>Animated grain plus corner-weighted chromatic aberration.</td><td>Grain is keyed off time <em>and</em> the MC sample index, so an accumulating still does not freeze one noise pattern.</td></tr>
               <tr><td>outline</td><td>Ink outline from g-buffer discontinuities — depth jumps give silhouettes, normal swings give creases.</td><td>Needs depth and normal. <em>Fill fade</em> pushes it towards a flat cel look.</td></tr>
               <tr><td>contours</td><td>Contour lines over the surface, like a topographic map: <em>Bands</em> lines across a value read from the normal, either how directly the surface faces the camera (<em>Source</em> 0) or the normal's X, Y or Z (1–3).</td><td>Needs the normal. <em>Min width (px)</em> keeps lines visible where the bands crowd together. With the default <em>Scene mix</em> of 0 the surface is replaced by a near-black fill; raise it to draw the lines over the render. The sky is left alone.</td></tr>
@@ -2000,7 +2028,7 @@
         <h3>Writing one</h3>
         <p>The whole contract is a single function:</p>
 
-        <pre><code>fn effect(uv: vec2f, color: vec4f, p: array&lt;f32, 8&gt;) -&gt; vec4f</code></pre>
+        <pre><code>fn effect(uv: vec2f, color: vec4f, p: Params) -&gt; vec4f</code></pre>
 
         <ul>
           <li><code>uv</code> — this pixel, 0…1, <strong>y down</strong>.</li>
@@ -2345,6 +2373,7 @@
           <li><strong>Drag the ruler</strong> (the thin upper bar) to scrub. The scene follows the playhead immediately.</li>
           <li><strong>Left-click empty track</strong> (the wider lower bar) to create a keyframe at that time from the current scene, up to 64.</li>
           <li><strong>Left-click an existing marker</strong> to re-capture it: the current scene replaces what was stored there.</li>
+          <li><strong>Drag a marker left or right</strong> to change its time; a tooltip shows the new time. Keyframes can be dragged past each other. If the playhead was parked on the marker, it moves with it.</li>
           <li><strong>Right-click a marker</strong> to delete it.</li>
           <li><strong>Play / Pause</strong> runs the playhead in real time. It stops at the end rather than looping.</li>
         </ul>
@@ -2352,6 +2381,8 @@
         <p>Scrubbing or capturing pushes the interpolated scene onto the live scene; ordinary slider edits do not get stomped back, which is what lets you scrub to a time, adjust, and re-capture.</p>
 
         <p>While the playhead sits exactly on a keyframe — right after creating it or clicking its marker — and playback is stopped, that marker turns yellow and every edit goes straight into it, camera moves included. So the natural sequence is: click the track at the new time, then set the values for that moment. Scrubbing between keyframes leaves the playhead parked on none, and edits there stay live-only until you capture them.</p>
+
+        <p>To edit without touching the keyframe, deselect it: click the viewport (a click, not a camera drag) or any window other than the Camera window, the Timeline and the object editors. The marker turns blue again, and an edit now changes the whole animation instead of one keyframe: a value that was the same in every keyframe takes the new value everywhere, and an animated value keeps its motion, shifted by the amount you changed it. Camera moves made with the mouse and keyboard are the exception and stay live-only. Click the marker to select it again; that also re-captures it. A loaded scene starts with no keyframe selected.</p>
 
         <div class="params">
           <div class="param">
@@ -2386,6 +2417,8 @@
 
         <p>The 2D zoom is the one value that does not interpolate linearly — it moves geometrically, so a descent covers an equal factor of magnification in every equal slice of time. See <a href="#ch18">Chapter 18</a>.</p>
 
+        <p>Formula and effect parameters are stored in a keyframe by slider position, along with how many sliders there were when it was captured. A slider added to the end of a file later is left alone by keyframes recorded before it existed, so it keeps its default (or whatever you set) instead of snapping to zero. Between a keyframe that has it and one that does not, it is not animated.</p>
+
         <h3>Render Animation</h3>
         <p><strong>Animation...</strong> in the Output window (or File → Render animation...) opens the render window. Duration is edited on the timeline itself, not duplicated here; the window shows it alongside the keyframe count. <strong>Render…</strong> asks for an output folder and then blocks, with the same progress bar, Cancel button, and Escape key as a still render. A cancelled render still finalises whatever frames completed into a playable file.</p>
 
@@ -2397,8 +2430,8 @@
             <p>Frames per second, used both to space the samples and as the output file's frame rate.</p>
           </div>
           <div class="param">
-            <div class="param-head"><span class="param-name">Width / Height</span><span class="chip">default 1280 × 720</span><span class="chip">range 16–16384</span></div>
-            <p>Frame size, separate from the still export's resolution. With stereo on, the actual output is twice this width. Odd dimensions are rounded down by one pixel during muxing, since the H.264 encoder rejects them.</p>
+            <div class="param-head"><span class="param-name">Resolution</span></div>
+            <p>Frame size is the Output window's <strong>Width</strong> and <strong>Height</strong>, the same as a still export; the window shows it read-only. With stereo on, the actual output is twice this width. Odd dimensions are rounded down by one pixel during muxing, since the H.264 encoder rejects them.</p>
           </div>
           <div class="param">
             <div class="param-head"><span class="param-name">Fog samples/frame</span><span class="chip">default 1</span><span class="chip">range 1–16</span></div>
@@ -2479,8 +2512,8 @@
         <h3>The formula contract</h3>
         <p>Every formula file — an instance's own or a mixin's — must define exactly these three functions:</p>
 
-        <pre><code>fn de_iterations(p: array&lt;f32, 8&gt;) -&gt; i32
-fn de_step(carry: IterCarry, pos: vec3f, p: array&lt;f32, 8&gt;) -&gt; IterCarry
+        <pre><code>fn de_iterations(p: Params) -&gt; i32
+fn de_step(carry: IterCarry, pos: vec3f, p: Params) -&gt; IterCarry
 fn de_finalize(carry: IterCarry) -&gt; f32</code></pre>
         <p class="caption">The contract, checked before every compile</p>
 
@@ -2491,7 +2524,7 @@ fn de_finalize(carry: IterCarry) -&gt; f32</code></pre>
     dr: f32,    // running derivative estimate
 }</code></pre>
 
-        <p><code>de_step</code> applies <em>one</em> iteration of the formula to that state and returns the result. <code>de_iterations</code> reports how many times it wants to be called when it is running standalone. <code>de_finalize</code> turns the final state into a distance estimate. <code>p</code> holds up to eight tunable parameters, filled from the sliders.</p>
+        <p><code>de_step</code> applies <em>one</em> iteration of the formula to that state and returns the result. <code>de_iterations</code> reports how many times it wants to be called when it is running standalone. <code>de_finalize</code> turns the final state into a distance estimate. <code>p</code> holds up to sixteen tunable parameters, filled from the sliders. <code>Params</code> is the template's name for <code>array&lt;f32, 16&gt;</code>. Files written for the older eight-slot contract, which spell it <code>p: array&lt;f32, 8&gt;</code>, still load unchanged.</p>
 
         <p><code>IterCarry</code> holds only these two fields on purpose. In a mixin cycle, the formula whose <code>de_step</code> happened to run last is not necessarily the one that finalizes, so any formula's <code>de_finalize</code> must be computable from whatever state is sitting there. The built-in Mandelbulb demonstrates the discipline: it recomputes <code>length(carry.z)</code> fresh rather than trusting a carried "last radius" that some other formula's step may have clobbered.</p>
 
@@ -2501,7 +2534,7 @@ fn de_finalize(carry: IterCarry) -&gt; f32</code></pre>
         <pre><code>// @param Power min=2 max=16 default=8
 // @param Iterations min=2 max=16 default=6 int</code></pre>
 
-        <p>The first declared becomes <code>p[0]</code>, the second <code>p[1]</code>, and so on to <code>p[7]</code>. Anything undeclared is 0. The parser reads the whole file line by line looking for <code>@param</code>, so the comments technically may sit anywhere — but keeping them above <code>de_iterations</code> keeps the indices readable.</p>
+        <p>The first declared becomes <code>p[0]</code>, the second <code>p[1]</code>, and so on to <code>p[15]</code>. Anything undeclared is 0. The parser reads the whole file line by line looking for <code>@param</code>, so the comments technically may sit anywhere — but keeping them above <code>de_iterations</code> keeps the indices readable.</p>
 
         <p>The trailing <code>int</code> is optional and marks a parameter the formula reads as a whole number — an iteration count it passes through <code>i32(…)</code>, typically. Its slider then steps whole units and rounds anything typed into it, instead of moving continuously like every other slider. Every bundled formula marks its <em>Iterations</em> that way. It is a property of the formula source, not of the scene: it is re-read on every compile and never saved to a <code>.dream</code> file.</p>
 
@@ -2586,7 +2619,7 @@ fn de_finalize(carry: IterCarry) -&gt; f32</code></pre>
               <tr><td>Screen-space effects</td><td class="num">8</td><td>Links in the post chain (<a href="#ch17">Chapter 17</a>)</td></tr>
               <tr><td>Single-tile post budget</td><td class="num">16 Mpx</td><td>Largest export a neighbour-sampling effect renders seamlessly</td></tr>
               <tr><td>Sky image edge</td><td class="num">4096</td><td>Environment maps above it are halved until they fit</td></tr>
-              <tr><td>Formula params</td><td class="num">8</td><td><code>p[0]</code>…<code>p[7]</code> per formula</td></tr>
+              <tr><td>Formula params</td><td class="num">16</td><td><code>p[0]</code>…<code>p[15]</code> per formula and per screen shader</td></tr>
               <tr><td>Reflection bounces</td><td class="num">8</td><td>Hard cap regardless of slider range</td></tr>
               <tr><td>PATH_MAX_VERTICES</td><td class="num">16</td><td>Hard cap on camera path length regardless of slider range</td></tr>
               <tr><td>PATH_TRANSPARENCY_FLOOR</td><td class="num">8</td><td>Path vertices granted on top of the Reflection bounces slider, so glass is see-through even at 0</td></tr>
@@ -2616,11 +2649,11 @@ fn de_finalize(carry: IterCarry) -&gt; f32</code></pre>
 
         <pre><code>// @param Power min=2 max=16 default=8
 // @param Iterations min=2 max=16 default=6 int
-fn de_iterations(p: array&lt;f32, 8&gt;) -&gt; i32 {
+fn de_iterations(p: Params) -&gt; i32 {
     return i32(p[1]);
 }
 
-fn de_step(carry: IterCarry, pos: vec3f, p: array&lt;f32, 8&gt;) -&gt; IterCarry {
+fn de_step(carry: IterCarry, pos: vec3f, p: Params) -&gt; IterCarry {
     return bulb_power_step(carry, pos, p[0]);
 }
 
@@ -2633,11 +2666,11 @@ fn de_finalize(carry: IterCarry) -&gt; f32 {
 
         <pre><code>// @param Power min=2 max=16 default=8
 // @param Iterations min=2 max=16 default=6 int
-fn de_iterations(p: array&lt;f32, 8&gt;) -&gt; i32 {
+fn de_iterations(p: Params) -&gt; i32 {
     return i32(p[1]);
 }
 
-fn de_step(carry: IterCarry, pos: vec3f, p: array&lt;f32, 8&gt;) -&gt; IterCarry {
+fn de_step(carry: IterCarry, pos: vec3f, p: Params) -&gt; IterCarry {
     let power = p[0];
     let r = length(carry.z);
     if (r &gt; 2.0) {
@@ -2717,11 +2750,11 @@ return vec2f(de_finalize(lod_blend(carry_lo, carry, lod.y)),
         <pre><code>// Sphere: a unit sphere, scaled by Size.
 
 // @param Size min=0.02 max=8 default=1
-fn de_iterations(p: array&lt;f32, 8&gt;) -&gt; i32 {
+fn de_iterations(p: Params) -&gt; i32 {
     return primitive_de_iterations();          // exactly one step
 }
 
-fn de_step(carry: IterCarry, pos: vec3f, p: array&lt;f32, 8&gt;) -&gt; IterCarry {
+fn de_step(carry: IterCarry, pos: vec3f, p: Params) -&gt; IterCarry {
     return primitive_de_step(carry, p[0]);     // shrink space so the shape is unit-sized
 }
 
@@ -2745,11 +2778,11 @@ fn de_finalize(carry: IterCarry) -&gt; f32 {
 // @param Scale min=1.2 max=4 default=3
 // @param TwistDeg min=-90 max=90 default=0
 // @param Iterations min=0 max=12 default=5 int
-fn de_iterations(p: array&lt;f32, 8&gt;) -&gt; i32 {
+fn de_iterations(p: Params) -&gt; i32 {
     return i32(p[2]);
 }
 
-fn de_step(carry: IterCarry, pos: vec3f, p: array&lt;f32, 8&gt;) -&gt; IterCarry {
+fn de_step(carry: IterCarry, pos: vec3f, p: Params) -&gt; IterCarry {
     let scale = p[0];
     let twist = radians(p[1]);
 
@@ -2795,11 +2828,11 @@ fn de_finalize(carry: IterCarry) -&gt; f32 {
 // @param JuliaX min=-2 max=2 default=0.4
 // @param JuliaY min=-2 max=2 default=-0.6
 // @param JuliaZ min=-2 max=2 default=0.1
-fn de_iterations(p: array&lt;f32, 8&gt;) -&gt; i32 {
+fn de_iterations(p: Params) -&gt; i32 {
     return i32(p[3]);
 }
 
-fn de_step(carry: IterCarry, pos: vec3f, p: array&lt;f32, 8&gt;) -&gt; IterCarry {
+fn de_step(carry: IterCarry, pos: vec3f, p: Params) -&gt; IterCarry {
     let scale = p[0];
     let min_radius2 = p[1] * p[1];
     let fixed_radius2 = p[2] * p[2];
@@ -2819,7 +2852,7 @@ fn de_finalize(carry: IterCarry) -&gt; f32 {
         <p><strong>The sphere fold changes the tally itself.</strong> Inverting in a sphere is not a uniform scale — it stretches points near the centre far more than points near the rim — so <code>sphere_fold</code> takes <code>dr</code> in and hands it back in the fourth component of its result, multiplied by whatever factor it applied. Always take <code>dr</code> from the helper; never assume you know what it did.</p>
         <p><strong>The <code>+ 1.0</code>.</strong> The scale multiplies the tally as in Step 2, and then one is added. That one is the derivative of the <code>+ c</code> term with respect to the starting point: because <code>pos</code> is added fresh each iteration, the sequence's sensitivity to it is one more than what the earlier iterations passed along. Leave it out and the tally is too small, the divided distance too large, and the shape develops holes. For a Julia variant (<em>Julia</em> = 1) the constant does not depend on the starting point and the <code>+ 1</code> is not strictly needed — but keeping it only makes the estimate slightly more conservative, and every bundled Julia formula keeps it.</p>
         <p><strong>The finalize is <code>length(z) / |dr|</code>.</strong> A diverging sequence has no stable shape to measure to. Instead, how far out <code>z</code> has flown, over how much the map stretched to fling it there, is itself a distance estimate: the further outside the set a point starts, the sooner and faster it escapes. <code>de_finalize_scaled</code> uses <code>abs(dr)</code> so a negative <em>Scale</em> works — negative Mandelbox scales are a different, equally valid family of shapes.</p>
-        <p>The last parameter is the eighth. The file declares all eight, which is the limit: to add a <em>FoldingLimit</em> slider you would have to take one away. <em>Julia</em> is an integer used as a switch; <code>select(a, b, cond)</code> returns <code>b</code> when the condition holds, and both arms are always evaluated, so the switch costs nothing to keep in.</p>
+        <p>The file declares eight parameters, half the limit of sixteen: a <em>FoldingLimit</em> slider declared after <em>JuliaZ</em> would simply become <code>p[8]</code>. <em>Julia</em> is an integer used as a switch; <code>select(a, b, cond)</code> returns <code>b</code> when the condition holds, and both arms are always evaluated, so the switch costs nothing to keep in.</p>
         <h4>Bail-out</h4>
         <p>This file has no escape check, and does not need one: the box and sphere folds keep <code>z</code> bounded until the multiplication, so after thirty iterations at <em>Scale</em> 3 it is at most around 3<sup>30</sup> — large, but far inside 32-bit float range. A power map is different. The Mandelbulb's <code>pow(r, 8)</code> on a point already at radius 2 reaches 256, then 10<sup>19</sup>, then infinity, then NaN — and NaN poisons every comparison downstream, so the pixel goes black. That is why <code>bulb_power_step</code> returns <code>carry</code> unchanged once <code>r &gt; 2</code>, and why <a href="#ch23">Chapter 23</a> asks for that check to be idempotent. Put one in whenever a step can grow <code>z</code> faster than linearly.</p>
         <p>Things to try:</p>
@@ -2922,10 +2955,10 @@ fn wedge_fold(z: vec3f, n: f32) -&gt; vec3f {
     dr: f32,    // accumulated stretch factor; starts at 1.0
 }
 
-fn de_iterations(p: array&lt;f32, 8&gt;) -&gt; i32
-fn de_step(carry: IterCarry, pos: vec3f, p: array&lt;f32, 8&gt;) -&gt; IterCarry
+fn de_iterations(p: Params) -&gt; i32
+fn de_step(carry: IterCarry, pos: vec3f, p: Params) -&gt; IterCarry
 fn de_finalize(carry: IterCarry) -&gt; f32</code></pre>
-        <p>All three must be present, spelled exactly, and take exactly these parameters. <code>IterCarry(z, dr)</code> constructs one. <code>p</code> is the eight slider values in declaration order; undeclared entries are 0. Anything else the file declares is yours.</p>
+        <p>All three must be present, spelled exactly, and take exactly these parameters. <code>IterCarry(z, dr)</code> constructs one. <code>p</code> is the sixteen slider values in declaration order; undeclared entries are 0. Anything else the file declares is yours.</p>
 
         <h4>@param grammar</h4>
         <pre><code>// @param Name min=&lt;number&gt; max=&lt;number&gt; default=&lt;number&gt; [int]</code></pre>
@@ -2933,7 +2966,7 @@ fn de_finalize(carry: IterCarry) -&gt; f32</code></pre>
           <li><code>Name</code> is the slider's label, cut at 23 characters. It <strong>may contain spaces</strong>: the name runs from <code>@param</code> up to the first <code>key=value</code> or the <code>int</code> keyword, so <code>// @param Chroma bleed (px) min=0 max=32 default=8</code> labels the slider <em>Chroma bleed (px)</em>. Since scene files match parameters by name, this also keeps a set like <em>Fog red</em> / <em>Fog green</em> / <em>Fog blue</em> distinct, which truncating at the first space would not.</li>
           <li><code>min</code>, <code>max</code> and <code>default</code> may come in any order and may be omitted; the fallbacks are 0, 1 and 0. A key whose value does not parse is ignored and the others are still read.</li>
           <li><code>int</code> makes the slider step in whole units and round typed values. It changes nothing in the shader — you still read the value as <code>f32</code> and truncate it yourself with <code>i32(…)</code>.</li>
-          <li>The line is recognised anywhere <code>@param</code> appears, but only the first eight declarations count.</li>
+          <li>The line is recognised anywhere <code>@param</code> appears, but only the first sixteen declarations count.</li>
         </ul>
 
         <h3>Reference: folding helpers</h3>

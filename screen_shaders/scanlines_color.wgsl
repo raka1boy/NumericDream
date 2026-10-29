@@ -46,7 +46,7 @@ fn crt_bleed(uv: vec2f, px: f32) -> vec3f {
     return scene_color(uv - o) * CRT_BLEED_SIDE + scene_color(uv) * CRT_BLEED_CENTRE + scene_color(uv + o) * CRT_BLEED_SIDE;
 }
 
-fn effect(uv: vec2f, color: vec4f, p: array<f32, 8>) -> vec4f {
+fn effect(uv: vec2f, color: vec4f, p: Params) -> vec4f {
     let suv = crt_curve(uv, p[4]);
     if (suv.x < 0.0 || suv.x > 1.0 || suv.y < 0.0 || suv.y > 1.0) {
         return vec4f(0.0, 0.0, 0.0, color.a);

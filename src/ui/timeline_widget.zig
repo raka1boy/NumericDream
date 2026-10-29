@@ -18,8 +18,14 @@ const controls_h: f32 = 24;
 const ruler_h: f32 = 18;
 const track_h: f32 = 40;
 const marker_w: f32 = 10;
+const drag_threshold: f32 = 3;
 
 var ruler_dragging: bool = false;
+var key_drag: ?usize = null;
+var key_drag_press_x: f32 = 0;
+var key_drag_start_time: f32 = 0;
+var key_drag_moved: bool = false;
+var key_drag_follow: bool = false;
 
 pub fn build(
     ctx: *nk.nk_context,
@@ -122,22 +128,56 @@ fn buildTrackRow(
     var remove_index: ?usize = null;
     var recapture_index: ?usize = null;
     var handled_click = false;
+
+    if (key_drag) |idx| {
+        handled_click = true;
+        if (idx >= timeline.keyframe_count) {
+            key_drag = null;
+        } else if (nk.nk_input_is_mouse_down(&ctx.input, nk.NK_BUTTON_LEFT) != 0) {
+            const dx = ctx.input.mouse.pos.x - key_drag_press_x;
+            if (@abs(dx) > drag_threshold) key_drag_moved = true;
+            if (key_drag_moved) {
+                const new_idx = animation.moveKeyframe(timeline, idx, key_drag_start_time + dx / bounds.w * duration);
+                if (key_drag_follow) timeline.playhead = timeline.keyframes[new_idx].time;
+                key_drag = new_idx;
+
+                var buf: [32]u8 = undefined;
+                const tip: [:0]const u8 = std.fmt.bufPrintSentinel(&buf, "t={d:.2}s", .{timeline.keyframes[new_idx].time}, 0) catch "";
+                nk.nk_tooltip(ctx, tip.ptr);
+            }
+        } else {
+            if (!key_drag_moved) recapture_index = idx;
+            key_drag = null;
+        }
+    }
+
     const parked = animation.parkedKeyframe(timeline);
+    var pressed_index: ?usize = null;
 
     for (0..timeline.keyframe_count) |i| {
         const kf_time = timeline.keyframes[i].time;
         const cx = bounds.x + (kf_time / duration) * bounds.w;
         const marker = nk.nk_rect(cx - marker_w / 2, bounds.y, marker_w, bounds.h);
-        nk.nk_fill_rect(canvas, marker, 2, if (parked == i) nk.nk_rgb(255, 220, 80) else nk.nk_rgb(120, 170, 230));
+        const fill = if (parked == i) nk.nk_rgb(255, 220, 80) else if (key_drag == i) nk.nk_rgb(170, 210, 255) else nk.nk_rgb(120, 170, 230);
+        nk.nk_fill_rect(canvas, marker, 2, fill);
         nk.nk_stroke_rect(canvas, marker, 2, 1.0, nk.nk_rgb(230, 230, 230));
 
+        if (key_drag != null or handled_click) continue;
         if (nk.nk_input_mouse_clicked(&ctx.input, nk.NK_BUTTON_RIGHT, marker) != 0) {
             remove_index = i;
             handled_click = true;
-        } else if (nk.nk_input_mouse_clicked(&ctx.input, nk.NK_BUTTON_LEFT, marker) != 0) {
-            recapture_index = i;
-            handled_click = true;
+        } else if (nk.nk_input_is_mouse_pressed(&ctx.input, nk.NK_BUTTON_LEFT) != 0 and nk.nk_input_is_mouse_hovering_rect(&ctx.input, marker) != 0) {
+            pressed_index = i;
         }
+    }
+
+    if (pressed_index) |idx| {
+        key_drag = idx;
+        key_drag_press_x = ctx.input.mouse.pos.x;
+        key_drag_start_time = timeline.keyframes[idx].time;
+        key_drag_moved = false;
+        key_drag_follow = parked == idx;
+        handled_click = true;
     }
 
     if (remove_index) |idx| {
@@ -146,11 +186,25 @@ fn buildTrackRow(
         const snap = animation.captureSnapshot(instances, instance_count, lights, light_count, fog_emitters, fog_count, warps, warp_count, screen_shaders, particle_systems, camera);
         animation.updateKeyframeAt(timeline, idx, snap);
         timeline.playhead = timeline.keyframes[idx].time;
+        timeline.key_selected = true;
     } else if (!handled_click and nk.nk_input_mouse_clicked(&ctx.input, nk.NK_BUTTON_LEFT, bounds) != 0) {
         const t = std.math.clamp((ctx.input.mouse.pos.x - bounds.x) / bounds.w, 0.0, 1.0) * timeline.duration;
         const snap = animation.captureSnapshot(instances, instance_count, lights, light_count, fog_emitters, fog_count, warps, warp_count, screen_shaders, particle_systems, camera);
         if (animation.addKeyframe(timeline, t, snap)) |_| {
             timeline.playhead = t;
+            timeline.key_selected = true;
         }
     }
+}
+
+pub fn deselectOnForeignPress(ctx: *nk.nk_context, timeline: *TimelineState) void {
+    if (nk.nk_input_is_mouse_pressed(&ctx.input, nk.NK_BUTTON_LEFT) == 0) return;
+    if (nk.nk_window_is_any_hovered(ctx) == 0) return;
+    const win = ctx.active;
+    if (win != null and keepsKeySelected(std.mem.sliceTo(&win.*.name_string, 0))) return;
+    timeline.key_selected = false;
+}
+
+fn keepsKeySelected(name: []const u8) bool {
+    return std.mem.endsWith(u8, name, " Editor") or std.mem.eql(u8, name, "Camera") or std.mem.eql(u8, name, "Timeline");
 }

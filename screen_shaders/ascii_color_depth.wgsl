@@ -75,7 +75,7 @@ fn ascii_hue(h: f32, s: f32) -> vec3f {
     return mix(vec3f(1.0), clamp(k, vec3f(0.0), vec3f(1.0)), s);
 }
 
-fn effect(uv: vec2f, color: vec4f, p: array<f32, 8>) -> vec4f {
+fn effect(uv: vec2f, color: vec4f, p: Params) -> vec4f {
     let cell_h = max(round(p[0]), ASCII_MIN_CELL_PX);
     let cell = vec2f(max(round(cell_h * ASCII_CELL_ASPECT), ASCII_MIN_CELL_WIDTH_PX), cell_h);
     let px = uv * pp.resolution;

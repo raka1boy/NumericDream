@@ -21,7 +21,7 @@ const ROMANESCO_ROOT_SCALE = 1.5;
 const ROMANESCO_ROOT_OFFSET = vec3f(0.0, 0.5, 0.0);
 const ROMANESCO_MIN_SLANT = 1e-5;
 
-fn de_iterations(p: array<f32, 8>) -> i32 {
+fn de_iterations(p: Params) -> i32 {
     return i32(p[0]);
 }
 
@@ -64,7 +64,7 @@ fn romanesco_bud_frame(z: vec3f, c: vec2f, u0: f32, sc: f32, cc: f32, lean: f32,
     return vec4f(vec3f(dot(v, et), dot(v, axis), dot(v, cross(et, axis))) / scale, scale);
 }
 
-fn de_step(carry: IterCarry, pos: vec3f, p: array<f32, 8>) -> IterCarry {
+fn de_step(carry: IterCarry, pos: vec3f, p: Params) -> IterCarry {
     let bits = bitcast<u32>(carry.dr) & ROMANESCO_PACK_MASK;
     if (bits != 0u && dot(carry.z, carry.z) > ROMANESCO_BAILOUT_SQ) {
         return carry;

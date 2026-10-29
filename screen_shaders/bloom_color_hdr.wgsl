@@ -12,7 +12,7 @@ fn bright_pass(c: vec3f, threshold: f32) -> vec3f {
     return max(c - vec3f(threshold), vec3f(0.0));
 }
 
-fn effect(uv: vec2f, color: vec4f, p: array<f32, 8>) -> vec4f {
+fn effect(uv: vec2f, color: vec4f, p: Params) -> vec4f {
     let texel = texel_size();
     let taps = i32(clamp(p[3], BLOOM_MIN_TAPS, BLOOM_MAX_TAPS));
 

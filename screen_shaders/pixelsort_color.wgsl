@@ -91,7 +91,7 @@ fn ps_count_below(base: vec2i, axis: vec2i, n: i32, mode: i32, t: i32) -> i32 {
     return c;
 }
 
-fn effect(uv: vec2f, color: vec4f, p: array<f32, 8>) -> vec4f {
+fn effect(uv: vec2f, color: vec4f, p: Params) -> vec4f {
     let amount = clamp(p[7], 0.0, 1.0);
     if (amount <= 0.0) { return color; }
 

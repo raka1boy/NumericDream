@@ -6,11 +6,11 @@
 // @param Iterations min=2 max=20 default=11 int
 const QUAT_BAILOUT_SQ = 256.0;
 
-fn de_iterations(p: array<f32, 8>) -> i32 {
+fn de_iterations(p: Params) -> i32 {
     return i32(p[5]);
 }
 
-fn de_step(carry: IterCarry, pos: vec3f, p: array<f32, 8>) -> IterCarry {
+fn de_step(carry: IterCarry, pos: vec3f, p: Params) -> IterCarry {
     let cv = vec3f(p[1], p[2], p[3]);
     let cv_len = length(cv);
 

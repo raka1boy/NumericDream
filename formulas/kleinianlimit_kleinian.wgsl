@@ -18,7 +18,7 @@ const KLEIN_MIN_RADIUS_SQ = 1e-20;
 const KLEIN_DE_CAP = 0.3;
 const KLEIN_MIN_DERIVATIVE = 2.0;
 
-fn de_iterations(p: array<f32, 8>) -> i32 {
+fn de_iterations(p: Params) -> i32 {
     return i32(p[5]);
 }
 
@@ -27,7 +27,7 @@ fn klein_pack(v: f32, tag: u32) -> f32 {
     return bitcast<f32>((bitcast<u32>(safe) & ~KLEIN_STEP_MASK) | tag);
 }
 
-fn de_step(carry: IterCarry, pos: vec3f, p: array<f32, 8>) -> IterCarry {
+fn de_step(carry: IterCarry, pos: vec3f, p: Params) -> IterCarry {
     let step = bitcast<u32>(carry.dr) & KLEIN_STEP_MASK;
     if (step == KLEIN_STEP_DONE) {
         return carry;

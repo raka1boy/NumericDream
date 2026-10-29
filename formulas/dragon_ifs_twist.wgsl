@@ -10,7 +10,7 @@ const DRAGON_MAX_VISITS = 2048;
 const DRAGON_ROOT_SCALE = 2.0;
 const DRAGON_IDENTITY = mat3x3f(vec3f(1.0, 0.0, 0.0), vec3f(0.0, 1.0, 0.0), vec3f(0.0, 0.0, 1.0));
 
-fn de_iterations(p: array<f32, 8>) -> i32 {
+fn de_iterations(p: Params) -> i32 {
     return 1;
 }
 
@@ -51,7 +51,7 @@ fn dragon_curve_t(path: u32, n: i32, levy: bool, x: f32) -> f32 {
     return t0 + span * x;
 }
 
-fn de_step(carry: IterCarry, pos: vec3f, p: array<f32, 8>) -> IterCarry {
+fn de_step(carry: IterCarry, pos: vec3f, p: Params) -> IterCarry {
     let n = clamp(i32(p[0]), 1, DRAGON_MAX_DEPTH);
     let th = radians(p[1]);
     let s = 0.5 / cos(th);

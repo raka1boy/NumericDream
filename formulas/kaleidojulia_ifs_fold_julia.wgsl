@@ -4,13 +4,16 @@
 // @param JuliaY min=-2 max=2 default=0.5
 // @param JuliaZ min=-2 max=2 default=0.5
 // @param Iterations min=1 max=30 default=12 int
+// @param RotXDeg min=-180 max=180 default=0
+// @param RotYDeg min=-180 max=180 default=0
+// @param RotZDeg min=-180 max=180 default=0
 const WEDGE_MIN_DEGREE = 2.0;
 
-fn de_iterations(p: array<f32, 8>) -> i32 {
+fn de_iterations(p: Params) -> i32 {
     return i32(p[5]);
 }
 
-fn de_step(carry: IterCarry, pos: vec3f, p: array<f32, 8>) -> IterCarry {
+fn de_step(carry: IterCarry, pos: vec3f, p: Params) -> IterCarry {
     let degree = max(floor(p[0]), WEDGE_MIN_DEGREE);
     let scale = p[1];
     let c = vec3f(p[2], p[3], p[4]);
@@ -25,7 +28,7 @@ fn de_step(carry: IterCarry, pos: vec3f, p: array<f32, 8>) -> IterCarry {
     let r = length(z.xy);
     z = vec3f(r * cos(a), r * sin(a), z.z);
 
-    z = sort_desc_abs(z);
+    z = rotate_xyz_deg(sort_desc_abs(z), vec3f(p[6], p[7], p[8]));
 
     z = z * scale - c * (scale - 1.0);
     let dr = carry.dr * scale;

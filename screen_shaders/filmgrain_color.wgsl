@@ -2,7 +2,7 @@
 // @param Grain min=0.0 max=0.5 default=0.06
 // @param Grain in shadows min=0.0 max=1.0 default=0.7
 
-fn effect(uv: vec2f, color: vec4f, p: array<f32, 8>) -> vec4f {
+fn effect(uv: vec2f, color: vec4f, p: Params) -> vec4f {
     let texel = texel_size();
     let dir = (uv - vec2f(0.5)) * 2.0;
     let shift = dir * p[0] * texel;

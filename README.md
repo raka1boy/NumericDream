@@ -46,8 +46,7 @@ you can also save a scene as a .dream file.
 
 overall i'd say i'm proud of this, as this project taught me a lot about zig, specifically about zig build system, which always was a very difficult thing for me to reason about. 
 
-Performance of this app is not that great, but all of the tests happened on my laptop with a beast of a gpu (amd radeon 780m) and i could semi-comfortably render small animations. 
-
+performance should be more than enough on an actually powerful gpu, even at my beast of a laptop gpu Radeon 780M i can semi-comfortably fly around the medium-complex scene at 8 to 25 fps and render scenes and animations.
 
 AI usage policy:
 

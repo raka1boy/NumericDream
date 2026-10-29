@@ -5,13 +5,17 @@
 // @param JuliaY min=-1 max=1 default=0.05
 // @param JuliaZ min=-1 max=1 default=0.0
 // @param Iterations min=1 max=20 default=12 int
-fn de_iterations(p: array<f32, 8>) -> i32 {
+// @param OffsetZ min=-1.2 max=1.2 default=0
+// @param RotXDeg min=-180 max=180 default=0
+// @param RotYDeg min=-180 max=180 default=0
+// @param RotZDeg min=-180 max=180 default=0
+fn de_iterations(p: Params) -> i32 {
     return i32(p[6]);
 }
 
-fn de_step(carry: IterCarry, pos: vec3f, p: array<f32, 8>) -> IterCarry {
+fn de_step(carry: IterCarry, pos: vec3f, p: Params) -> IterCarry {
     let scale = p[0];
-    let offset = vec3f(p[1], p[2], 0.0);
+    let offset = vec3f(p[1], p[2], p[7]);
     let c = vec3f(p[3], p[4], p[5]);
     let phi = 1.6180339887498949;
 
@@ -33,6 +37,7 @@ fn de_step(carry: IterCarry, pos: vec3f, p: array<f32, 8>) -> IterCarry {
         z -= 2.0 * t * n3;
     }
 
+    z = rotate_xyz_deg(z, vec3f(p[8], p[9], p[10]));
     z = (z - offset) * scale + offset + c;
     let dr = carry.dr * scale;
     return IterCarry(z, dr);

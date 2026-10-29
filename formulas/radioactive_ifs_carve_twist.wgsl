@@ -9,7 +9,7 @@
 const RADIOACTIVE_MIN_MAGNITUDE = 1e-30;
 const RADIOACTIVE_LEVEL_MASK = 31u;
 
-fn de_iterations(p: array<f32, 8>) -> i32 {
+fn de_iterations(p: Params) -> i32 {
     return i32(p[0]);
 }
 
@@ -18,7 +18,7 @@ fn radioactive_pack(m: f32, level: u32) -> f32 {
     return bitcast<f32>((bitcast<u32>(safe) & ~RADIOACTIVE_LEVEL_MASK) | level);
 }
 
-fn de_step(carry: IterCarry, pos: vec3f, p: array<f32, 8>) -> IterCarry {
+fn de_step(carry: IterCarry, pos: vec3f, p: Params) -> IterCarry {
     let level = bitcast<u32>(carry.dr) & RADIOACTIVE_LEVEL_MASK;
     var v = carry.z;
     var s = carry.dr;

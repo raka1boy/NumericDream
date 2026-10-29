@@ -25,7 +25,7 @@ fn contour_value(uv: vec2f, n: vec3f, source: i32) -> f32 {
     }
 }
 
-fn effect(uv: vec2f, color: vec4f, p: array<f32, 8>) -> vec4f {
+fn effect(uv: vec2f, color: vec4f, p: Params) -> vec4f {
     let centre_depth = scene_depth(uv);
     if (centre_depth <= 0.0) {
         return color;

@@ -9,12 +9,18 @@
 // @param Gap min=0 max=2 default=1
 // @param SquashZ min=0.5 max=1.2 default=0.92
 // @param Iterations min=1 max=30 default=12 int
+// @param FoldingLimit min=0.1 max=2 default=1
+// @param GapX min=0 max=1.5 default=0.4273
+// @param GapY min=0 max=1.5 default=0.62314
+// @param GapZ min=0 max=1.5 default=0.5638
+// @param JuliaX min=-4 max=4 default=0
+// @param JuliaY min=-4 max=4 default=0
+// @param JuliaZ min=-4 max=4 default=0
 const MANDALAY_SEED_SCALE = 4.0;
 const MANDALAY_BAILOUT_SQ = 1e20;
-const MANDALAY_GAP_WEIGHTS = vec3f(0.4273, 0.62314, 0.5638);
 const MANDALAY_SHELL_RADIUS = 30.0;
 
-fn de_iterations(p: array<f32, 8>) -> i32 {
+fn de_iterations(p: Params) -> i32 {
     return i32(p[7]);
 }
 
@@ -30,8 +36,8 @@ fn mandalay_fold(p: vec3f, fo: f32, g: f32) -> f32 {
     return min(min(v, v1), q.x);
 }
 
-fn de_step(carry: IterCarry, pos: vec3f, p: array<f32, 8>) -> IterCarry {
-    let c = pos * MANDALAY_SEED_SCALE;
+fn de_step(carry: IterCarry, pos: vec3f, p: Params) -> IterCarry {
+    let c = pos * MANDALAY_SEED_SCALE + vec3f(p[12], p[13], p[14]);
     var z = carry.z;
     var dr = carry.dr;
     if (dr == 1.0) {
@@ -42,11 +48,11 @@ fn de_step(carry: IterCarry, pos: vec3f, p: array<f32, 8>) -> IterCarry {
         return IterCarry(z, dr);
     }
 
-    z = z - clamp(z, vec3f(-1.0), vec3f(1.0)) * 2.0;
+    z = z - clamp(z, vec3f(-p[8]), vec3f(p[8])) * 2.0;
 
     let signs = sign(z);
     let a = abs(z);
-    let gap = MANDALAY_GAP_WEIGHTS * p[5];
+    let gap = vec3f(p[9], p[10], p[11]) * p[5];
     z = vec3f(
         mandalay_fold(a, p[2], gap.x),
         mandalay_fold(a.yzx, p[3], gap.y),

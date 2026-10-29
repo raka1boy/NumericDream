@@ -49,7 +49,7 @@ fn dg_vnoise(x: vec2f) -> f32 {
     return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
 }
 
-fn effect(uv: vec2f, color: vec4f, p: array<f32, 8>) -> vec4f {
+fn effect(uv: vec2f, color: vec4f, p: Params) -> vec4f {
     let texel = texel_size();
     let taps = i32(clamp(p[7], DG_MIN_TAPS, DG_MAX_TAPS));
 

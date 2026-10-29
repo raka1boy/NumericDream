@@ -725,10 +725,6 @@ fn buildPhotonSection(ctx: *nk.nk_context, photon: *PhotonSettings, map: *const 
 
     checkbox(ctx, "Aim photons at geometry", &photon.aim);
     checkbox(ctx, "Retrace per MC Render sample", &photon.refine_per_sample);
-    widgets.hint(ctx, if (photon.refine_per_sample)
-        "Every accumulated sample gets its own photons"
-    else
-        "One trace stands for the whole accumulation", widgets.dim);
 
     if (photon.refine_per_sample) {
         widgets.sliderInt(ctx, "Paths per sample (%)", &photon.sample_paths_pct, &photon.sample_paths_pct_range);
@@ -743,10 +739,6 @@ fn buildPhotonSection(ctx: *nk.nk_context, photon: *PhotonSettings, map: *const 
         defer widgets.endSection(ctx);
         widgets.sliderFloat(ctx, "Bounce light radius (x)", &photon.bounce_radius_scale, &photon.bounce_radius_scale_range);
         checkbox(ctx, "Prefiltered bounce light", &photon.prefilter);
-        widgets.hint(ctx, if (photon.prefilter)
-            "Bounce light read from the nearest photon's precomputed gather"
-        else
-            "Bounce light gathered in full at every hit", widgets.dim);
         widgets.sliderFloat(ctx, "Fog cell scale", &photon.volume_scale, &photon.volume_scale_range);
         widgets.sliderFloat(ctx, "Dispersion softness", &photon.dispersion_softness, &photon.dispersion_softness_range);
         widgets.sliderInt(ctx, "Grid size (power of two)", &photon.grid_log2, &photon.grid_log2_range);
@@ -868,7 +860,6 @@ fn buildFogVisSection(ctx: *nk.nk_context, state: *FogVisState, grid: *const fog
             0,
         ) catch "Live");
     widgets.hint(ctx, status, widgets.dim);
-    widgets.hint(ctx, "Fog reads light visibility from a grid over the fog spheres instead of marching a shadow ray at every fog step. Shadow detail in fog is limited to the grid cell size.", widgets.dim);
 
     widgets.sliderInt(ctx, "Grid resolution", &state.resolution, &state.resolution_range);
     widgets.sliderInt(ctx, "Rebuild delay (ms)", &state.debounce_ms, &state.debounce_ms_range);
@@ -909,7 +900,6 @@ fn buildCameraWindow(ctx: *nk.nk_context, app: *const App, ws: layout.Workspace)
         checkbox(ctx, "Navigator", &app.navigator.open);
         if (camera.mode_2d) {
             app.play.enabled = false;
-            widgets.hint(ctx, "Renders the flat slice the camera cuts through the fractal. Drag pans, wheel zooms, right-drag tilts, Shift+wheel moves the slice.", widgets.dim);
 
             var zoom_buf: [64]u8 = undefined;
             const zoom_label: [:0]const u8 = std.fmt.bufPrintSentinel(
@@ -990,7 +980,7 @@ fn buildDialogs(ctx: *nk.nk_context, app: *const App, ws: layout.Workspace) void
     flat_windows.buildFlatViewWindow(ctx, ws, app.camera, app.fractal.coreCompiling());
     flat_windows.buildNavigatorWindow(ctx, ws, app.navigator, app.navigator_target, app.camera, ws.width / @max(ws.height, 1));
     editor_windows.buildRenderPartsWindow(ctx, ws, app.render_parts, app.fractal.parts.compiling());
-    editor_windows.buildAnimRenderWindow(ctx, ws, app.window, app.gpu_ctx, app.fractal, app.allocator, app.timeline, app.anim_render, app.instances[0..app.instance_count.*], app.instance_count.*, app.lights[0..app.light_count.*], app.light_count.*, app.fog_emitters[0..app.fog_count.*], app.fog_count.*, app.warps[0..app.warp_count.*], app.warp_count.*, app.screen_shaders[0..app.screen_shader_count.*], app.particle_systems[0..app.particle_count.*], app.camera.*, app.render_settings.*, app.photon.*, app.stereo.*, app.mc.*, app.progress_overlay);
+    editor_windows.buildAnimRenderWindow(ctx, ws, app.window, app.gpu_ctx, app.fractal, app.allocator, app.timeline, app.anim_render, app.instances[0..app.instance_count.*], app.instance_count.*, app.lights[0..app.light_count.*], app.light_count.*, app.fog_emitters[0..app.fog_count.*], app.fog_count.*, app.warps[0..app.warp_count.*], app.warp_count.*, app.screen_shaders[0..app.screen_shader_count.*], app.particle_systems[0..app.particle_count.*], app.camera.*, app.render_settings.*, app.photon.*, app.stereo.*, app.mc.*, app.export_width.*, app.export_height.*, app.progress_overlay);
     editor_windows.buildMeshExportWindow(ctx, ws, app.window, app.gpu_ctx, app.fractal, app.allocator, app.mesh_export, .{ .instances = app.instances[0..app.instance_count.*], .warps = app.warps[0..app.warp_count.*], .camera = app.camera.* }, app.progress_overlay);
 }
 

@@ -62,7 +62,7 @@ fn tm_to_engine(ldr: vec3f) -> vec3f {
     return y / (vec3f(1.0) - y);
 }
 
-fn effect(uv: vec2f, color: vec4f, p: array<f32, 8>) -> vec4f {
+fn effect(uv: vec2f, color: vec4f, p: Params) -> vec4f {
     var c = max(color.rgb, vec3f(0.0)) * p[0];
 
     let grey = luminance(c);

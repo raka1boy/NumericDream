@@ -1172,6 +1172,8 @@ pub fn buildAnimRenderWindow(
     photon: PhotonSettings,
     stereo: StereoState,
     mc: McRenderState,
+    export_width: i32,
+    export_height: i32,
     progress_overlay: *ProgressOverlay,
 ) void {
     if (!anim_render.window_open) return;
@@ -1186,10 +1188,10 @@ pub fn buildAnimRenderWindow(
 
         nk.nk_layout_row_dynamic(ctx, 24, 1);
         _ = nk.nk_property_float(ctx, "FPS", anim_render.fps_range.min, &anim_render.fps, anim_render.fps_range.max, 1, 1);
-        nk.nk_layout_row_dynamic(ctx, 24, 1);
-        _ = nk.nk_property_int(ctx, "Width", 16, &anim_render.width, 16384, 16, 4);
-        nk.nk_layout_row_dynamic(ctx, 24, 1);
-        _ = nk.nk_property_int(ctx, "Height", 16, &anim_render.height, 16384, 16, 4);
+        var res_buf: [64]u8 = undefined;
+        const res: [:0]const u8 = std.fmt.bufPrintSentinel(&res_buf, "Resolution: {d} x {d} (from Output)", .{ export_width, export_height }, 0) catch "Resolution";
+        nk.nk_layout_row_dynamic(ctx, 18, 1);
+        nk.nk_label(ctx, res.ptr, @intCast(nk.NK_TEXT_LEFT));
 
         widgets.sliderInt(ctx, "Fog samples/frame", &anim_render.fog_samples, &anim_render.fog_samples_range);
 
@@ -1248,8 +1250,8 @@ pub fn buildAnimRenderWindow(
                 stereo,
                 mc,
                 anim_render.fps,
-                anim_render.width,
-                anim_render.height,
+                export_width,
+                export_height,
                 anim_render.fog_samples,
                 anim_render.motion_blur,
                 anim_render.motion_blur_samples,

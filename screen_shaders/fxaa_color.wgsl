@@ -34,7 +34,7 @@ fn fxaa_step_scale(i: i32) -> f32 {
     return FXAA_FAR_SCALE;
 }
 
-fn effect(uv: vec2f, color: vec4f, p: array<f32, 8>) -> vec4f {
+fn effect(uv: vec2f, color: vec4f, p: Params) -> vec4f {
     let texel = texel_size();
     let steps = i32(clamp(p[3], FXAA_MIN_STEPS, f32(FXAA_MAX_STEPS)));
 

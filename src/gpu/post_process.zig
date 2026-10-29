@@ -6,6 +6,8 @@ const g_error_sink = &webgpu_context.g_error_sink;
 const sv = webgpu_context.sv;
 const gpu_timer = @import("gpu_timer.zig");
 const glyph_atlas = @import("glyph_atlas.zig");
+const fractal_gpu = @import("fractal_renderer.zig");
+const PackedParams = fractal_gpu.PackedParams;
 
 const post_template = @embedFile("shaders/post_template.wgsl");
 const effect_marker = "@@EFFECT@@";
@@ -27,13 +29,12 @@ pub const PostUniforms = extern struct {
     _pad1: f32 = 0,
     tile_scale: [2]f32 = .{ 1, 1 },
     tile_bias: [2]f32 = .{ 0, 0 },
-    params0: [4]f32 = .{ 0, 0, 0, 0 },
-    params1: [4]f32 = .{ 0, 0, 0, 0 },
+    params: PackedParams = @splat(@splat(0)),
 };
 
 comptime {
-    std.debug.assert(@sizeOf(PostUniforms) == 128);
-    for (.{ "camera_pos", "camera_right", "camera_up", "camera_forward", "params0", "params1" }) |field| {
+    std.debug.assert(@sizeOf(PostUniforms) == 96 + @sizeOf(PackedParams));
+    for (.{ "camera_pos", "camera_right", "camera_up", "camera_forward", "params" }) |field| {
         std.debug.assert(@offsetOf(PostUniforms, field) % 16 == 0);
     }
 }
@@ -41,8 +42,7 @@ comptime {
 pub const Effect = struct {
     pipeline: wgpu.WGPURenderPipeline,
     glyph_group: wgpu.WGPUBindGroup = null,
-    params0: [4]f32 = .{ 0, 0, 0, 0 },
-    params1: [4]f32 = .{ 0, 0, 0, 0 },
+    params: PackedParams = @splat(@splat(0)),
 };
 
 pub const FrameInfo = struct {
@@ -332,8 +332,7 @@ pub const PostChain = struct {
                 .camera_forward = frame.camera_forward,
                 .tile_scale = frame.tile_scale,
                 .tile_bias = frame.tile_bias,
-                .params0 = effect.params0,
-                .params1 = effect.params1,
+                .params = effect.params,
             };
             wgpu.wgpuQueueWriteBuffer(ctx.queue, self.uniform_buffer[i], 0, &uniforms, @sizeOf(PostUniforms));
 
@@ -384,7 +383,7 @@ fn assembleSource(allocator: std.mem.Allocator, body: []const u8) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
     try out.appendSlice(allocator, post_template[0..idx]);
-    try out.appendSlice(allocator, body);
+    try fractal_gpu.appendParamsCompat(allocator, &out, body);
     try out.appendSlice(allocator, post_template[idx + effect_marker.len ..]);
     return out.toOwnedSlice(allocator);
 }
@@ -452,7 +451,7 @@ fn bufferless(binding: u32, sampler: wgpu.WGPUSampler, view: wgpu.WGPUTextureVie
 
 pub fn missingContractFn(content: []const u8) ?[]const u8 {
     if (std.mem.indexOf(u8, content, "fn effect(") == null) {
-        return "fn effect(uv: vec2f, color: vec4f, p: array<f32, 8>) -> vec4f";
+        return "fn effect(uv: vec2f, color: vec4f, p: Params) -> vec4f";
     }
     return null;
 }

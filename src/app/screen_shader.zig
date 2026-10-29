@@ -175,10 +175,8 @@ pub const ScreenShaderState = struct {
         self.compile_error_len = 0;
     }
 
-    pub fn packedParams(self: *const ScreenShaderState) [2][4]f32 {
-        var out: [2][4]f32 = .{ .{ 0, 0, 0, 0 }, .{ 0, 0, 0, 0 } };
-        for (0..@min(self.param_count, max_params)) |i| out[i / 4][i % 4] = self.params[i].value;
-        return out;
+    pub fn packedParams(self: *const ScreenShaderState) fractal_gpu.PackedParams {
+        return formula_mod.packParams(&self.params, self.param_count);
     }
 
     pub fn isActive(self: *const ScreenShaderState) bool {
@@ -243,12 +241,10 @@ pub fn buildEffects(shaders: []const ScreenShaderState, out: *[max_screen_shader
     for (shaders) |*s| {
         if (n >= max_screen_shaders) break;
         if (!s.isActive()) continue;
-        const p = s.packedParams();
         out[n] = .{
             .pipeline = s.pipeline,
             .glyph_group = if (s.text_count > 0) s.glyphs.group else null,
-            .params0 = p[0],
-            .params1 = p[1],
+            .params = s.packedParams(),
         };
         n += 1;
     }

@@ -96,12 +96,16 @@ pub const FormulaState = struct {
         return imageDirective(self.formula_body orelse return null);
     }
 
-    pub fn packedParams(self: *const FormulaState) [2][4]f32 {
-        var out: [2][4]f32 = .{ .{ 0, 0, 0, 0 }, .{ 0, 0, 0, 0 } };
-        for (0..@min(self.custom_param_count, max_params)) |i| out[i / 4][i % 4] = self.custom_params[i].value;
-        return out;
+    pub fn packedParams(self: *const FormulaState) fractal_gpu.PackedParams {
+        return packParams(&self.custom_params, self.custom_param_count);
     }
 };
+
+pub fn packParams(params: *const [max_params]CustomParam, count: usize) fractal_gpu.PackedParams {
+    var out: fractal_gpu.PackedParams = @splat(@splat(0));
+    for (0..@min(count, max_params)) |i| out[i / 4][i % 4] = params[i].value;
+    return out;
+}
 
 fn parseParamLine(line: []const u8) ?CustomParam {
     const marker = "@param";
@@ -165,13 +169,13 @@ pub fn imageDirective(content: []const u8) ?[]const u8 {
 
 pub fn missingContractFn(content: []const u8) ?[]const u8 {
     if (std.mem.indexOf(u8, content, "fn de_step(") == null) {
-        return "fn de_step(carry: IterCarry, pos: vec3f, p: array<f32, 8>) -> IterCarry";
+        return "fn de_step(carry: IterCarry, pos: vec3f, p: Params) -> IterCarry";
     }
     if (std.mem.indexOf(u8, content, "fn de_finalize(") == null) {
         return "fn de_finalize(carry: IterCarry) -> f32";
     }
     if (std.mem.indexOf(u8, content, "fn de_iterations(") == null) {
-        return "fn de_iterations(p: array<f32, 8>) -> i32";
+        return "fn de_iterations(p: Params) -> i32";
     }
     return null;
 }

@@ -22,6 +22,8 @@ struct ColorStop {
 const MAX_INSTANCES = 4;
 const MAX_MIXINS = 3;
 const MAX_COLOR_STOPS = 16;
+const MAX_PARAMS = 16;
+const PARAM_VEC4S = 4;
 const MAX_LIGHTS = 8;
 const FOG_VIS_LIGHT_VEC4S = 2;
 const MAX_FOG_EMITTERS = 4;
@@ -97,9 +99,12 @@ struct IterCarry {
     dr: f32,
 }
 
+// A formula's slider values, one per @param line in declaration order: p[0] is the first
+// declared, p[1] the second, and so on up to p[MAX_PARAMS - 1]. Undeclared entries are 0.
+alias Params = array<f32, MAX_PARAMS>;
+
 struct MixinParams {
-    params0: vec4f,
-    params1: vec4f,
+    params: array<vec4f, PARAM_VEC4S>,
     iterations: f32,
     code: f32,
     formula_key: f32,
@@ -117,8 +122,7 @@ struct FractalInstance {
     code: f32,
     rotation: vec3f,
     formula_key: f32,
-    params0: vec4f,
-    params1: vec4f,
+    params: array<vec4f, PARAM_VEC4S>,
     mixin_count: f32,
     hybrid_base_iters: f32,
     hybrid_total_iters: f32,
@@ -923,19 +927,21 @@ fn vs_main(@builtin(vertex_index) idx: u32) -> VertexOut {
     return out;
 }
 
-fn pack_params(p0: vec4f, p1: vec4f) -> array<f32, 8> {
-    return array<f32, 8>(
-        p0.x, p0.y, p0.z, p0.w,
-        p1.x, p1.y, p1.z, p1.w,
+fn pack_params(v: array<vec4f, PARAM_VEC4S>) -> Params {
+    return Params(
+        v[0].x, v[0].y, v[0].z, v[0].w,
+        v[1].x, v[1].y, v[1].z, v[1].w,
+        v[2].x, v[2].y, v[2].z, v[2].w,
+        v[3].x, v[3].y, v[3].z, v[3].w,
     );
 }
 
-fn instance_params(slot: i32) -> array<f32, 8> {
-    return pack_params(u.instances[slot].params0, u.instances[slot].params1);
+fn instance_params(slot: i32) -> Params {
+    return pack_params(u.instances[slot].params);
 }
 
-fn instance_mixin_params(slot: i32, idx: i32) -> array<f32, 8> {
-    return pack_params(u.instances[slot].mixins[idx].params0, u.instances[slot].mixins[idx].params1);
+fn instance_mixin_params(slot: i32, idx: i32) -> Params {
+    return pack_params(u.instances[slot].mixins[idx].params);
 }
 
 // Mandelbox outer fold: each component beyond +-limit is reflected back across that
@@ -1073,6 +1079,17 @@ fn tetra_fold(z: vec3f) -> vec3f {
 // wedge fold: wrap atan2(z.y, z.x) by TAU / n, mirror the upper half, rebuild z.
 fn wrap_angle(a: f32, period: f32) -> f32 {
     return a - period * floor(a / period);
+}
+
+// Rotates z by the Euler angles deg, in DEGREES, about x then y then z (rot_z * rot_y *
+// rot_x, the instance rotation's order). Returns z untouched when all three are 0, so
+// rotation sliders cost nothing at their default. A rotation; dr unchanged.
+fn rotate_xyz_deg(z: vec3f, deg: vec3f) -> vec3f {
+    if (all(deg == vec3f(0.0))) {
+        return z;
+    }
+    let a = radians(deg);
+    return rot_z(a.z) * (rot_y(a.y) * (rot_x(a.x) * z));
 }
 
 // Returns 1: the whole body of de_iterations for a single-shape primitive formula.
@@ -1307,7 +1324,7 @@ fn mixin_code(slot: i32, idx: i32) -> i32 {
 
 struct HybridStep {
     code: i32,
-    p: array<f32, 8>,
+    p: Params,
     image_slot: i32,
     have: bool,
 }
@@ -1320,7 +1337,7 @@ fn hybrid_cycle_len(slot: i32, base_n: i32, mixin_count: i32) -> i32 {
     return max(cycle_len, 1);
 }
 
-fn hybrid_step(slot: i32, it: i32, base_n: i32, cycle_len: i32, mixin_count: i32, base_code: i32, base_p: array<f32, 8>) -> HybridStep {
+fn hybrid_step(slot: i32, it: i32, base_n: i32, cycle_len: i32, mixin_count: i32, base_code: i32, base_p: Params) -> HybridStep {
     var st = HybridStep(base_code, base_p, slot * IMAGE_SLOTS_PER_FRACTAL, true);
     var pos_in_cycle = it % cycle_len;
     if (pos_in_cycle >= base_n) {

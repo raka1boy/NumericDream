@@ -1,3 +1,8 @@
+const MAX_PARAMS = 16;
+const PARAM_VEC4S = 4;
+
+alias Params = array<f32, MAX_PARAMS>;
+
 struct PostUniforms {
     resolution: vec2f,
     time: f32,
@@ -12,8 +17,7 @@ struct PostUniforms {
     _pad1: f32,
     tile_scale: vec2f,
     tile_bias: vec2f,
-    params0: vec4f,
-    params1: vec4f,
+    params: array<vec4f, PARAM_VEC4S>,
 }
 
 @group(0) @binding(0) var<uniform> pp: PostUniforms;
@@ -169,9 +173,12 @@ fn glyph_sample(g: u32, uv: vec2f, size_px: f32) -> vec4f {
 
 @fragment
 fn fs_post(in: VertexOut) -> @location(0) vec4f {
-    let p = array<f32, 8>(
-        pp.params0.x, pp.params0.y, pp.params0.z, pp.params0.w,
-        pp.params1.x, pp.params1.y, pp.params1.z, pp.params1.w,
+    let v = pp.params;
+    let p = Params(
+        v[0].x, v[0].y, v[0].z, v[0].w,
+        v[1].x, v[1].y, v[1].z, v[1].w,
+        v[2].x, v[2].y, v[2].z, v[2].w,
+        v[3].x, v[3].y, v[3].z, v[3].w,
     );
     return effect(in.uv, scene_sample(in.uv), p);
 }

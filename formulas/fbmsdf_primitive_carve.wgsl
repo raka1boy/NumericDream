@@ -26,7 +26,7 @@ const FBMSDF_ROT_SIN_SQ = 0.36;
 const FBMSDF_ROT_SIN_COS = 0.48;
 const FBMSDF_ROT_COS_SQ = 0.64;
 
-fn de_iterations(p: array<f32, 8>) -> i32 {
+fn de_iterations(p: Params) -> i32 {
     return i32(p[0]);
 }
 
@@ -72,7 +72,7 @@ fn fbmsdf_pack(m: f32, level: u32) -> f32 {
     return bitcast<f32>((bitcast<u32>(safe) & ~FBMSDF_LEVEL_MASK) | level);
 }
 
-fn de_step(carry: IterCarry, pos: vec3f, p: array<f32, 8>) -> IterCarry {
+fn de_step(carry: IterCarry, pos: vec3f, p: Params) -> IterCarry {
     let level = bitcast<u32>(carry.dr) & FBMSDF_LEVEL_MASK;
     var z = carry.z;
     var d = carry.dr;

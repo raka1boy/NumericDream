@@ -6,14 +6,15 @@
 // @param JuliaY min=-1 max=1 default=0.1
 // @param JuliaZ min=-1 max=1 default=0.0
 // @param Iterations min=1 max=30 default=14 int
-fn de_iterations(p: array<f32, 8>) -> i32 {
+// @param CellSize min=0.5 max=4 default=2
+fn de_iterations(p: Params) -> i32 {
     return i32(p[7]);
 }
 
-fn de_step(carry: IterCarry, pos: vec3f, p: array<f32, 8>) -> IterCarry {
+fn de_step(carry: IterCarry, pos: vec3f, p: Params) -> IterCarry {
     let center = vec3f(p[0], p[1], p[2]);
     let radius2 = p[3] * p[3];
-    let cell = 2.0;
+    let cell = p[8];
     let c = vec3f(p[4], p[5], p[6]);
 
     var z = lattice_wrap(carry.z, cell);

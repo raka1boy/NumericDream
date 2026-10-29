@@ -6,6 +6,6 @@ fn bright_pass(c: vec3f, threshold: f32) -> vec3f {
     return max(c - vec3f(threshold), vec3f(0.0));
 }
 
-fn effect(uv: vec2f, color: vec4f, p: array<f32, 8>) -> vec4f {
+fn effect(uv: vec2f, color: vec4f, p: Params) -> vec4f {
     return vec4f(sin(color.rgb * p[1]), color.a);
 }
